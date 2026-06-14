@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: lifeos_ollama
+    volumes:
+      # Windows-compatible bind mount to current directory
+      - ./data/ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+    # Use GPU if available on Docker Desktop (WSL2 backend)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  redis:
+    image: redis:alpine
+    container_name: lifeos_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    restart: unless-stopped
+
+  # Note: PostgreSQL + pgvector is highly recommended to be hosted on Supabase Cloud
+  # for production reliability. However, if you want local development db:
+  # db:
+  #   image: ankane/pgvector:latest
+  #   container_name: lifeos_db
+  #   environment:
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_PASSWORD: password
+  #     POSTGRES_DB: lifeos
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - ./data/postgres:/var/lib/postgresql/data
+  #   restart: unless-stopped
