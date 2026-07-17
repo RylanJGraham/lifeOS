@@ -224,3 +224,35 @@ ALTER TABLE meals ADD COLUMN micronutrients JSONB;
 ALTER TABLE workouts ADD COLUMN muscle_group VARCHAR(100);
 ALTER TABLE transactions ADD COLUMN is_anomaly BOOLEAN DEFAULT false;
 ALTER TABLE transactions ADD COLUMN anomaly_reason TEXT;
+
+-------------------------------------------------------------------------------
+-- 9. Workout Templates
+-------------------------------------------------------------------------------
+CREATE TABLE workout_templates (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+ALTER TABLE workout_templates ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can only see their own workout templates" ON workout_templates FOR ALL USING (auth.uid() = user_id);
+CREATE POLICY "Allow public read access to workout templates" ON workout_templates FOR SELECT USING (true);
+CREATE POLICY "Allow public insert access to workout templates" ON workout_templates FOR INSERT WITH CHECK (true);
+
+CREATE TABLE workout_template_exercises (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    template_id UUID NOT NULL REFERENCES workout_templates(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL,
+    exercise_name VARCHAR(255) NOT NULL,
+    sets INTEGER,
+    reps INTEGER,
+    weight NUMERIC(6, 2),
+    muscle_group VARCHAR(100),
+    order_index INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+ALTER TABLE workout_template_exercises ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can only see their own template exercises" ON workout_template_exercises FOR ALL USING (auth.uid() = user_id);
+CREATE POLICY "Allow public read access to workout template exercises" ON workout_template_exercises FOR SELECT USING (true);
+CREATE POLICY "Allow public insert access to workout template exercises" ON workout_template_exercises FOR INSERT WITH CHECK (true);
+

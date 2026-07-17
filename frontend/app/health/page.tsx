@@ -1,6 +1,9 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, Fragment } from "react";
+import { TemplatesTab } from "./TemplatesTab";
+import FuelTab from "../components/health/FuelTab";
+import { createBrowserClient } from "@supabase/ssr";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -406,1010 +409,660 @@ function ZoneMiniBar({ zones }: { zones: number[] }) {
   );
 }
 
+// ─── Empty State Component ───────────────────────────────────────
+function EmptyState({ message, icon: Icon = Activity }: { message: string, icon?: any }) {
+  return (
+    <div className="flex flex-col items-center justify-center p-10 card-surface mt-4 mb-4" style={{ borderRadius: "var(--radius-xl)", minHeight: "200px" }}>
+      <div className="w-12 h-12 rounded-full flex items-center justify-center mb-4" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+        <Icon size={20} style={{ color: "var(--text-tertiary)" }} />
+      </div>
+      <div className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-secondary)" }}>Awaiting Telemetry</div>
+      <div className="text-sm text-center max-w-xs" style={{ color: "var(--text-tertiary)", lineHeight: 1.6 }}>
+        {message}
+      </div>
+    </div>
+  );
+}
+
 // ─── Tab: Cardiovascular Hub ─────────────────────────────────────
-function CardioTab({ aiAccepted, setAiAccepted }: { aiAccepted: boolean; setAiAccepted: (v: boolean) => void }) {
-  const [expandedSession, setExpandedSession] = useState<number | null>(null);
-  const [showProjection, setShowProjection] = useState(true);
-  const [dismissInsight, setDismissInsight] = useState(false);
+
+// ACWR data (Acute:Chronic Workload Ratio — 7 weeks)
+const acwrData = [
+  { week: "W1", acwr: 0.91 }, { week: "W2", acwr: 1.05 }, { week: "W3", acwr: 1.22 },
+  { week: "W4", acwr: 0.88 }, { week: "W5", acwr: 1.10 }, { week: "W6", acwr: 1.18 },
+  { week: "W7", acwr: 1.15 },
+];
+
+const hrPolarData = [
+  { zone: "Z1 Easy",    pct: 12, target: 40, color: "#10b981" },
+  { zone: "Z2 Aerobic", pct: 28, target: 40, color: "#3b82f6" },
+  { zone: "Z3 Tempo",   pct: 35, target: 10, color: "#f59e0b" },
+  { zone: "Z4 Thresh",  pct: 20, target: 8,  color: "#ef4444" },
+  { zone: "Z5 VO₂",    pct: 5,  target: 2,  color: "#8b5cf6" },
+];
+
+function CardioTab({ latestMetrics, timeFilter }: { latestMetrics: any, timeFilter: string }) {
+  if (!latestMetrics || (!latestMetrics.hrv && !latestMetrics.resting_heart_rate)) {
+    return <EmptyState message="No cardiovascular telemetry found. Please upload your health metrics via Telegram." icon={Heart} />;
+  }
+
+  const currentHRV = latestMetrics.hrv ? String(latestMetrics.hrv) : "-";
+  const currentRHR = latestMetrics.resting_heart_rate ? String(latestMetrics.resting_heart_rate) : "-";
+
+  const baseAcwrData = [
+    { week: "W-6", acute: 1.1, chronic: 1.0 },
+    { week: "W-5", acute: 1.4, chronic: 1.05 },
+    { week: "W-4", acute: 0.9, chronic: 1.1 },
+    { week: "W-3", acute: 1.2, chronic: 1.12 },
+    { week: "W-2", acute: 1.5, chronic: 1.15 },
+    { week: "W-1", acute: 0.8, chronic: 1.18 },
+    { week: "Now", acute: 1.3, chronic: 1.15 },
+  ];
+  
+  const acwrData = timeFilter === "day" || timeFilter === "week" ? baseAcwrData.slice(-2) :
+                   timeFilter === "month" ? baseAcwrData.slice(-4) :
+                   baseAcwrData;
 
   return (
     <div className="space-y-5">
-      {/* Hero Section */}
-      <div className="grid grid-cols-12 gap-4">
-        {/* VO2 Max Hero */}
-        <div className="col-span-12 lg:col-span-5 card-surface p-6" style={{ borderRadius: "var(--radius-xl)", boxShadow: "var(--shadow-glow-cv)" }}>
-          <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>VO₂ Max · Hero Metric</div>
-          <div className="flex flex-col items-center mb-4">
-            <VO2Gauge value={47.2} />
-          </div>
-          <div className="space-y-1.5 mt-2">
-            {[
-              { label: "30-day Δ", val: "+0.8 ml/kg/min", color: C.optimal },
-              { label: "90-day Δ", val: "+2.4 ml/kg/min", color: C.optimal },
-              { label: "Annual Δ", val: "+5.1 ml/kg/min", color: C.optimal },
-            ].map(r => (
-              <div key={r.label} className="flex justify-between text-xs" style={{ fontFamily: "var(--font-mono)" }}>
-                <span style={{ color: "var(--text-tertiary)" }}>{r.label}</span>
-                <span style={{ color: r.color, fontWeight: 700 }}>{r.val}</span>
-              </div>
-            ))}
-          </div>
-          <button className="mt-4 w-full text-xs font-bold uppercase tracking-widest py-2 rounded-lg transition-all hover:opacity-80"
-            style={{ background: "rgba(255,69,69,0.1)", border: "1px solid rgba(255,69,69,0.3)", color: C.cv }}>
-            Expand Projection →
-          </button>
-        </div>
-
-        {/* Readiness & Strain */}
-        <div className="col-span-12 lg:col-span-7 card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-          <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Readiness &amp; Strain Summary</div>
-          <div className="grid grid-cols-2 gap-3 mb-4">
-            {[
-              { label: "Readiness", val: "72", unit: "/100", delta: "+4", color: C.optimal },
-              { label: "HRV", val: "48", unit: "ms", delta: "+3ms", color: C.nutrition },
-              { label: "Resting HR", val: "52", unit: "bpm", delta: "-2bpm", color: C.trends },
-              { label: "Recovery", val: "82", unit: "%", delta: "+6%", color: C.optimal },
-            ].map(m => (
-              <div key={m.label} className="p-3 rounded-xl" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-                <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: "var(--text-tertiary)" }}>{m.label}</div>
+      {/* Readiness KPIs */}
+      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+        <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Readiness &amp; Strain Summary</div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            { label: "HRV", val: currentHRV, unit: "ms",  delta: "+2",   color: C.nutrition },
+            { label: "Resting HR", val: currentRHR, unit: "bpm", delta: "−1",  color: C.trends   },
+            { label: "Sleep", val: latestMetrics.sleep_duration_minutes ? Math.floor(latestMetrics.sleep_duration_minutes/60) + "h" : "7h", unit: "", delta: "+0.3h", color: C.optimal },
+            { label: "Resp. Rate", val: latestMetrics.respiratory_rate ?? "14.2", unit: "/min", delta: "stable", color: C.kinematic },
+          ].map(m => (
+            <div key={m.label} className="p-4 rounded-xl flex flex-col justify-between" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+              <div className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-tertiary)" }}>{m.label}</div>
+              <div className="flex items-end justify-between">
                 <div className="flex items-end gap-1">
-                  <span className="text-2xl font-black" style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)", lineHeight: 1 }}>{m.val}</span>
+                  <span className="text-3xl font-black" style={{ fontFamily: "var(--font-mono)", color: m.color, lineHeight: 1 }}>{m.val}</span>
                   <span className="text-xs pb-0.5" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>{m.unit}</span>
                 </div>
-                <div className="mt-1"><DeltaBadge value={m.delta} /></div>
+                <span className="text-[10px] font-bold" style={{ color: m.delta.startsWith("+") ? C.optimal : m.delta.startsWith("−") ? C.warning : C.textTertiary }}>{m.delta}</span>
               </div>
-            ))}
-          </div>
-          {/* HRV sparkline */}
-          <div className="p-3 rounded-xl mb-2" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-            <div className="flex justify-between items-center mb-2">
-              <span className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--text-tertiary)" }}>HRV — 7-day</span>
-              <span className="text-xs font-bold" style={{ color: C.nutrition, fontFamily: "var(--font-mono)" }}>48ms ▲</span>
-            </div>
-            <ResponsiveContainer width="100%" height={48}>
-              <AreaChart data={hrvData} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="hrvGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={C.nutrition} stopOpacity={0.3} />
-                    <stop offset="100%" stopColor={C.nutrition} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <Area type="monotone" dataKey="hrv" stroke={C.nutrition} strokeWidth={2} fill="url(#hrvGrad)" dot={false} />
-                <ReferenceLine y={45} stroke={C.textTertiary} strokeDasharray="3 3" strokeWidth={1} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-          {/* RHR sparkline */}
-          <div className="p-3 rounded-xl" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-            <div className="flex justify-between items-center mb-2">
-              <span className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--text-tertiary)" }}>Resting HR — 7-day</span>
-              <span className="text-xs font-bold" style={{ color: C.trends, fontFamily: "var(--font-mono)" }}>52 bpm ▼</span>
-            </div>
-            <ResponsiveContainer width="100%" height={48}>
-              <AreaChart data={rhrData} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="rhrGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={C.trends} stopOpacity={0.3} />
-                    <stop offset="100%" stopColor={C.trends} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <Area type="monotone" dataKey="rhr" stroke={C.trends} strokeWidth={2} fill="url(#rhrGrad)" dot={false} />
-                <ReferenceLine y={54} stroke={C.textTertiary} strokeDasharray="3 3" strokeWidth={1} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
-
-      {/* AI Training Decision */}
-      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)", borderLeft: `3px solid ${aiAccepted ? C.optimal : C.warning}` }}>
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: "var(--ai-surface)", border: "1px solid var(--border-ai)" }}>
-              <Brain size={14} style={{ color: "var(--accent-sleep)" }} />
-            </div>
-            <div>
-              <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--accent-sleep)" }}>Today's Training Decision</div>
-              <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                {aiAccepted ? "✓ AI Optimization Active" : "AI Recommends: Optimize for Weekly Load"}
-              </div>
-            </div>
-          </div>
-          <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: "rgba(123,97,255,0.15)", color: C.sleep, border: "1px solid var(--border-ai)" }}>
-            87% confidence
-          </span>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4 mb-4">
-          <div className="plan-card original p-4 rounded-xl space-y-2" style={{ background: "var(--surface-tertiary)", borderLeft: `3px solid ${C.warning}`, border: `1px solid var(--border-subtle)` }}>
-            <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.warning }}>Original Plan</div>
-            <div className="text-base font-bold" style={{ color: "var(--text-primary)" }}>Tempo Run</div>
-            <div className="text-xs space-y-1" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>
-              <div>Duration: 45 min</div>
-              <div>Target HR: 158 bpm (Threshold)</div>
-              <div>TSS: 78 · Est Recovery: 36h</div>
-              <div>Caloric burn: ~520 kcal</div>
-            </div>
-            <div className="text-xs font-semibold flex items-center gap-1 mt-2" style={{ color: C.warning }}>
-              <AlertTriangle size={11} /> -30% Sat perf projected
-            </div>
-          </div>
-          <div className="p-4 rounded-xl space-y-2" style={{ background: "var(--surface-tertiary)", borderLeft: `3px solid ${C.optimal}`, border: "1px solid rgba(0,230,118,0.2)", boxShadow: "0 0 20px rgba(0,230,118,0.05)" }}>
-            <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.optimal }}>AI Optimized Plan</div>
-            <div className="text-base font-bold" style={{ color: "var(--text-primary)" }}>Zone 2 Endurance Run</div>
-            <div className="text-xs space-y-1" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>
-              <div>Duration: 60 min</div>
-              <div>Target HR: 135–148 bpm (Z2)</div>
-              <div>TSS: 52 · Est Recovery: 18h</div>
-              <div>Caloric burn: ~440 kcal</div>
-            </div>
-            <div className="text-xs font-semibold flex items-center gap-1 mt-2" style={{ color: C.optimal }}>
-              <Check size={11} /> Saturday fully preserved
-            </div>
-          </div>
-        </div>
-
-        {/* What-if comparison */}
-        <div className="p-4 rounded-xl mb-4" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-          <div className="text-xs font-bold uppercase tracking-widest mb-3" style={{ color: "var(--text-tertiary)" }}>48-Hour Projection</div>
-          <div className="grid grid-cols-3 gap-2 text-xs" style={{ fontFamily: "var(--font-mono)" }}>
-            <div className="font-bold" style={{ color: "var(--text-tertiary)" }}>Metric</div>
-            <div className="font-bold text-center" style={{ color: C.warning }}>Original</div>
-            <div className="font-bold text-center" style={{ color: C.optimal }}>AI Plan</div>
-            {[
-              ["Tomorrow Readiness", "41/100 🔴", "58/100 🟢"],
-              ["Saturday Perf", "61/100 🟡", "72/100 🟢"],
-              ["Injury Risk", "4.2/10 🟡", "1.8/10 🟢"],
-              ["Weekly TSS", "342 (high)", "316 (optimal)"],
-            ].map(([m, o, a]) => (
-              <>
-                <div key={`m-${m}`} style={{ color: "var(--text-secondary)" }}>{m}</div>
-                <div key={`o-${m}`} className="text-center" style={{ color: "var(--text-secondary)" }}>{o}</div>
-                <div key={`a-${m}`} className="text-center" style={{ color: "var(--text-secondary)" }}>{a}</div>
-              </>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex gap-3 flex-wrap">
-          {!aiAccepted ? (
-            <>
-              <button onClick={() => setAiAccepted(true)}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-all hover:opacity-90"
-                style={{ background: C.optimal, color: "#000" }}>
-                <Check size={14} /> Accept AI Optimization
-              </button>
-              <button className="px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-all hover:bg-white/5"
-                style={{ border: "1px solid var(--border-active)", color: "var(--text-secondary)" }}>
-                Force Original Plan
-              </button>
-            </>
-          ) : (
-            <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: C.optimal }}>
-              <Check size={16} /> AI Optimization Active — Zone 2 plan locked in
-            </div>
-          )}
-        </div>
-        <div className="mt-3 text-xs" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>
-          ⓘ You've accepted AI optimization in 4 of 6 recent suggestions. Weeks with &gt;80% compliance: +5.2% VO₂ Max improvement.
-        </div>
-      </div>
-
-      {/* VO2 Trajectory Chart */}
-      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: "var(--text-tertiary)" }}>VO₂ Max Trajectory</div>
-            <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Full Year View with AI Projection</div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowProjection(x => !x)}
-              className="text-xs font-bold px-3 py-1.5 rounded-lg transition-all hover:opacity-80"
-              style={{ background: showProjection ? "rgba(123,97,255,0.15)" : "var(--surface-quaternary)", color: showProjection ? C.sleep : "var(--text-tertiary)", border: "1px solid var(--border-subtle)" }}>
-              {showProjection ? "Hide" : "Show"} Projection
-            </button>
-          </div>
-        </div>
-        <ResponsiveContainer width="100%" height={240}>
-          <ComposedChart data={vo2TrajectoryData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-            <defs>
-              <linearGradient id="vo2AreaGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={C.cv} stopOpacity={0.25} />
-                <stop offset="100%" stopColor={C.cv} stopOpacity={0} />
-              </linearGradient>
-              <linearGradient id="predAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={C.sleep} stopOpacity={0.15} />
-                <stop offset="100%" stopColor={C.sleep} stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <XAxis dataKey="month" axisLine={false} tickLine={false}
-              tick={{ fill: C.textTertiary, fontSize: 11, fontFamily: "var(--font-mono)" }} />
-            <YAxis domain={[38, 58]} axisLine={false} tickLine={false}
-              tick={{ fill: C.textTertiary, fontSize: 11, fontFamily: "var(--font-mono)" }} />
-            <Tooltip
-              contentStyle={{ background: "var(--surface-floating)", border: "1px solid var(--border-active)", borderRadius: "10px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text-primary)" }}
-              labelStyle={{ color: "var(--text-secondary)" }}
-            />
-            {/* Reference bands */}
-            <ReferenceLine y={35} stroke={C.inactive} strokeDasharray="4 4" strokeWidth={1} label={{ value: "Fair", fill: C.textTertiary, fontSize: 10, position: "right" }} />
-            <ReferenceLine y={42} stroke={C.trends} strokeDasharray="4 4" strokeWidth={1} label={{ value: "Good", fill: C.textTertiary, fontSize: 10, position: "right" }} />
-            <ReferenceLine y={50} stroke={C.optimal} strokeDasharray="4 4" strokeWidth={1} label={{ value: "Superior", fill: C.textTertiary, fontSize: 10, position: "right" }} />
-            {/* Actual */}
-            <Area type="monotone" dataKey="actual" stroke={C.cv} strokeWidth={2.5} fill="url(#vo2AreaGrad)"
-              dot={{ r: 4, fill: C.cv, stroke: "var(--surface-primary)", strokeWidth: 2 }} name="Measured" />
-            {/* CI band */}
-            {showProjection && (
-              <Area type="monotone" dataKey="ci_high" stroke="none" fill="rgba(123,97,255,0.1)" name="CI High" />
-            )}
-            {/* Predicted */}
-            {showProjection && (
-              <Line type="monotone" dataKey="predicted" stroke={C.sleep} strokeWidth={2} strokeDasharray="6 3"
-                dot={{ r: 3, fill: C.sleep, stroke: "var(--surface-primary)", strokeWidth: 2 }} name="AI Predicted" />
-            )}
-          </ComposedChart>
-        </ResponsiveContainer>
-        {/* Trajectory Insights */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
-          {[
-            { l: "Current", v: "47.2", u: "ml/kg/min" },
-            { l: "Expected (P50)", v: "50.3", u: "by Dec" },
-            { l: "Best Case (P90)", v: "52.1", u: "by Dec" },
-            { l: "Conservative", v: "48.6", u: "by Dec" },
-          ].map(m => (
-            <div key={m.l} className="p-3 rounded-xl text-center" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-              <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: "var(--text-tertiary)" }}>{m.l}</div>
-              <div className="text-xl font-black" style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>{m.v}</div>
-              <div className="text-xs" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>{m.u}</div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* HR Zone Distribution */}
-      <ExpandableSection title="Heart Rate Zone Distribution" icon={Activity} defaultOpen={true} accentColor={C.cv}>
-        <div className="grid grid-cols-12 gap-4 mt-2">
-          <div className="col-span-12 lg:col-span-4">
-            <ResponsiveContainer width="100%" height={200}>
-              <PieChart>
-                <Pie data={[{ v: 28 }, { v: 35 }, { v: 22 }, { v: 12 }, { v: 3 }]}
-                  cx="50%" cy="50%" innerRadius={55} outerRadius={80}
-                  dataKey="v" startAngle={90} endAngle={-270}
-                >
-                  {["#4CAF50", "#2196F3", "#FF9800", "#F44336", "#9C27B0"].map((c, i) => (
-                    <Cell key={i} fill={c} />
-                  ))}
-                </Pie>
-                <Tooltip contentStyle={{ background: "var(--surface-floating)", border: "1px solid var(--border-active)", borderRadius: "10px", fontFamily: "var(--font-mono)", fontSize: "12px" }} />
-              </PieChart>
-            </ResponsiveContainer>
+      {/* ACWR Training Load */}
+      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--text-tertiary)" }}>Acute:Chronic Workload Ratio (ACWR)</div>
+            <div className="text-[11px] mt-0.5" style={{ color: "var(--text-secondary)" }}>Current ACWR: <span className="font-bold" style={{ color: C.optimal }}>1.15</span> — Optimal zone (0.8 – 1.3). Injury risk: LOW.</div>
           </div>
-          <div className="col-span-12 lg:col-span-8 space-y-3">
-            {[
-              { zone: 1 as const, label: "Zone 1 — Recovery", bpm: "<131", pct: 28, delta: "+2%", hours: "12h 36m", status: "✓" },
-              { zone: 2 as const, label: "Zone 2 — Endurance", bpm: "131–148", pct: 35, delta: "▼3%", hours: "15h 45m", status: "⚠" },
-              { zone: 3 as const, label: "Zone 3 — Tempo", bpm: "149–157", pct: 22, delta: "▼1%", hours: "9h 54m", status: "✓" },
-              { zone: 4 as const, label: "Zone 4 — Threshold", bpm: "158–169", pct: 12, delta: "+1%", hours: "5h 24m", status: "✓" },
-              { zone: 5 as const, label: "Zone 5 — Anaerobic", bpm: ">170", pct: 3, delta: "+1%", hours: "1h 21m", status: "✓" },
-            ].map(z => (
-              <div key={z.zone} className="p-3 rounded-xl" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-                <div className="flex justify-between items-center mb-1.5 text-xs font-bold" style={{ fontFamily: "var(--font-mono)" }}>
-                  <span style={{ color: "var(--text-secondary)" }}>{z.label} ({z.bpm} bpm)</span>
-                  <span style={{ color: "var(--text-tertiary)" }}>{z.hours} · {z.delta}</span>
-                </div>
-                <ZoneBar pct={z.pct} zone={z.zone} />
-                <div className="mt-1 text-xs" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>
-                  {z.pct}% total · {z.status}
-                </div>
-              </div>
-            ))}
-          </div>
+          <div className="text-[10px] px-2 py-1 rounded-lg font-bold" style={{ background: "rgba(5,150,105,0.1)", color: C.optimal, border: "1px solid rgba(5,150,105,0.2)" }}>LOW RISK</div>
         </div>
-        {/* Weekly zone stacked bar */}
-        <div className="mt-4">
-          <div className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-tertiary)" }}>Weekly Zone Trend — Last 12 Weeks</div>
-          <ResponsiveContainer width="100%" height={120}>
-            <BarChart data={weeklyZoneData} margin={{ top: 4, right: 0, left: -20, bottom: 0 }}>
-              <XAxis dataKey="week" axisLine={false} tickLine={false} tick={{ fill: C.textTertiary, fontSize: 10, fontFamily: "var(--font-mono)" }} />
-              <Tooltip contentStyle={{ background: "var(--surface-floating)", border: "1px solid var(--border-active)", borderRadius: "10px", fontFamily: "var(--font-mono)", fontSize: "12px" }} />
-              <Bar dataKey="z1" stackId="a" fill="#4CAF50" name="Z1" />
-              <Bar dataKey="z2" stackId="a" fill="#2196F3" name="Z2" />
-              <Bar dataKey="z3" stackId="a" fill="#FF9800" name="Z3" />
-              <Bar dataKey="z4" stackId="a" fill="#F44336" name="Z4" />
-              <Bar dataKey="z5" stackId="a" fill="#9C27B0" name="Z5" radius={[2, 2, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </ExpandableSection>
-
-      {/* CTL/ATL Chart */}
-      <ExpandableSection title="Training Load & Recovery (42-day rolling)" icon={BarChart2} accentColor={C.trends}>
-        <div className="mt-2">
-          <ResponsiveContainer width="100%" height={200}>
-            <ComposedChart data={ctlAtlData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+        <div className="h-[160px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={acwrData} margin={{ top: 8, right: 10, left: -20, bottom: 0 }}>
               <defs>
-                <linearGradient id="ctlGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={C.optimal} stopOpacity={0.3} />
-                  <stop offset="100%" stopColor={C.optimal} stopOpacity={0} />
+                <linearGradient id="acwrGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={C.nutrition} stopOpacity={0.15}/>
+                  <stop offset="95%" stopColor={C.nutrition} stopOpacity={0}/>
                 </linearGradient>
               </defs>
-              <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: C.textTertiary, fontSize: 10, fontFamily: "var(--font-mono)" }} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: C.textTertiary, fontSize: 10, fontFamily: "var(--font-mono)" }} />
-              <Tooltip contentStyle={{ background: "var(--surface-floating)", border: "1px solid var(--border-active)", borderRadius: "10px", fontFamily: "var(--font-mono)", fontSize: "12px" }} />
-              <ReferenceLine y={0} stroke={C.border} strokeWidth={1} />
-              <Area type="monotone" dataKey="ctl" stroke={C.optimal} strokeWidth={2} fill="url(#ctlGrad)" name="CTL (Fitness)" />
-              <Line type="monotone" dataKey="atl" stroke={C.cv} strokeWidth={2} strokeDasharray="5 3" dot={false} name="ATL (Fatigue)" />
-              <Line type="monotone" dataKey="tsb" stroke={C.sleep} strokeWidth={1.5} strokeDasharray="3 3" dot={false} name="TSB (Balance)" />
+              {/* Optimal zone band */}
+              <ReferenceLine y={1.3} stroke={C.warning} strokeDasharray="4 3" strokeWidth={1.5} label={{ value: "1.3 Upper", position: "right", fontSize: 9, fill: C.warning }} />
+              <ReferenceLine y={0.8} stroke={C.trends} strokeDasharray="4 3" strokeWidth={1.5} label={{ value: "0.8 Lower", position: "right", fontSize: 9, fill: C.trends }} />
+              <XAxis dataKey="week" stroke="var(--text-tertiary)" fontSize={11} tickLine={false} axisLine={false} />
+              <YAxis domain={[0.5, 1.6]} stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} />
+              <Tooltip formatter={(v: number) => v.toFixed(2)} contentStyle={{ background: "var(--surface-secondary)", border: "1px solid var(--border-subtle)", borderRadius: "8px", fontSize: 12 }} />
+              <Area type="monotone" dataKey="acwr" stroke={C.nutrition} strokeWidth={2.5} fill="url(#acwrGrad)" dot={{ r: 4, fill: C.nutrition, stroke: "#fff", strokeWidth: 2 }} />
             </ComposedChart>
           </ResponsiveContainer>
-          <div className="grid grid-cols-3 gap-3 mt-3">
-            {[
-              { label: "CTL (Fitness)", val: "72", color: C.optimal, note: "Building" },
-              { label: "ATL (Fatigue)", val: "64", color: C.cv, note: "Current load" },
-              { label: "TSB (Balance)", val: "-8", color: C.sleep, note: "Optimal zone" },
-            ].map(m => (
-              <div key={m.label} className="p-3 rounded-xl text-center" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-                <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: "var(--text-tertiary)" }}>{m.label}</div>
-                <div className="text-2xl font-black" style={{ fontFamily: "var(--font-mono)", color: m.color }}>{m.val}</div>
-                <div className="text-xs mt-0.5" style={{ color: "var(--text-tertiary)" }}>{m.note}</div>
-              </div>
-            ))}
-          </div>
         </div>
-      </ExpandableSection>
-
-      {/* Session Log */}
-      <div className="card-surface overflow-hidden" style={{ borderRadius: "var(--radius-xl)" }}>
-        <div className="p-5 border-b" style={{ borderColor: "var(--border-subtle)" }}>
-          <div className="flex items-center justify-between flex-wrap gap-3">
-            <div>
-              <div className="text-xs font-bold uppercase tracking-widest mb-0.5" style={{ color: "var(--text-tertiary)" }}>Cardio Session Log</div>
-              <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Last 7 Sessions</div>
-            </div>
-            <div className="flex items-center gap-2 text-xs" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)", borderRadius: "var(--radius-md)", padding: "6px 10px", color: "var(--text-tertiary)" }}>
-              <Search size={12} /> Search sessions...
-            </div>
-          </div>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Type</th>
-                <th>Dur</th>
-                <th>Dist</th>
-                <th>Avg HR</th>
-                <th>TSS</th>
-                <th>Zones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sessionLog.map((s, i) => (
-                <>
-                  <tr key={i} onClick={() => setExpandedSession(expandedSession === i ? null : i)}>
-                    <td style={{ color: "var(--text-primary)", fontWeight: 600 }}>{s.date}</td>
-                    <td style={{ color: "var(--text-secondary)" }}>{s.type}</td>
-                    <td>{s.dur}</td>
-                    <td>{s.dist}</td>
-                    <td style={{ color: s.avgHR > 155 ? C.cv : s.avgHR > 140 ? C.warning : C.optimal }}>{s.avgHR}</td>
-                    <td>{s.tss}</td>
-                    <td><ZoneMiniBar zones={s.zones} /></td>
-                  </tr>
-                  {expandedSession === i && (
-                    <tr key={`exp-${i}`}>
-                      <td colSpan={7} style={{ padding: 0 }}>
-                        <motion.div
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: "auto", opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.3 }}
-                          className="p-4 m-2 rounded-xl"
-                          style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-active)" }}
-                        >
-                          <div className="flex items-center justify-between mb-3">
-                            <div className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>Session Detail — {s.date} · {s.type}</div>
-                            <button onClick={() => setExpandedSession(null)} style={{ color: "var(--text-tertiary)" }}>
-                              <X size={14} />
-                            </button>
-                          </div>
-                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-                            {[
-                              { l: "Duration", v: s.dur },
-                              { l: "Distance", v: s.dist },
-                              { l: "Avg HR", v: `${s.avgHR} bpm` },
-                              { l: "TSS", v: String(s.tss) },
-                            ].map(m => (
-                              <div key={m.l} className="p-2 rounded-lg" style={{ background: "var(--surface-quaternary)" }}>
-                                <div className="text-xs font-bold uppercase tracking-widest mb-0.5" style={{ color: "var(--text-tertiary)" }}>{m.l}</div>
-                                <div className="text-base font-bold" style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>{m.v}</div>
-                              </div>
-                            ))}
-                          </div>
-                          <div className="text-xs p-3 rounded-xl" style={{ background: "var(--ai-surface)", border: "1px solid var(--border-ai)", color: "var(--text-secondary)", fontFamily: "var(--font-mono)", lineHeight: 1.8 }}>
-                            <span style={{ color: C.sleep }}>🧠 AI: </span>
-                            Pacing consistent through rep 4, minor fade at rep 5 (+5 sec/km). HR drift indicates incomplete recovery between later intervals. Recommendation: extend recovery intervals by 30s or cap at 4 reps until HRR improves. Running economy trending positively → biomechanical efficiency improving.
-                          </div>
-                        </motion.div>
-                      </td>
-                    </tr>
-                  )}
-                </>
-              ))}
-            </tbody>
-          </table>
+        <div className="mt-3 p-3 rounded-xl" style={{ background: "rgba(91,66,232,0.04)", border: "1px solid rgba(91,66,232,0.12)" }}>
+          <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+            <Brain size={11} className="inline mr-1" style={{ color: "var(--accent-sleep)" }} />
+            <span className="font-bold" style={{ color: "var(--accent-sleep)" }}>AI Recommendation: </span>
+            Maintain current load for 1 more week then deload (Week 4 of mesocycle). Chest volume ↑40% this week — monitor recovery.
+          </span>
         </div>
       </div>
 
-      {/* AI Insight */}
-      {!dismissInsight && (
-        <AIInsightCard title="VO₂ Max Acceleration Detected" confidence={87} onDismiss={() => setDismissInsight(true)}>
-          Your VO₂ Max improvement is accelerating. The last 30 days show <strong style={{ color: C.optimal }}>+0.8 ml/kg/min</strong> vs +0.4 in the previous period. This correlates with increased Zone 2 volume (+22%), improved sleep consistency (bedtime variance ↓18 min), and higher AI protocol compliance (67% → 80%). At current trajectory, you reach <strong style={{ color: C.cv }}>50.0 ml/kg/min by December</strong> — 6 weeks ahead of conservative estimate.
-          <div className="mt-3 space-y-1">
-            {[
-              "• Maintain Zone 2 volume — primary driver",
-              "• HRV trend positive — continue current recovery",
-              "• Consider: add VO₂ Max interval if plateau detected",
-              "• Watch: TSB approaching -10, monitor fatigue",
-            ].map(a => <div key={a} className="text-xs" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>{a}</div>)}
+      {/* HR Zone Polarization */}
+      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--text-tertiary)" }}>HR Zone Distribution (Last 30 Days)</div>
+            <div className="text-[11px] mt-0.5" style={{ color: "var(--text-secondary)" }}>Current: 40% Easy / 35% Moderate / 25% Hard — Optimal polarized: 80%/20%</div>
           </div>
-        </AIInsightCard>
-      )}
+          <div className="text-[10px] px-2 py-1 rounded-lg font-bold" style={{ background: "rgba(217,119,6,0.1)", color: C.warning, border: "1px solid rgba(217,119,6,0.2)" }}>⚠ NOT POLARIZED</div>
+        </div>
+        <div className="space-y-3">
+          {hrPolarData.map(z => {
+            const isOver = z.pct > z.target * 1.5;
+            const barColor = isOver ? C.warning : z.color;
+            return (
+              <div key={z.zone}>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2.5 h-2.5 rounded-sm" style={{ background: z.color }} />
+                    <span className="font-bold" style={{ color: "var(--text-secondary)" }}>{z.zone}</span>
+                    {isOver && <span className="text-[10px] font-bold" style={{ color: C.warning }}>⚠ High</span>}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span style={{ color: "var(--text-tertiary)" }}>Target {z.target}%</span>
+                    <span className="font-black font-mono" style={{ color: isOver ? C.warning : z.color }}>{z.pct}%</span>
+                  </div>
+                </div>
+                <div className="relative h-2 rounded-full overflow-hidden" style={{ background: "var(--border-subtle)" }}>
+                  <motion.div className="h-full rounded-full" style={{ background: barColor }}
+                    initial={{ width: 0 }} animate={{ width: `${z.pct}%` }}
+                    transition={{ duration: 0.8, ease: [0,0,0.2,1] }} />
+                  {/* Target marker */}
+                  <div className="absolute top-0 bottom-0 w-0.5" style={{ left: `${z.target}%`, background: "rgba(0,0,0,0.35)" }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-3 p-3 rounded-xl" style={{ background: "rgba(217,119,6,0.05)", border: "1px solid rgba(217,119,6,0.2)" }}>
+          <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+            🟡 Too much Zone 3 (tempo) relative to the polarized model. Shift 2–3 moderate sessions/week to easy Z2 or high-intensity Z4–5 to maximize VO₂ adaptations.
+          </span>
+        </div>
+      </div>
     </div>
   );
 }
 
 // ─── Tab: Sleep Architecture ─────────────────────────────────────
-function SleepTab({ protocolApplied, setProtocolApplied }: { protocolApplied: boolean; setProtocolApplied: (v: boolean) => void }) {
+function SleepTab({ latestMetrics, timeFilter }: { latestMetrics: any, timeFilter: string }) {
+  if (!latestMetrics || !latestMetrics.sleep_duration_minutes) {
+    return <EmptyState message="No sleep telemetry found. Connect Apple Health or Oura via Telegram." icon={Moon} />;
+  }
+
+  const baseSleepDebtData = [
+    { day: "Mon", debt: 0.5, accumulated: 0.5 },
+    { day: "Tue", debt: 1.2, accumulated: 1.7 },
+    { day: "Wed", debt: -0.2, accumulated: 1.5 },
+    { day: "Thu", debt: 2.0, accumulated: 3.5 },
+    { day: "Fri", debt: 0.8, accumulated: 4.3 },
+    { day: "Sat", debt: -1.5, accumulated: 2.8 },
+    { day: "Sun", debt: 1.0, accumulated: 3.8 },
+  ];
+  
+  const sleepDebtData = timeFilter === "day" ? baseSleepDebtData.slice(-1) :
+                        timeFilter === "week" ? baseSleepDebtData.slice(-3) :
+                        baseSleepDebtData;
+
+  const totalMin = latestMetrics.sleep_duration_minutes ?? 468;
+  const deepMin  = latestMetrics.sleep_deep_minutes ?? 126;
+  const remMin   = latestMetrics.sleep_rem_minutes  ?? 108;
+  const lightMin = Math.max(0, totalMin - deepMin - remMin);
+  const awakeMin = Math.max(0, totalMin - deepMin - remMin - lightMin);
+
+  const fmt = (m: number) => `${Math.floor(m/60)}h ${m%60}m`;
+
+  // Sleep debt: compare to 8h target over 7 days (mock 7-day history)
+  const sleepDebtHours = 2.3; // mock
+  const debtPercent = Math.min(100, (sleepDebtHours / 8) * 100);
+
+  const stages = [
+    { label: "Deep Sleep",  min: deepMin,  pct: Math.round(deepMin/totalMin*100),  color: "#5B42E8", target: 20 },
+    { label: "REM Sleep",   min: remMin,   pct: Math.round(remMin/totalMin*100),   color: "#E03535", target: 20 },
+    { label: "Light Sleep", min: lightMin, pct: Math.round(lightMin/totalMin*100), color: "#3b82f6", target: 50 },
+    { label: "Awake",       min: awakeMin, pct: Math.round(awakeMin/totalMin*100), color: "#94A3B8", target: 5  },
+  ];
+
   return (
     <div className="space-y-5">
-      {/* Hero: Sleep Score + Drift */}
-      <div className="grid grid-cols-12 gap-4">
-        {/* Sleep Score */}
-        <div className="col-span-12 lg:col-span-5 card-surface p-6" style={{ borderRadius: "var(--radius-xl)", boxShadow: "0 0 30px rgba(123,97,255,0.12)" }}>
-          <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Sleep Score · Last Night</div>
-          <div className="flex flex-col items-center mb-4">
-            <SleepScoreDonut score={84} />
-          </div>
-          <div className="space-y-2">
-            {[
-              { label: "Duration", val: "7h 42m", score: 92 },
-              { label: "Deep Sleep", val: "1h 48m", score: 90 },
-              { label: "REM Sleep", val: "2h 12m", score: 88 },
-              { label: "Efficiency", val: "94%", score: 94 },
-              { label: "Latency", val: "8 min", score: 100 },
-              { label: "Consistency", val: "72%", score: 72 },
-            ].map(c => (
-              <div key={c.label} className="flex items-center gap-3">
-                <span className="text-xs w-24 shrink-0" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>{c.label}</span>
-                <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--surface-quaternary)" }}>
-                  <motion.div className="h-full rounded-full" style={{ background: c.score >= 85 ? C.optimal : c.score >= 70 ? C.sleep : C.warning }}
-                    initial={{ width: 0 }} animate={{ width: `${c.score}%` }} transition={{ duration: 0.8, ease: [0, 0, 0.2, 1] }} />
-                </div>
-                <span className="text-xs w-14 text-right" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>{c.val}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Chronotype Drift */}
-        <div className="col-span-12 lg:col-span-7 card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-          <div className="flex items-center justify-between mb-1">
-            <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--text-tertiary)" }}>Chronotype Drift Analysis</div>
-            <span className="protocol-badge warning">⚠ +47 min drift</span>
-          </div>
-          <div className="text-sm font-semibold mb-4" style={{ color: "var(--text-primary)" }}>Sleep Onset — Last 14 Nights</div>
-          <ResponsiveContainer width="100%" height={180}>
-            <ComposedChart data={sleepOnsetData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-              <defs>
-                <linearGradient id="onsetGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={C.sleep} stopOpacity={0.3} />
-                  <stop offset="100%" stopColor={C.sleep} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: C.textTertiary, fontSize: 10, fontFamily: "var(--font-mono)" }} interval={2} />
-              <YAxis domain={[22, 26]} axisLine={false} tickLine={false}
-                tickFormatter={v => v > 24 ? `${Math.round((v - 24) * 60)}m AM` : `${24 - v}h PM`}
-                tick={{ fill: C.textTertiary, fontSize: 10, fontFamily: "var(--font-mono)" }} />
-              <Tooltip contentStyle={{ background: "var(--surface-floating)", border: "1px solid var(--border-active)", borderRadius: "10px", fontFamily: "var(--font-mono)", fontSize: "12px" }} />
-              <ReferenceLine y={23.25} stroke={protocolApplied ? C.optimal : C.sleep} strokeDasharray="5 3" strokeWidth={1.5} label={{ value: "AI Lock Target", fill: C.sleep, fontSize: 9 }} />
-              <Area type="monotone" dataKey="onset" stroke={C.sleep} strokeWidth={2} fill="url(#onsetGrad)"
-                dot={(p: any) => <circle key={p.key} cx={p.cx} cy={p.cy} r={3} fill={p.payload.onset > 24 ? C.cv : C.sleep} stroke="var(--surface-primary)" strokeWidth={1.5} />}
-                name="Sleep Onset" />
-            </ComposedChart>
-          </ResponsiveContainer>
-          <div className="mt-4 p-4 rounded-xl" style={{ background: "rgba(255,23,68,0.05)", border: "1px solid rgba(255,23,68,0.15)" }}>
-            <div className="flex items-center gap-2 mb-2">
-              <AlertTriangle size={14} style={{ color: C.critical }} />
-              <span className="text-xs font-bold uppercase tracking-widest" style={{ color: C.critical }}>Drift Status: Approaching Danger Zone</span>
-            </div>
-            <p className="text-xs leading-relaxed mb-3" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>
-              Sleep onset drifted +47 min over 14 days (11:00 PM → 1:24 AM). Deep sleep peaks shifting laterally. Circadian misalignment risk rising. Protocol recommended.
-            </p>
-            {!protocolApplied ? (
-              <button onClick={() => setProtocolApplied(true)}
-                className="text-xs font-bold uppercase tracking-widest px-4 py-2 rounded-xl transition-all hover:opacity-90"
-                style={{ background: C.sleep, color: "#fff" }}>
-                Apply Phase Advance Protocol
-              </button>
-            ) : (
-              <div className="flex items-center gap-2 text-xs font-bold" style={{ color: C.optimal }}>
-                <Check size={12} /> Phase Advance Protocol Active — Day 1/5
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Sleep Stage Breakdown */}
-      <ExpandableSection title="Sleep Stage Distribution — 7 Nights" icon={Moon} defaultOpen={true} accentColor={C.sleep}>
-        <div className="mt-2">
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={sleepStageData} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
-              <XAxis dataKey="night" axisLine={false} tickLine={false} tick={{ fill: C.textTertiary, fontSize: 11, fontFamily: "var(--font-mono)" }} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: C.textTertiary, fontSize: 11, fontFamily: "var(--font-mono)" }} />
-              <Tooltip contentStyle={{ background: "var(--surface-floating)", border: "1px solid var(--border-active)", borderRadius: "10px", fontFamily: "var(--font-mono)", fontSize: "12px" }} />
-              <Bar dataKey="deep" stackId="a" fill="#1a1049" name="Deep" />
-              <Bar dataKey="rem" stackId="a" fill={C.sleep} name="REM" />
-              <Bar dataKey="light" stackId="a" fill="#4B3F9E" name="Light" />
-              <Bar dataKey="awake" stackId="a" fill={C.border} name="Awake" radius={[2, 2, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-          <div className="grid grid-cols-4 gap-3 mt-3">
-            {[
-              { label: "Deep Sleep", val: "1h 48m", pct: "23%", color: "#1a1049", target: "20-25%" },
-              { label: "REM Sleep", val: "2h 12m", pct: "29%", color: C.sleep, target: "20-25%" },
-              { label: "Light Sleep", val: "3h 24m", pct: "44%", color: "#4B3F9E", target: "45-55%" },
-              { label: "Awake", val: "18 min", pct: "4%", color: C.border, target: "<5%" },
-            ].map(s => (
-              <div key={s.label} className="p-3 rounded-xl" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-                <div className="flex items-center gap-1.5 mb-2">
-                  <div className="w-2.5 h-2.5 rounded-sm" style={{ background: s.color }} />
-                  <span className="text-xs font-bold" style={{ color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{s.label}</span>
-                </div>
-                <div className="text-lg font-black" style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>{s.val}</div>
-                <div className="text-xs mt-0.5" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>{s.pct} · target {s.target}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </ExpandableSection>
-
-      {/* Sleep Debt & Recovery */}
-      <ExpandableSection title="Sleep Debt & Recovery Tracking" icon={Clock} accentColor={C.warning}>
-        <div className="grid grid-cols-3 gap-4 mt-2">
+      {/* Header metrics */}
+      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+        <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Sleep Architecture</div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
           {[
-            { label: "Sleep Debt", val: "-1.2h", color: C.warning, note: "Accumulated this week" },
-            { label: "Avg Duration", val: "7.4h", color: C.sleep, note: "vs 8h target" },
-            { label: "Consistency", val: "72%", color: C.trends, note: "Bedtime variance ±42min" },
+            { label: "Total Sleep",  val: fmt(totalMin), delta: "+0.3h", color: C.sleep    },
+            { label: "Deep Sleep",   val: fmt(deepMin),  delta: "+0.4h", color: "#5B42E8" },
+            { label: "REM Sleep",    val: fmt(remMin),   delta: "−0.1h", color: C.cv       },
+            { label: "Efficiency",   val: "92%",         delta: "+2%",   color: C.optimal  },
           ].map(m => (
-            <div key={m.label} className="p-4 rounded-xl text-center" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-              <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: "var(--text-tertiary)" }}>{m.label}</div>
-              <div className="text-3xl font-black" style={{ fontFamily: "var(--font-mono)", color: m.color }}>{m.val}</div>
-              <div className="text-xs mt-1" style={{ color: "var(--text-tertiary)" }}>{m.note}</div>
+            <div key={m.label} className="p-4 rounded-xl" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+              <div className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-tertiary)" }}>{m.label}</div>
+              <div className="text-2xl font-black" style={{ fontFamily: "var(--font-mono)", color: m.color, lineHeight: 1 }}>{m.val}</div>
+              <div className="text-[10px] font-bold mt-1" style={{ color: m.delta.startsWith("+") ? C.optimal : C.warning }}>{m.delta}</div>
             </div>
           ))}
         </div>
-      </ExpandableSection>
 
-      {/* AI Sleep Insight */}
-      <AIInsightCard title="Circadian Phase Delay Detected" confidence={91}>
-        Sleep onset has drifted <strong style={{ color: C.warning }}>+47 minutes</strong> over 14 days. Deep sleep latency is increasing, and REM pressure is building. Root cause: consistent late light exposure and irregular meal timing. The Phase Advance Protocol (5-day gradual advance of 10 min/night) has a 94% success rate in your chronotype cohort.
-        <div className="mt-3 space-y-1">
-          {[
-            "• Tonight: Target bedtime 1:15 AM → 1:00 AM",
-            "• Shift final meal to 7:30 PM (90 min earlier)",
-            "• Blue light block: 10:00 PM start",
-            "• Morning anchor: alarm 7:30 AM regardless of sleep time",
-          ].map(a => <div key={a} className="text-xs" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>{a}</div>)}
+        {/* Stage breakdown bars */}
+        <div className="text-[10px] font-bold uppercase tracking-widest mb-3" style={{ color: "var(--text-tertiary)" }}>Stage Breakdown</div>
+        <div className="space-y-3">
+          {stages.map(s => (
+            <div key={s.label}>
+              <div className="flex items-center justify-between text-[11px] mb-1">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-sm" style={{ background: s.color }} />
+                  <span className="font-bold" style={{ color: "var(--text-secondary)" }}>{s.label}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span style={{ color: "var(--text-tertiary)" }}>Target {s.target}%</span>
+                  <span className="font-black font-mono" style={{ color: s.color }}>{fmt(s.min)} ({s.pct}%)</span>
+                </div>
+              </div>
+              <div className="relative h-2 rounded-full overflow-hidden" style={{ background: "var(--border-subtle)" }}>
+                <motion.div className="h-full rounded-full" style={{ background: s.color }}
+                  initial={{ width: 0 }} animate={{ width: `${s.pct}%` }}
+                  transition={{ duration: 0.8, ease: [0,0,0.2,1] }} />
+                <div className="absolute top-0 bottom-0 w-0.5" style={{ left: `${s.target}%`, background: "rgba(0,0,0,0.3)" }} />
+              </div>
+            </div>
+          ))}
         </div>
-      </AIInsightCard>
+      </div>
+
+      {/* Sleep Debt Tracker */}
+      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--text-tertiary)" }}>7-Day Sleep Debt</div>
+            <div className="text-[11px] mt-0.5" style={{ color: "var(--text-secondary)" }}>Cumulative deficit vs 8h/night target</div>
+          </div>
+          <div className="text-[10px] px-2 py-1 rounded-lg font-bold" style={{ background: "rgba(217,119,6,0.1)", color: C.warning, border: "1px solid rgba(217,119,6,0.2)" }}>⚠ 2.3h DEBT</div>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="flex-1">
+            <div className="h-3 rounded-full overflow-hidden" style={{ background: "var(--border-subtle)" }}>
+              <motion.div className="h-full rounded-full"
+                style={{ background: `linear-gradient(90deg, ${C.sleep}, ${C.warning})` }}
+                initial={{ width: 0 }} animate={{ width: `${debtPercent}%` }}
+                transition={{ duration: 1, ease: [0,0,0.2,1] }} />
+            </div>
+            <div className="flex justify-between text-[10px] mt-1" style={{ color: "var(--text-tertiary)" }}>
+              <span>0h deficit</span>
+              <span>8h max deficit</span>
+            </div>
+          </div>
+          <div className="text-right shrink-0">
+            <div className="text-2xl font-black" style={{ fontFamily: "var(--font-mono)", color: C.warning }}>{sleepDebtHours}h</div>
+            <div className="text-[10px]" style={{ color: "var(--text-tertiary)" }}>accumulated</div>
+          </div>
+        </div>
+        <div className="mt-3 p-3 rounded-xl" style={{ background: "rgba(217,119,6,0.05)", border: "1px solid rgba(217,119,6,0.18)" }}>
+          <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+            🟡 Sleep onset drifting 45 min later over past 7 days (avg 12:15 AM vs baseline 11:30 PM). Consider 10:30 PM screen cutoff rule.
+          </span>
+        </div>
+      </div>
+
+      {/* Cross-domain correlation callout */}
+      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+        <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Cross-Domain Correlations</div>
+        <div className="space-y-3">
+          {[
+            { label: "Sleep Quality → Trading P&L",         r: 0.82, p: "0.004", finding: "High-sleep days: avg P&L +$340 vs -$127 on poor-sleep days.",            color: C.optimal },
+            { label: "Dinner Protein >40g → Deep Sleep",    r: 0.41, p: "0.039", finding: "Evenings with >40g protein produce 2.3h avg deep sleep (+0.6h).",          color: C.nutrition },
+            { label: "Dining Out Frequency → Sleep Onset", r:-0.52, p: "0.014", finding: ">3× dining out/week → 45-min later sleep onset & −0.8h deep sleep.",    color: C.warning },
+          ].map(c => (
+            <div key={c.label} className="flex items-start gap-3 p-3 rounded-xl"
+              style={{ background: `${c.color}07`, border: `1px solid ${c.color}20` }}>
+              <div className="text-sm font-black font-mono shrink-0 mt-0.5" style={{ color: c.color }}>{c.r > 0 ? "+" : ""}{c.r.toFixed(2)}</div>
+              <div className="flex-1">
+                <div className="text-xs font-bold" style={{ color: "var(--text-primary)" }}>{c.label}</div>
+                <div className="text-[11px] mt-0.5" style={{ color: "var(--text-secondary)" }}>{c.finding}</div>
+                <div className="text-[10px] mt-0.5 font-mono" style={{ color: "var(--text-tertiary)" }}>p={c.p}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
 
 // ─── Tab: Fuel (Nutrition) ───────────────────────────────────────
-function FuelTab() {
-  const totalKcal = mealLog.reduce((s, m) => s + m.kcal, 0);
-  const targetKcal = 2800;
-  const [selectedMeal, setSelectedMeal] = useState<number | null>(null);
+// Legacy FuelTab removed and abstracted to components/health/FuelTab.tsx
+
+// ─── Workout Templates Manager ───────────────────────────────────────
+function WorkoutTemplatesManager() {
+  const [name, setName] = useState("");
+  const [exercises, setExercises] = useState([{ name: "", sets: 3, reps: 10, weight: 0 }]);
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const handleSave = async () => {
+    if (!name) return;
+    setLoading(true);
+    setMsg("");
+    try {
+      const supabase = createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      );
+      
+      const { data: profile } = await supabase.from("user_profiles").select("user_id").limit(1).single();
+      const user_id = profile?.user_id || "00000000-0000-0000-0000-000000000000";
+
+      const { data: tmpl, error: tmplErr } = await supabase.from("workout_templates").insert({ name, user_id }).select().single();
+      if (tmplErr) throw tmplErr;
+
+      const exPayloads = exercises.map((ex, i) => ({
+        template_id: tmpl.id,
+        user_id,
+        exercise_name: ex.name,
+        sets: ex.sets,
+        reps: ex.reps,
+        weight: ex.weight,
+        order_index: i
+      }));
+
+      const { error: exErr } = await supabase.from("workout_template_exercises").insert(exPayloads);
+      if (exErr) throw exErr;
+
+      setMsg("Template saved!");
+      setName("");
+      setExercises([{ name: "", sets: 3, reps: 10, weight: 0 }]);
+    } catch (e: any) {
+      setMsg("Error: " + e.message);
+    }
+    setLoading(false);
+  };
 
   return (
-    <div className="space-y-5">
-      {/* Macro Overview */}
-      <div className="grid grid-cols-12 gap-4">
-        <div className="col-span-12 lg:col-span-5 card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-          <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Today · Dynamic Targets</div>
-
-          <div className="flex items-end gap-2 mb-4">
-            <span className="text-4xl font-black" style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>{totalKcal}</span>
-            <span className="text-sm mb-1.5" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>/ {targetKcal} kcal</span>
-          </div>
-
-          {/* Calorie progress */}
-          <div className="mb-5">
-            <div className="h-2.5 rounded-full overflow-hidden" style={{ background: "var(--surface-quaternary)" }}>
-              <motion.div className="h-full rounded-full"
-                style={{ background: `linear-gradient(90deg, ${C.nutrition}, ${C.trends})` }}
-                initial={{ width: 0 }} animate={{ width: `${Math.min(totalKcal / targetKcal * 100, 100)}%` }}
-                transition={{ duration: 1, ease: [0, 0, 0.2, 1] }} />
-            </div>
-            <div className="flex justify-between text-xs mt-1" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>
-              <span>{totalKcal} eaten</span><span>{targetKcal - totalKcal} remaining</span>
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            {macroData.map(m => (
-              <div key={m.name}>
-                <div className="flex justify-between text-xs mb-1.5 font-semibold" style={{ fontFamily: "var(--font-mono)" }}>
-                  <span style={{ color: "var(--text-secondary)" }}>{m.name}</span>
-                  <span style={{ color: "var(--text-tertiary)" }}>{m.value}g / {m.target}g</span>
-                </div>
-                <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--surface-quaternary)" }}>
-                  <motion.div className="h-full rounded-full"
-                    style={{ background: m.color }}
-                    initial={{ width: 0 }}
-                    animate={{ width: `${Math.min(m.value / m.target * 100, 100)}%` }}
-                    transition={{ duration: 0.8, ease: [0, 0, 0.2, 1] }} />
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* AI Rollover Banner */}
-          <div className="mt-4 p-3 rounded-xl" style={{ background: "rgba(255,140,66,0.08)", border: "1px solid rgba(255,140,66,0.25)" }}>
-            <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: C.kinematic }}>🔥 AI Macro Rollover Active</div>
-            <div className="text-xs leading-relaxed" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>
-              Yesterday's -380 kcal deficit → +60g Carbs added to today's pre-workout window to prevent catabolism.
-            </div>
-          </div>
+    <div className="card-surface p-5 mb-5" style={{ borderRadius: "var(--radius-xl)" }}>
+      <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Create Workout Template</div>
+      <div className="space-y-4">
+        <div>
+          <label className="text-xs font-bold" style={{ color: "var(--text-secondary)" }}>Template Name</label>
+          <input 
+            value={name} 
+            onChange={e => setName(e.target.value)} 
+            placeholder="e.g. Chest Workout" 
+            className="w-full bg-slate-50 border border-slate-200 p-2 rounded-lg text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/20" 
+          />
         </div>
-
-        {/* Macro Chart */}
-        <div className="col-span-12 lg:col-span-3 card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-          <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Macro Split</div>
-          <ResponsiveContainer width="100%" height={200}>
-            <PieChart>
-              <Pie data={macroData} cx="50%" cy="50%" innerRadius={50} outerRadius={75} dataKey="value" nameKey="name">
-                {macroData.map((m, i) => <Cell key={i} fill={m.color} />)}
-              </Pie>
-              <Tooltip contentStyle={{ background: "var(--surface-floating)", border: "1px solid var(--border-active)", borderRadius: "10px", fontFamily: "var(--font-mono)", fontSize: "12px" }} />
-            </PieChart>
-          </ResponsiveContainer>
-          <div className="space-y-1.5 mt-2">
-            {macroData.map(m => (
-              <div key={m.name} className="flex items-center gap-2 text-xs" style={{ fontFamily: "var(--font-mono)" }}>
-                <div className="w-2 h-2 rounded-sm shrink-0" style={{ background: m.color }} />
-                <span style={{ color: "var(--text-secondary)" }}>{m.name}</span>
-                <span className="ml-auto" style={{ color: "var(--text-tertiary)" }}>{Math.round(m.value / macroData.reduce((s, x) => s + x.value, 0) * 100)}%</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Micronutrients */}
-        <div className="col-span-12 lg:col-span-4 card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-          <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Micronutrient Status</div>
-          <div className="space-y-3">
-            {[
-              { name: "Vitamin D", val: 78, color: C.warning, status: "Low" },
-              { name: "Omega-3", val: 115, color: C.nutrition, status: "Optimal" },
-              { name: "Magnesium", val: 92, color: C.sleep, status: "Good" },
-              { name: "Zinc", val: 87, color: C.trends, status: "Good" },
-              { name: "B12", val: 140, color: C.optimal, status: "Excess" },
-              { name: "Iron", val: 65, color: C.cv, status: "Moderate" },
-            ].map(m => (
-              <div key={m.name}>
-                <div className="flex justify-between text-xs mb-1" style={{ fontFamily: "var(--font-mono)" }}>
-                  <span style={{ color: "var(--text-secondary)" }}>{m.name}</span>
-                  <span style={{ color: m.val < 80 ? C.warning : m.val > 110 ? C.sleep : C.optimal, fontWeight: 700 }}>{m.val}% · {m.status}</span>
-                </div>
-                <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--surface-quaternary)" }}>
-                  <motion.div className="h-full rounded-full" style={{ background: m.color }}
-                    initial={{ width: 0 }} animate={{ width: `${Math.min(m.val, 100)}%` }} transition={{ duration: 0.8 }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Meal Log */}
-      <div className="card-surface overflow-hidden" style={{ borderRadius: "var(--radius-xl)" }}>
-        <div className="p-5 border-b" style={{ borderColor: "var(--border-subtle)" }}>
-          <div className="text-xs font-bold uppercase tracking-widest mb-0.5" style={{ color: "var(--text-tertiary)" }}>Intake Log</div>
-          <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Today · {mealLog.length} meals logged</div>
-        </div>
-        <div className="divide-y" style={{ borderColor: "var(--border-subtle)" }}>
-          {mealLog.map((meal, i) => (
-            <div key={i}>
-              <button
-                className="w-full p-4 flex items-center gap-4 transition-colors hover:bg-[var(--surface-tertiary)] text-left"
-                onClick={() => setSelectedMeal(selectedMeal === i ? null : i)}
-              >
-                <div className="text-xs font-bold w-14 shrink-0" style={{ fontFamily: "var(--font-mono)", color: "var(--text-tertiary)" }}>{meal.time}</div>
-                <div className="flex-1">
-                  <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{meal.name}</div>
-                  <div className="flex gap-3 mt-1 text-xs" style={{ fontFamily: "var(--font-mono)", color: "var(--text-tertiary)" }}>
-                    <span style={{ color: C.cv }}>{meal.p}g P</span>
-                    <span style={{ color: C.nutrition }}>{meal.c}g C</span>
-                    <span style={{ color: C.warning }}>{meal.f}g F</span>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-sm font-black" style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>{meal.kcal}</div>
-                  <div className="text-xs" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>kcal</div>
-                </div>
-                <ChevronDown size={14} style={{ color: "var(--text-tertiary)", transform: selectedMeal === i ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
-              </button>
-              <AnimatePresence>
-                {selectedMeal === i && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.25 }}
-                    className="overflow-hidden"
-                  >
-                    <div className="mx-4 mb-4 p-3 rounded-xl text-xs leading-relaxed"
-                      style={{ background: "var(--ai-surface)", border: "1px solid var(--border-ai)", color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>
-                      <span style={{ color: C.sleep }}>🧠 AI: </span>{meal.ai}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+        
+        <div className="space-y-2">
+          <label className="text-xs font-bold flex items-center justify-between" style={{ color: "var(--text-secondary)" }}>
+            Exercises
+            <button onClick={() => setExercises([...exercises, { name: "", sets: 3, reps: 10, weight: 0 }])} className="text-teal-600 hover:underline">+ Add Exercise</button>
+          </label>
+          {exercises.map((ex, i) => (
+            <div key={i} className="flex gap-2 items-center">
+              <input value={ex.name} onChange={e => { const newEx = [...exercises]; newEx[i].name = e.target.value; setExercises(newEx); }} placeholder="Exercise (e.g. Bench Press)" className="flex-1 bg-slate-50 border border-slate-200 p-2 rounded-lg text-sm text-slate-800 focus:outline-none" />
+              <input type="number" value={ex.sets} onChange={e => { const newEx = [...exercises]; newEx[i].sets = Number(e.target.value); setExercises(newEx); }} placeholder="Sets" className="w-16 bg-slate-50 border border-slate-200 p-2 rounded-lg text-sm text-slate-800 focus:outline-none" />
+              <input type="number" value={ex.reps} onChange={e => { const newEx = [...exercises]; newEx[i].reps = Number(e.target.value); setExercises(newEx); }} placeholder="Reps" className="w-16 bg-slate-50 border border-slate-200 p-2 rounded-lg text-sm text-slate-800 focus:outline-none" />
+              <input type="number" value={ex.weight} onChange={e => { const newEx = [...exercises]; newEx[i].weight = Number(e.target.value); setExercises(newEx); }} placeholder="Weight" className="w-20 bg-slate-50 border border-slate-200 p-2 rounded-lg text-sm text-slate-800 focus:outline-none" />
+              <button onClick={() => setExercises(exercises.filter((_, idx) => idx !== i))} className="p-2 text-slate-400 hover:text-red-500 rounded"><X size={16}/></button>
             </div>
           ))}
         </div>
-      </div>
 
-      <AIInsightCard title="Nutrition Optimization — Today" confidence={79}>
-        Total intake on track at <strong style={{ color: C.nutrition }}>1,830 kcal</strong>. Protein hitting 87% of target — add a 25g protein snack (e.g., cottage cheese) pre-bed to hit leucine threshold for overnight MPS. Omega-3 surplus from salmon dinner is ideal for tonight's HRV and anti-inflammatory signaling. Vitamin D remains low — consider 2000 IU supplementation.
-      </AIInsightCard>
+        <div className="flex items-center gap-4 pt-2">
+          <button onClick={handleSave} disabled={loading || !name} className="px-5 py-2.5 bg-teal-600 text-white rounded-xl text-xs font-bold uppercase tracking-widest disabled:opacity-50 hover:bg-teal-700 transition-colors">
+            {loading ? "Saving..." : "Save Template"}
+          </button>
+          {msg && <span className="text-xs font-semibold text-teal-600">{msg}</span>}
+        </div>
+      </div>
     </div>
   );
 }
 
 // ─── Tab: Kinematic Load ─────────────────────────────────────────
-function KinematicTab() {
-  const [overrideStatus, setOverrideStatus] = useState<"pending" | "approved" | "rejected">("pending");
+// ─── Tab: Kinematic Load & Cardio ──────────────────────────────────
+function KinematicTab({ dbWorkouts }: { dbWorkouts?: any[] }) {
+  // Extract progression data for weightlifting (max weight per exercise per day)
+  const progressionData: any = {};
+  
+  // Separate cardio and lifting
+  const cardioWorkouts = dbWorkouts?.filter(w => w.strava_id || w.distance_km || w.duration_minutes) || [];
+  const liftingWorkouts = dbWorkouts?.filter(w => !w.strava_id && !w.distance_km && (w.weight > 0 || w.reps > 0 || w.sets > 0)) || [];
+
+  liftingWorkouts.forEach(w => {
+    const date = w.workout_date.split('T')[0];
+    const ex = w.exercise_name;
+    const metricValue = w.weight > 0 ? w.weight : (w.reps || 0);
+    
+    if (metricValue > 0) {
+      if (!progressionData[ex]) progressionData[ex] = [];
+      const existingDate = progressionData[ex].find((d: any) => d.date === date);
+      if (existingDate) {
+        if (metricValue > existingDate.value) existingDate.value = metricValue;
+      } else {
+        progressionData[ex].push({ date, value: metricValue });
+      }
+    }
+  });
+
+  // Get top 3 exercises with the most history
+  const topExercises = Object.keys(progressionData)
+    .filter(k => progressionData[k].length > 1)
+    .sort((a, b) => progressionData[b].length - progressionData[a].length)
+    .slice(0, 3);
 
   return (
     <div className="space-y-5">
-      {/* Override Widget */}
-      <AnimatePresence>
-        {overrideStatus === "pending" && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.97, y: -10 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.96, y: -10, height: 0 }}
-            transition={{ duration: 0.3 }}
-            className="relative overflow-hidden p-6"
-            style={{ background: "var(--surface-secondary)", border: `1px solid rgba(255,23,68,0.3)`, borderRadius: "var(--radius-xl)", boxShadow: "0 0 30px rgba(255,23,68,0.08)" }}
-          >
-            <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
-              <AlertTriangle size={160} style={{ color: C.critical }} />
-            </div>
-            <div className="flex items-start gap-4 relative z-10">
-              <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: "rgba(255,23,68,0.15)", border: "1px solid rgba(255,23,68,0.3)" }}>
-                <AlertTriangle size={18} style={{ color: C.critical }} className="animate-pulse" />
+      {(!dbWorkouts || dbWorkouts.length === 0) ? (
+        <EmptyState message="No workout telemetry found. Complete a template or text Telegram to log a workout." icon={Dumbbell} />
+      ) : (
+        <>
+          {cardioWorkouts.length > 0 && (
+            <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+              <div className="text-xs font-bold uppercase tracking-widest mb-4 flex items-center gap-2" style={{ color: "var(--text-tertiary)" }}>
+                <Heart size={14} /> Cardiovascular Activities
               </div>
-              <div className="flex-1">
-                <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: C.critical }}>Algorithmic Auto-Regulation Triggered</div>
-                <p className="text-sm leading-relaxed mb-5" style={{ color: "var(--text-secondary)" }}>
-                  Anatomical strain map detects critical Lower Back and CNS fatigue (Score: 0.9/1.0) from Monday's heavy pull session. Executing planned Heavy Deadlifts today carries elevated injury risk.
-                </p>
-                <div className="grid grid-cols-2 gap-4 mb-5">
-                  <div className="p-4 rounded-xl relative overflow-hidden" style={{ background: "rgba(255,23,68,0.05)", border: "1px solid rgba(255,23,68,0.15)" }}>
-                    <div className="absolute inset-0 flex items-center justify-center opacity-10 pointer-events-none">
-                      <X size={80} style={{ color: C.critical }} />
+              <div className="space-y-4">
+                {cardioWorkouts.map((cw) => {
+                  // Parse heart rate stream if available
+                  let hrData = [];
+                  if (cw.streams && cw.streams.heartrate && cw.streams.heartrate.data) {
+                    hrData = cw.streams.heartrate.data.map((hr: number, idx: number) => ({ time: idx, hr }));
+                  }
+                  
+                  return (
+                    <div key={cw.id} className="p-4 rounded-xl flex flex-col gap-3" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+                      <div className="flex justify-between items-center">
+                        <div className="font-bold text-sm" style={{ color: "var(--text-primary)" }}>{cw.exercise_name}</div>
+                        <div className="text-xs font-mono" style={{ color: "var(--text-tertiary)" }}>{new Date(cw.workout_date).toLocaleDateString()}</div>
+                      </div>
+                      
+                      <div className="grid grid-cols-4 gap-2 text-xs font-mono">
+                        <div>
+                          <div style={{ color: "var(--text-tertiary)" }}>Dist</div>
+                          <div className="font-bold" style={{ color: C.kinematic }}>{cw.distance_km || '--'} km</div>
+                        </div>
+                        <div>
+                          <div style={{ color: "var(--text-tertiary)" }}>Time</div>
+                          <div className="font-bold" style={{ color: C.optimal }}>{cw.duration_minutes || '--'} m</div>
+                        </div>
+                        <div>
+                          <div style={{ color: "var(--text-tertiary)" }}>Avg HR</div>
+                          <div className="font-bold" style={{ color: C.cv }}>{cw.average_heartrate || '--'} bpm</div>
+                        </div>
+                        <div>
+                          <div style={{ color: "var(--text-tertiary)" }}>Cals</div>
+                          <div className="font-bold" style={{ color: C.nutrition }}>{cw.calories || '--'}</div>
+                        </div>
+                      </div>
+
+                      {hrData.length > 0 && (
+                        <div style={{ height: "60px", width: "100%", marginTop: "8px" }}>
+                          <ResponsiveContainer>
+                            <AreaChart data={hrData}>
+                              <defs>
+                                <linearGradient id={`grad-hr-${cw.id}`} x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor={C.cv} stopOpacity={0.3}/>
+                                  <stop offset="95%" stopColor={C.cv} stopOpacity={0}/>
+                                </linearGradient>
+                              </defs>
+                              <Area type="monotone" dataKey="hr" stroke={C.cv} strokeWidth={1.5} fill={`url(#grad-hr-${cw.id})`} dot={false} isAnimationActive={false} />
+                              <Tooltip contentStyle={{ background: "#000", border: "none", color: "#fff", borderRadius: "8px", fontSize: "10px", padding: "2px 6px" }} />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
                     </div>
-                    <div className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-tertiary)" }}>Planned Protocol</div>
-                    <div className="text-xl font-bold line-through" style={{ color: "var(--text-tertiary)" }}>Deadlift 4×5 @ 140kg</div>
-                    <div className="text-xs mt-2" style={{ color: C.critical, fontFamily: "var(--font-mono)" }}>High CNS demand · 72h recovery req.</div>
-                  </div>
-                  <div className="p-4 rounded-xl" style={{ background: "rgba(0,230,118,0.05)", border: "1px solid rgba(0,230,118,0.2)" }}>
-                    <div className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: C.optimal }}>AI Substitution</div>
-                    <div className="text-xl font-bold" style={{ color: C.optimal }}>Romanian DL 3×10 @ 90kg</div>
-                    <div className="text-xs mt-2" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>Active recovery · improved blood flow</div>
-                  </div>
-                </div>
-                <div className="flex gap-3">
-                  <button onClick={() => setOverrideStatus("approved")}
-                    className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-all hover:opacity-90"
-                    style={{ background: C.optimal, color: "#000" }}>
-                    <Check size={14} /> Approve Substitution
-                  </button>
-                  <button onClick={() => setOverrideStatus("rejected")}
-                    className="px-6 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-all hover:bg-white/5"
-                    style={{ border: "1px solid var(--border-active)", color: "var(--text-secondary)" }}>
-                    Force Original Plan
-                  </button>
-                </div>
+                  );
+                })}
               </div>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
 
-      {overrideStatus !== "pending" && (
-        <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="flex items-center gap-2 p-4 rounded-xl"
-          style={{ background: overrideStatus === "approved" ? "rgba(0,230,118,0.08)" : "rgba(255,23,68,0.08)", border: `1px solid ${overrideStatus === "approved" ? "rgba(0,230,118,0.2)" : "rgba(255,23,68,0.2)"}`, borderRadius: "var(--radius-lg)" }}>
-          {overrideStatus === "approved" ? <Check size={16} style={{ color: C.optimal }} /> : <X size={16} style={{ color: C.critical }} />}
-          <span className="text-sm font-semibold" style={{ color: overrideStatus === "approved" ? C.optimal : C.critical }}>
-            {overrideStatus === "approved" ? "AI Substitution Active — Romanian Deadlift 3×10 @ 90kg" : "Manual Override — Original plan maintained"}
-          </span>
-        </motion.div>
+          {liftingWorkouts.length > 0 && (
+            <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+              <div className="text-xs font-bold uppercase tracking-widest mb-4 flex items-center gap-2" style={{ color: "var(--text-tertiary)" }}>
+                <Dumbbell size={14} /> Executed Protocol
+              </div>
+              <div className="space-y-3">
+                {liftingWorkouts.slice(0, 10).map((ex) => (
+                  <div key={ex.id} className="flex items-center gap-4 p-3 rounded-xl" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+                    <div className="flex-1">
+                      <div className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>{ex.exercise_name}</div>
+                    </div>
+                    <div className="text-sm font-black text-right" style={{ fontFamily: "var(--font-mono)", color: C.optimal, whiteSpace: "nowrap" }}>
+                      {ex.sets} sets {ex.reps ? `x ${ex.reps} reps` : ""} {ex.weight > 0 ? `@ ${ex.weight}` : ""}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {topExercises.length > 0 && (
+            <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+              <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Progression Trajectory</div>
+              <div className="space-y-6">
+                {topExercises.map((ex, i) => {
+                  const data = progressionData[ex].sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
+                  const color = i === 0 ? C.kinematic : i === 1 ? C.optimal : C.trends;
+                  return (
+                    <div key={ex}>
+                      <div className="flex justify-between items-end mb-2">
+                        <div className="text-sm font-bold">{ex}</div>
+                        <div className="text-xs font-mono font-bold" style={{ color }}>{data[data.length-1].value} peak</div>
+                      </div>
+                      <div style={{ height: "100px", width: "100%" }}>
+                        <ResponsiveContainer>
+                          <AreaChart data={data}>
+                            <defs>
+                              <linearGradient id={`grad-${i}`} x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor={color} stopOpacity={0.3}/>
+                                <stop offset="95%" stopColor={color} stopOpacity={0}/>
+                              </linearGradient>
+                            </defs>
+                            <Area type="monotone" dataKey="value" stroke={color} strokeWidth={2} fill={`url(#grad-${i})`} />
+                            <Tooltip contentStyle={{ background: "#000", border: "none", color: "#fff", borderRadius: "8px", fontSize: "12px", padding: "4px 8px" }} />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
       )}
-
-      {/* Strain Map + Protocol */}
-      <div className="grid grid-cols-12 gap-4">
-        {/* Anatomical Map (visual representation) */}
-        <div className="col-span-12 lg:col-span-5 card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-          <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Live Anatomical Strain Map</div>
-          {/* SVG body placeholder with colored zones */}
-          <div className="relative mx-auto" style={{ width: 180, height: 320 }}>
-            <svg width="180" height="320" viewBox="0 0 180 320" style={{ fontFamily: "var(--font-mono)" }}>
-              {/* Body outline */}
-              <ellipse cx="90" cy="40" rx="30" ry="32" fill="#1A1A24" stroke="#3A3A52" strokeWidth="1.5" />
-              <rect x="60" y="70" width="60" height="90" rx="10" fill="#1A1A24" stroke="#3A3A52" strokeWidth="1.5" />
-              <rect x="20" y="72" width="36" height="80" rx="10" fill="#1A1A24" stroke="#3A3A52" strokeWidth="1.5" />
-              <rect x="124" y="72" width="36" height="80" rx="10" fill="#1A1A24" stroke="#3A3A52" strokeWidth="1.5" />
-              <rect x="65" y="158" width="22" height="90" rx="8" fill="#1A1A24" stroke="#3A3A52" strokeWidth="1.5" />
-              <rect x="93" y="158" width="22" height="90" rx="8" fill="#1A1A24" stroke="#3A3A52" strokeWidth="1.5" />
-              <rect x="65" y="246" width="22" height="60" rx="6" fill="#1A1A24" stroke="#3A3A52" strokeWidth="1.5" />
-              <rect x="93" y="246" width="22" height="60" rx="6" fill="#1A1A24" stroke="#3A3A52" strokeWidth="1.5" />
-              {/* Critical zones — lower back */}
-              <rect x="62" y="130" width="56" height="28" rx="6" fill={`${C.critical}40`} stroke={C.critical} strokeWidth="1.5" opacity="0.9" />
-              <text x="90" y="148" textAnchor="middle" fontSize="8" fill={C.critical} fontWeight="700">CRITICAL 0.9</text>
-              {/* High zones — traps/upper back */}
-              <rect x="62" y="74" width="56" height="30" rx="6" fill={`${C.cv}30`} stroke={C.cv} strokeWidth="1" opacity="0.8" />
-              <text x="90" y="93" textAnchor="middle" fontSize="7" fill={C.cv} fontWeight="700">HIGH 0.7</text>
-              {/* Moderate — hamstrings */}
-              <rect x="65" y="192" width="50" height="28" rx="5" fill={`${C.warning}25`} stroke={C.warning} strokeWidth="1" opacity="0.8" />
-              <text x="90" y="210" textAnchor="middle" fontSize="7" fill={C.warning} fontWeight="700">MOD 0.5</text>
-              {/* Mild — chest/triceps */}
-              <rect x="62" y="105" width="56" height="28" rx="5" fill={`${C.nutrition}15`} stroke={C.nutrition} strokeWidth="1" opacity="0.6" />
-              <text x="90" y="123" textAnchor="middle" fontSize="7" fill={C.nutrition} fontWeight="700">MILD 0.3</text>
-            </svg>
-          </div>
-          <div className="space-y-2 mt-2">
-            {[
-              { muscle: "Lower Back", score: 0.9, color: C.critical, label: "Critical" },
-              { muscle: "Trapezius / Upper Back", score: 0.7, color: C.cv, label: "High" },
-              { muscle: "Hamstrings", score: 0.5, color: C.warning, label: "Moderate" },
-              { muscle: "Chest / Triceps", score: 0.3, color: C.nutrition, label: "Mild" },
-            ].map(m => (
-              <div key={m.muscle} className="flex items-center gap-2">
-                <span className="text-xs w-36 shrink-0" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>{m.muscle}</span>
-                <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--surface-quaternary)" }}>
-                  <div className="h-full rounded-full" style={{ width: `${m.score * 100}%`, background: m.color }} />
-                </div>
-                <span className="text-xs w-16 text-right font-bold" style={{ color: m.color, fontFamily: "var(--font-mono)" }}>{m.label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Executable Protocol */}
-        <div className="col-span-12 lg:col-span-7 card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-          <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Executable Protocol · Today · Heavy Pull</div>
-          <div className="space-y-3">
-            {[
-              {
-                name: overrideStatus === "approved" ? "Romanian Deadlift" : "Deadlift (Conventional)",
-                sets: overrideStatus === "approved" ? "3×10 @ 90kg" : "4×5 @ 140kg",
-                modified: overrideStatus === "approved",
-                note: overrideStatus === "approved" ? "AI substitution — lower back sparing" : "Original plan",
-              },
-              { name: "Weighted Pullups", sets: "3×8 @ +20kg", modified: false, note: "Unchanged" },
-              { name: "Barbell Row", sets: "4×8 @ 80kg", modified: false, note: "Unchanged" },
-              { name: "Face Pulls", sets: "3×15 @ 25kg", modified: false, note: "Added by AI — rotator cuff health" },
-              { name: "Farmer's Carry", sets: "4×30m @ 40kg/hand", modified: false, note: "Grip & core finisher" },
-            ].map((ex, i) => (
-              <div key={i} className="flex items-center gap-4 p-3 rounded-xl" style={{ background: ex.modified ? "rgba(0,230,118,0.05)" : "var(--surface-tertiary)", border: `1px solid ${ex.modified ? "rgba(0,230,118,0.2)" : "var(--border-subtle)"}` }}>
-                <div className="flex-1">
-                  <div className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>{ex.name}</div>
-                  <div className="text-xs mt-0.5" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>{ex.note}</div>
-                </div>
-                <div className="text-sm font-black text-right" style={{ fontFamily: "var(--font-mono)", color: ex.modified ? C.optimal : "var(--text-secondary)", whiteSpace: "nowrap" }}>{ex.sets}</div>
-                {ex.modified && <Check size={14} style={{ color: C.optimal, shrink: 0 }} />}
-              </div>
-            ))}
-          </div>
-
-          {/* Weekly Volume */}
-          <div className="mt-4 p-4 rounded-xl" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-            <div className="text-xs font-bold uppercase tracking-widest mb-3" style={{ color: "var(--text-tertiary)" }}>Weekly Volume by Muscle Group</div>
-            <div className="space-y-2">
-              {[
-                { muscle: "Back", sets: 18, target: 16, color: C.cv },
-                { muscle: "Chest", sets: 12, target: 14, color: C.sleep },
-                { muscle: "Legs", sets: 14, target: 16, color: C.nutrition },
-                { muscle: "Shoulders", sets: 10, target: 12, color: C.warning },
-                { muscle: "Arms", sets: 8, target: 10, color: C.trends },
-              ].map(m => (
-                <div key={m.muscle} className="flex items-center gap-3 text-xs">
-                  <span className="w-20 shrink-0" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>{m.muscle}</span>
-                  <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--surface-quaternary)" }}>
-                    <div className="h-full rounded-full" style={{ width: `${Math.min(m.sets / 20 * 100, 100)}%`, background: m.color }} />
-                  </div>
-                  <span className="w-16 text-right" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>{m.sets}/{m.target} sets</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <AIInsightCard title="Kinematic Load Assessment" confidence={94}>
-        Lower back strain score at 0.9/1.0 from Monday's 140kg deadlift session. Neural fatigue indicators (increased RPE, altered recruitment patterns) suggest 48–72h of mechanical deloading. Romanian deadlift preserves posterior chain stimulus while reducing spinal compressive forces by ~40%. Expected Lower Back score reduction: 0.9 → 0.6 by tomorrow.
-      </AIInsightCard>
     </div>
   );
 }
 
 // ─── Tab: Trends ─────────────────────────────────────────────────
-function TrendsTab() {
+function TrendsTab({ latestMetrics, timeFilter }: { latestMetrics: any, timeFilter: string }) {
+  if (!latestMetrics) {
+    return <EmptyState message="No historical metrics available to compute macro trends." icon={Activity} />;
+  }
+
+  const baseHealthWealthData = [
+    { date: "Jan", health: 82, wealth: 740 },
+    { date: "Feb", health: 85, wealth: 760 },
+    { date: "Mar", health: 78, wealth: 750 },
+    { date: "Apr", health: 88, wealth: 790 },
+    { date: "May", health: 91, wealth: 830 },
+    { date: "Jun", health: 90, wealth: 847 },
+  ];
+  
+  const healthWealthData = timeFilter === "day" || timeFilter === "week" ? baseHealthWealthData.slice(-2) :
+                           timeFilter === "month" ? baseHealthWealthData.slice(-4) :
+                           baseHealthWealthData;
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-12 gap-4">
-        {[
-          { label: "VO₂ Max", val: "47.2", unit: "ml/kg/min", delta: +5.1, color: C.cv, sparkData: [42, 43, 44.5, 45.8, 46.2, 46.8, 47.2] },
-          { label: "Resting HR", val: "52", unit: "bpm", delta: -4, color: C.trends, sparkData: [58, 57, 56, 55, 54, 53, 52] },
-          { label: "HRV Baseline", val: "45", unit: "ms", delta: +6, color: C.optimal, sparkData: [38, 39, 40, 41, 42, 44, 45] },
-          { label: "Sleep Score Avg", val: "79", unit: "/100", delta: +8, color: C.sleep, sparkData: [68, 70, 72, 74, 76, 78, 79] },
-          { label: "Weekly Volume", val: "6.2", unit: "hrs", delta: +1.1, color: C.kinematic, sparkData: [4.5, 4.8, 5.2, 5.6, 5.8, 6.0, 6.2] },
-          { label: "Body Weight", val: "82.4", unit: "kg", delta: -1.2, color: C.nutrition, sparkData: [83.8, 83.6, 83.4, 83.2, 82.9, 82.6, 82.4] },
-        ].map(m => (
-          <div key={m.label} className="col-span-12 sm:col-span-6 lg:col-span-4 card-surface p-4" style={{ borderRadius: "var(--radius-lg)" }}>
-            <div className="flex justify-between items-start mb-2">
-              <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--text-tertiary)" }}>{m.label}</div>
-              <DeltaBadge value={m.delta} unit={m.unit.includes("bpm") ? " bpm" : m.unit.includes("ms") ? " ms" : ""} />
-            </div>
-            <div className="flex items-end gap-1.5">
-              <span className="text-3xl font-black" style={{ fontFamily: "var(--font-mono)", color: m.color, lineHeight: 1 }}>{m.val}</span>
-              <span className="text-xs pb-0.5" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>{m.unit}</span>
-            </div>
-            <div className="mt-3">
-              <MiniSparkline data={m.sparkData} color={m.color} height={40} />
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Correlation Matrix */}
+      {/* System averages */}
       <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-        <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Key Metric Correlations — 30 Day</div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Current Biometrics</div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {[
-            { a: "Zone 2 Volume", b: "VO₂ Max", corr: 0.87, dir: "+" },
-            { a: "Sleep Duration", b: "Next-day HRV", corr: 0.74, dir: "+" },
-            { a: "Resting HR", b: "Recovery Score", corr: -0.81, dir: "-" },
-            { a: "TSB (Balance)", b: "Performance", corr: 0.69, dir: "+" },
-            { a: "Sleep Consistency", b: "Mood Score", corr: 0.72, dir: "+" },
-            { a: "Training Stress", b: "Fatigue", corr: 0.93, dir: "+" },
-          ].map(c => (
-            <div key={`${c.a}-${c.b}`} className="flex items-center gap-3 p-3 rounded-xl" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-semibold truncate" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>
-                  {c.a} → {c.b}
-                </div>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <div className="h-1.5 w-24 rounded-full overflow-hidden" style={{ background: "var(--surface-quaternary)" }}>
-                  <div className="h-full rounded-full" style={{ width: `${c.corr * 100}%`, background: c.dir === "+" ? C.optimal : C.cv }} />
-                </div>
-                <span className="text-xs font-bold w-10 text-right" style={{ fontFamily: "var(--font-mono)", color: c.dir === "+" ? C.optimal : C.cv }}>
-                  {c.dir === "+" ? "r=" : "r=-"}{Math.abs(c.corr).toFixed(2)}
-                </span>
-              </div>
+            { label: "Resting HR",  val: latestMetrics.resting_heart_rate ?? 58,   unit: "bpm", trend: "▼", trendColor: C.optimal  },
+            { label: "HRV",         val: latestMetrics.hrv ?? 54,                   unit: "ms",  trend: "▲", trendColor: C.optimal  },
+            { label: "VO₂ Max",    val: latestMetrics.vo2_max ?? 44.2,              unit: "",    trend: "▲", trendColor: C.optimal  },
+            { label: "Resp. Rate", val: latestMetrics.respiratory_rate ?? 14.2,    unit: "/min",trend: "→", trendColor: C.textTertiary },
+          ].map(m => (
+            <div key={m.label} className="p-4 rounded-xl text-center" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+              <div className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-tertiary)" }}>{m.label}</div>
+              <div className="text-2xl font-black" style={{ fontFamily: "var(--font-mono)", color: C.trends }}>{m.val} <span className="text-sm font-medium" style={{ color: "var(--text-tertiary)" }}>{m.unit}</span></div>
+              <div className="text-sm font-bold mt-1" style={{ color: m.trendColor }}>{m.trend}</div>
             </div>
           ))}
         </div>
       </div>
 
-      <AIInsightCard title="30-Day Trend Summary" confidence={85}>
-        Strong positive momentum across all key biomarkers. VO₂ Max trajectory is accelerating (+0.8 this month vs +0.4 prior). Sleep quality improvements are driving HRV gains — the correlation (r=0.74) is statistically robust. Body composition improving: weight down 1.2kg with performance metrics up, suggesting fat loss with lean mass retention.
-      </AIInsightCard>
+      {/* Cross-domain insight grid */}
+      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+        <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Cross-Domain Intelligence (90-day window)</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {[
+            {
+              domain: "Health → Wealth",
+              icon: "💰",
+              insights: [
+                { finding: "Sleep >7.5h → avg daily P&L +$340",          stat: "r=0.43, p<0.01",  action: "Protect sleep before trading days",              color: C.optimal },
+                { finding: "HRV >55ms → win rate 73% vs 52% when <45ms", stat: "r=0.38, p=0.02",  action: "Avoid new positions when HRV <45ms",              color: C.nutrition },
+              ]
+            },
+            {
+              domain: "Nutrition → Performance",
+              icon: "🍗",
+              insights: [
+                { finding: "Dinner protein >40g → +0.6h deep sleep",     stat: "r=0.41, p=0.039", action: "Target 40g+ protein at dinner",                   color: C.optimal },
+                { finding: "Pre-WO carbs >60g → +12% training volume",   stat: "r=0.63, p=0.007", action: "60–80g carbs 60–90 min pre-workout",              color: C.nutrition },
+              ]
+            },
+            {
+              domain: "Lifestyle → Sleep",
+              icon: "🌙",
+              insights: [
+                { finding: "Dining out >3×/wk → 45-min onset drift",     stat: "r=-0.52, p=0.014",action: "Set 8 PM meal cutoff on weeknights",              color: C.warning },
+                { finding: "Stress (low HRV) → spending +23% above avg", stat: "r=-0.68, p=0.002",action: "Mindfulness trigger when HRV <45ms pre-market",   color: C.warning },
+              ]
+            },
+            {
+              domain: "Workout → Recovery",
+              icon: "🏋️",
+              insights: [
+                { finding: "RPE 9+ sessions → next-day focus −15%",      stat: "r=-0.28, p=0.12",  action: "Schedule key decisions on moderate workout days", color: C.kinematic },
+                { finding: "Moderate intensity (Z2) → HRV +4ms next day",stat: "r=0.38, p=0.049", action: "Prioritize Z2 before important cognitive work",    color: C.optimal },
+              ]
+            },
+          ].map(section => (
+            <div key={section.domain} className="p-4 rounded-xl" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+              <div className="flex items-center gap-2 mb-3">
+                <span>{section.icon}</span>
+                <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--text-tertiary)" }}>{section.domain}</div>
+              </div>
+              <div className="space-y-2.5">
+                {section.insights.map((ins, i) => (
+                  <div key={i} className="flex items-start gap-2">
+                    <div className="w-1 h-full rounded-full shrink-0 mt-1" style={{ background: ins.color, width: 3, minHeight: 32 }} />
+                    <div>
+                      <div className="text-[11px] font-bold" style={{ color: "var(--text-primary)" }}>{ins.finding}</div>
+                      <div className="text-[10px] font-mono mt-0.5" style={{ color: "var(--text-tertiary)" }}>{ins.stat}</div>
+                      <div className="text-[10px] mt-0.5 font-semibold" style={{ color: ins.color }}>→ {ins.action}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1594,18 +1247,102 @@ export default function HealthOS() {
   const [aiAccepted, setAiAccepted] = useState(false);
   const [protocolApplied, setProtocolApplied] = useState(false);
 
+  // Supabase states
+  const [dbWorkouts, setDbWorkouts] = useState<any[]>([]);
+  const [latestMetrics, setLatestMetrics] = useState<any>(null);
+  const [dbMeals, setDbMeals] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) return;
+
+    const supabase = createBrowserClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    );
+
+    const fetchWorkouts = async () => {
+      const { data, error } = await supabase
+        .from("workouts")
+        .select("*")
+        .order("workout_date", { ascending: false })
+        .limit(20);
+      if (!error && data) setDbWorkouts(data);
+    };
+
+    const fetchMeals = async () => {
+      const now = new Date();
+      let cutoff = new Date();
+      
+      if (timeFilter === "day") cutoff.setDate(now.getDate() - 1);
+      else if (timeFilter === "week") cutoff.setDate(now.getDate() - 7);
+      else if (timeFilter === "month") cutoff.setMonth(now.getMonth() - 1);
+      else if (timeFilter === "quarter") cutoff.setMonth(now.getMonth() - 3);
+      else if (timeFilter === "year") cutoff.setFullYear(now.getFullYear() - 1);
+      else cutoff.setDate(now.getDate() - 1); // default fallback
+
+      const { data, error } = await supabase
+        .from("meals")
+        .select("*")
+        .gte("meal_time", cutoff.toISOString())
+        .order("meal_time", { ascending: true });
+      if (!error && data) setDbMeals(data);
+    };
+
+    const fetchMetrics = async () => {
+      const { data, error } = await supabase
+        .from("health_metrics")
+        .select("*")
+        .order("recorded_at", { ascending: false })
+        .limit(1);
+      if (!error && data && data.length > 0) setLatestMetrics(data[0]);
+    };
+
+    fetchWorkouts();
+    fetchMeals();
+    fetchMetrics();
+
+    // Subscribe to real-time changes
+    const workoutsChannel = supabase
+      .channel("workouts_realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "workouts" }, () => {
+        fetchWorkouts();
+      })
+      .subscribe();
+
+    const mealsChannel = supabase
+      .channel("meals_realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "meals" }, () => {
+        fetchMeals();
+      })
+      .subscribe();
+
+    const metricsChannel = supabase
+      .channel("metrics_realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "health_metrics" }, () => {
+        fetchMetrics();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(workoutsChannel);
+      supabase.removeChannel(mealsChannel);
+      supabase.removeChannel(metricsChannel);
+    };
+  }, [timeFilter]);
+
   const tabs = [
     { id: "cardio", label: "Cardiovascular", icon: Heart, color: C.cv },
     { id: "sleep", label: "Sleep", icon: Moon, color: C.sleep },
     { id: "fuel", label: "Fuel", icon: Flame, color: C.nutrition },
     { id: "kinematic", label: "Kinematic", icon: Dumbbell, color: C.kinematic },
     { id: "trends", label: "Trends", icon: TrendingUp, color: C.trends },
+    { id: "templates", label: "Templates", icon: Target, color: C.textPrimary },
   ];
 
-  const tabVariants = {
-    hidden: { opacity: 0, y: 12 },
-    visible: { opacity: 1, y: 0, transition: { duration: 0.28, ease: [0, 0, 0.2, 1] } },
-    exit: { opacity: 0, y: -8, transition: { duration: 0.18 } },
+  const tabVariants: any = {
+    hidden: { opacity: 0, y: 15 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.3, ease: [0.22, 1, 0.36, 1] } },
+    exit: { opacity: 0, y: -10, transition: { duration: 0.2 } },
   };
 
   return (
@@ -1661,15 +1398,16 @@ export default function HealthOS() {
         </div>
       </div>
 
-      {/* Tab Content */}
+      {/* Main Content Areas */}
       <div className="pb-24">
         <AnimatePresence mode="wait">
           <motion.div key={activeTab} variants={tabVariants} initial="hidden" animate="visible" exit="exit">
-            {activeTab === "cardio" && <CardioTab aiAccepted={aiAccepted} setAiAccepted={setAiAccepted} />}
-            {activeTab === "sleep" && <SleepTab protocolApplied={protocolApplied} setProtocolApplied={setProtocolApplied} />}
-            {activeTab === "fuel" && <FuelTab />}
-            {activeTab === "kinematic" && <KinematicTab />}
-            {activeTab === "trends" && <TrendsTab />}
+            {activeTab === "cardio" && <CardioTab latestMetrics={latestMetrics} timeFilter={timeFilter} />}
+            {activeTab === "sleep" && <SleepTab latestMetrics={latestMetrics} timeFilter={timeFilter} />}
+            {activeTab === "fuel" && <FuelTab dbMeals={dbMeals} dbWorkouts={dbWorkouts} />}
+            {activeTab === "kinematic" && <KinematicTab dbWorkouts={dbWorkouts} />}
+            {activeTab === "trends" && <TrendsTab latestMetrics={latestMetrics} timeFilter={timeFilter} />}
+            {activeTab === "templates" && <TemplatesTab />}
           </motion.div>
         </AnimatePresence>
       </div>
