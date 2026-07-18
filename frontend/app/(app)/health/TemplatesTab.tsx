@@ -1,6 +1,13 @@
 import { useState, useEffect } from "react";
-import { createBrowserClient } from "@supabase/ssr";
+import { supabase } from "../../../utils/supabaseClient";
 import { Dumbbell, Plus, Trash2, Save } from "lucide-react";
+
+// Exact muscle_group strings used by workout_template_exercises —
+// keep in sync with the Muscle Coverage map on the Health page.
+const MUSCLE_GROUPS = [
+  "Chest", "Back", "Front Delts", "Rear Delts", "Biceps", "Triceps",
+  "Abs", "Quads", "Hamstrings", "Glutes", "Calves",
+];
 
 export function TemplatesTab() {
   const [templates, setTemplates] = useState<any[]>([]);
@@ -8,11 +15,6 @@ export function TemplatesTab() {
   const [isCreating, setIsCreating] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState("");
   const [exercises, setExercises] = useState([{ name: "", sets: 3, reps: null, weight: 0, group: "Chest" }]);
-
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
 
   useEffect(() => {
     fetchTemplates();
@@ -134,6 +136,12 @@ export function TemplatesTab() {
                   className="flex-1 p-2 rounded border border-slate-200 text-sm"
                   value={ex.name} onChange={e => updateExercise(i, 'name', e.target.value)}
                 />
+                <select
+                  className="p-2 rounded border border-slate-200 text-sm bg-white"
+                  value={ex.group} onChange={e => updateExercise(i, 'group', e.target.value)}
+                >
+                  {MUSCLE_GROUPS.map(g => <option key={g} value={g}>{g}</option>)}
+                </select>
                 <input 
                   type="number" placeholder="Sets" 
                   className="w-16 p-2 rounded border border-slate-200 text-sm"

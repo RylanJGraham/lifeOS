@@ -114,6 +114,7 @@ html, body {
   align-items: center;
   gap: 10px;
   padding: 9px 12px;
+  min-height: 40px;
   border-radius: 10px;
   font-size: 13px;
   font-weight: 600;
@@ -264,9 +265,9 @@ html, body {
 .tab-btn.active[data-tab="trends"]::after { background: var(--accent-trends); }
 .tab-btn.active[data-tab="spending"]::after { background: var(--accent-wealth); }
 .tab-btn.active[data-tab="networth"]::after { background: var(--accent-trends); }
-.tab-btn.active[data-tab="portfolio"]::after { background: var(--accent-sleep); }
+.tab-btn.active[data-tab="financials"]::after { background: var(--accent-sleep); }
 .tab-btn.active[data-tab="cashflow"]::after { background: var(--accent-kinematic); }
-.tab-btn.active[data-tab="wtrends"]::after { background: var(--accent-cardiovascular); }
+.tab-btn.active[data-tab="signals"]::after { background: var(--accent-cardiovascular); }
 
 /* ─── Expandable Sections ────────────────────────────────────── */
 .expandable-header {
@@ -330,7 +331,7 @@ html, body {
   position: fixed;
   bottom: 0;
   right: 0;
-  left: 250px;
+  left: 0;
   z-index: 98;
   background: var(--surface-secondary);
   border-top: 1px solid var(--border-ai);
@@ -338,18 +339,9 @@ html, body {
   transition: height var(--duration-slow) var(--ease-smooth);
 }
 
-.copilot-stream {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.8;
-  color: var(--text-secondary);
-  max-height: 160px;
-  overflow-y: auto;
+@media (min-width: 1024px) {
+  .copilot-bar { left: 250px; }
 }
-
-.copilot-stream .timestamp { color: var(--accent-sleep); margin-right: 8px; }
-.copilot-stream .event-insight { color: var(--status-optimal); }
-.copilot-stream .event-alert { color: var(--status-warning); }
 
 /* ─── Zone Bars ─────────────────────────────────────────────── */
 .zone-bar-z1 { background: linear-gradient(90deg, #4CAF50, #66BB6A); }

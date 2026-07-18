@@ -2,7 +2,7 @@ import os
 import json
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
@@ -26,6 +26,7 @@ class GraphState(TypedDict):
     input_type: str # "text", "image", "pdf"
     content: str # raw text, base64 image, or pdf text
     response: Optional[str]
+    caption: Optional[str] # optional user text accompanying an image
 
 # Cloud Model (OpenRouter) for complex routing and vision
 openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
@@ -107,6 +108,152 @@ def check_supplement_overrides(text: str, m: dict) -> dict:
         m["ai_analysis"] = "Supradyn multivitamin providing 100% DV of essential vitamins, 10mg Zinc, 14mg Iron, and 80mg Magnesium to support daily energy and micronutrient requirements."
     return m
 
+def _resolve_day_reference(ref: str):
+    """Resolve a raw day reference ('monday', 'yesterday', '2026-07-13') to an
+    ISO timestamp. Weekday names map to their most recent past occurrence.
+    Returns None if unparseable. Never trust an LLM to do this date math."""
+    now = datetime.now().astimezone()
+    ref = ref.strip().lower()
+    day = None
+    if ref == "today":
+        day = now.date()
+    elif ref == "yesterday":
+        day = (now - timedelta(days=1)).date()
+    else:
+        weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+        for i, name in enumerate(weekdays):
+            if name in ref:
+                delta = (now.weekday() - i) % 7
+                if delta == 0:
+                    delta = 7  # "on friday" said on a friday means last friday
+                day = (now - timedelta(days=delta)).date()
+                break
+        if day is None:
+            try:
+                day = datetime.fromisoformat(ref[:10]).date()
+            except (ValueError, TypeError):
+                return None
+    return datetime(day.year, day.month, day.day, now.hour, now.minute, tzinfo=now.tzinfo).isoformat()
+
+
+MUSCLE_GROUPS = ["Chest", "Back", "Front Delts", "Rear Delts", "Biceps", "Triceps",
+                 "Abs", "Quads", "Hamstrings", "Glutes", "Calves"]
+
+_EXERCISE_MUSCLE_HINTS = [
+    # specific multi-word/exception cases first — order matters
+    (("nordic",), "Hamstrings"),
+    (("face pull", "rear delt", "reverse fly", "reverse flye"), "Rear Delts"),
+    (("shoulder press", "overhead press", "ohp", "lateral raise", "military press"), "Front Delts"),
+    (("leg curl", "hamstring", "good morning"), "Hamstrings"),
+    (("glute", "hip thrust", "kickback"), "Glutes"),
+    (("calf",), "Calves"),
+    (("tricep", "pushdown", "skullcrusher", "dip"), "Triceps"),
+    (("bench", "chest press", "chest fly", "fly", "push-up", "pushup"), "Chest"),
+    (("row", "pulldown", "pull-up", "pullup", "pull up", "deadlift", "rdl"), "Back"),
+    (("squat", "leg extension", "leg press", "lunge", "hack"), "Quads"),
+    (("crunch", "ab ", "abs", "plank", "leg raise", "sit-up", "situp", "leg kicks"), "Abs"),
+    (("curl",), "Biceps"),
+]
+
+
+def _resolve_muscle_group(supabase_client, user_id: str, exercise_name: str):
+    """Figure out which muscle group an exercise hits, once, and cache it in
+    exercise_muscles. Order: template value -> learned cache -> name
+    heuristics -> LLM classification."""
+    name = (exercise_name or "").strip()
+    if not name or not supabase_client:
+        return None
+
+    # 1. template exercises with a group set
+    try:
+        t = supabase_client.table("workout_template_exercises").select("muscle_group").ilike("exercise_name", name).limit(1).execute()
+        if t.data and t.data[0].get("muscle_group"):
+            return t.data[0]["muscle_group"]
+    except Exception:
+        pass
+
+    # 2. learned cache
+    try:
+        c = supabase_client.table("exercise_muscles").select("muscle_group").eq("user_id", user_id).ilike("exercise_name", name).limit(1).execute()
+        if c.data:
+            return c.data[0]["muscle_group"]
+    except Exception:
+        pass
+
+    # 3. name heuristics
+    lower = name.lower()
+    for keywords, group in _EXERCISE_MUSCLE_HINTS:
+        if any(k in lower for k in keywords):
+            _cache_muscle_group(supabase_client, user_id, name, group, "heuristic")
+            return group
+
+    # 4. LLM classification
+    if llm_fast:
+        try:
+            prompt = (
+                f'Classify the gym exercise "{name}" into exactly one muscle group. '
+                f'Answer with ONLY one of: {", ".join(MUSCLE_GROUPS)}.'
+            )
+            answer = llm_fast.invoke([HumanMessage(content=prompt)]).content.strip()
+            for group in MUSCLE_GROUPS:
+                if group.lower() in answer.lower():
+                    _cache_muscle_group(supabase_client, user_id, name, group, "llm")
+                    return group
+        except Exception as e:
+            logger.warning(f"LLM muscle classification failed for '{name}': {e}")
+    return None
+
+
+def _cache_muscle_group(supabase_client, user_id: str, exercise_name: str, group: str, source: str):
+    try:
+        supabase_client.table("exercise_muscles").upsert(
+            {"user_id": user_id, "exercise_name": exercise_name, "muscle_group": group, "source": source},
+            on_conflict="user_id,exercise_name",
+        ).execute()
+    except Exception as e:
+        logger.warning(f"exercise_muscles cache write failed: {e}")
+
+
+def _get_known_items(supabase_client, user_id) -> list:
+    """Fetch the user's saved habit foods/supplements (known_items table)."""
+    try:
+        res = supabase_client.table("known_items").select("*").eq("user_id", user_id).execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def _match_known_item(text: str, items: list):
+    """Return the known item whose name/alias appears in the user's text.
+    Longest matching name wins ('magnesium bisglycinate' beats 'magnesium')."""
+    t = text.lower()
+    best, best_len = None, 0
+    for item in items:
+        names = [item.get("name", "")] + (item.get("aliases") or [])
+        for n in names:
+            n = (n or "").lower().strip()
+            if n and n in t and len(n) > best_len:
+                best, best_len = item, len(n)
+    return best
+
+
+def _match_workout_template(supabase_client, user_id: str, text: str):
+    """Token-overlap match of free text (e.g. a caption saying 'leg day')
+    against the user's workout templates. Returns the template row or None."""
+    try:
+        res = supabase_client.table("workout_templates").select("id, name").eq("user_id", user_id).execute()
+    except Exception:
+        return None
+    tokens = set(re.findall(r"[a-z]+", (text or "").lower()))
+    best, best_score = None, 0
+    for tmpl in (res.data or []):
+        tmpl_tokens = set(re.findall(r"[a-z]+", tmpl.get("name", "").lower()))
+        score = len(tokens & tmpl_tokens)
+        if score > best_score:
+            best, best_score = tmpl, score
+    return best
+
+
 def text_intent_node(state: GraphState):
     logger.info("Executing Text Intent Node")
     text = state["content"]
@@ -120,8 +267,11 @@ def text_intent_node(state: GraphState):
     Is it a financial transaction (everyday spending/income)? -> 'finance'
     Is it an investment trade (buying, selling, adding, or trimming stock/crypto positions)? -> 'trade'
     Is it a food/meal log (eating/drinking)? -> 'nutrition'
-    Is it a workout log (logging a completed exercise routine or workout template)? -> 'workout'
+    Is it a workout log (logging a completed exercise routine, gym session, or workout template)? -> 'workout'
     Or is it just general conversation? -> 'general'
+
+    Workout logs can be terse and use gym slang, e.g.: "did push today", "pull session yesterday",
+    "smashed legs this morning", "did pull on tuesday" — these are all 'workout', NOT 'general'.
     
     Respond with ONLY ONE WORD: 'finance', 'trade', 'nutrition', 'workout', or 'general'.
     
@@ -302,9 +452,28 @@ def text_intent_node(state: GraphState):
                 
         elif "nutrition" in intent:
             current_time = datetime.now().astimezone().isoformat()
-            
+
+            # Resolve user + known items up front (habit matching)
+            user_id = "00000000-0000-0000-0000-000000000000"
+            known_items, known_match = [], None
+            if supabase:
+                try:
+                    res_profile = supabase.table("user_profiles").select("user_id").limit(1).execute()
+                    if res_profile.data and len(res_profile.data) > 0:
+                        user_id = res_profile.data[0]["user_id"]
+                except Exception:
+                    pass
+                known_items = _get_known_items(supabase, user_id)
+                known_match = _match_known_item(text, known_items)
+
             # Step 1: Query construction and DDG HTML web search for supplements or brand names
-            search_query_prompt = f"""
+            # (skipped entirely when the text matches a saved known item)
+            search_context = ""
+            search_query = ""
+            if known_match:
+                logger.info(f"Nutrition text matched known item '{known_match.get('name')}' — skipping web search.")
+            else:
+                search_query_prompt = f"""
             Analyze the user's food/supplement log: "{text}".
             We want to find highly accurate nutritional facts (calories, protein, carbs, fat, fiber, and micronutrients like magnesium, zinc, iron, vitamin D, B12, etc.) for this item.
             Generate a single specific web search query to look up its nutritional values (prefer in English or Spanish as appropriate). 
@@ -312,14 +481,31 @@ def text_intent_node(state: GraphState):
             ALWAYS generate a search query, even for simple foods or generic meals, to ensure we get accurate fiber and micronutrient data. Only return 'no_search' if the input is complete nonsense or not food.
             Do not output any introductory or concluding text, only the search query or 'no_search'.
             """
-            search_query = llm_fast.invoke([HumanMessage(content=search_query_prompt)]).content.strip().replace('"', '').replace("'", "")
-            
-            search_context = ""
-            if search_query.lower() != "no_search":
-                logger.info(f"Nutrition query '{text}' requires web verification. Query: '{search_query}'")
-                search_context = web_search(search_query)
+                search_query = llm_fast.invoke([HumanMessage(content=search_query_prompt)]).content.strip().replace('"', '').replace("'", "")
+
+                if search_query.lower() != "no_search":
+                    logger.info(f"Nutrition query '{text}' requires web verification. Query: '{search_query}'")
+                    search_context = web_search(search_query)
+                else:
+                    logger.info("Nutrition query is standard food or vague. Skipping web search.")
+
+            # Known items context: exact macros for the user's habit foods
+            if known_match:
+                known_block = (
+                    f'MATCHED SAVED ITEM — use these EXACT values verbatim, do not estimate or ask for clarification:\n'
+                    f'"{known_match.get("name")}": {known_match.get("calories") or 0} kcal, '
+                    f'P {known_match.get("protein") or 0}g, C {known_match.get("carbs") or 0}g, F {known_match.get("fat") or 0}g'
+                    + (f', micronutrients: {json.dumps(known_match.get("micronutrients"))}' if known_match.get("micronutrients") else "")
+                )
+            elif known_items:
+                lines = [
+                    f'- "{i.get("name")}" (aliases: {", ".join(i.get("aliases") or [])}): '
+                    f'{i.get("calories") or 0} kcal, P {i.get("protein") or 0}g, C {i.get("carbs") or 0}g, F {i.get("fat") or 0}g'
+                    for i in known_items[:30]
+                ]
+                known_block = "The user's saved items (if the text clearly matches one, use its exact values):\n" + "\n".join(lines)
             else:
-                logger.info("Nutrition query is standard food or vague. Skipping web search.")
+                known_block = ""
 
             # Extract meal details and validate info
             ext_prompt = f"""
@@ -331,6 +517,11 @@ def text_intent_node(state: GraphState):
             {search_context if search_context else "No search context requested."}
             ---
             
+            Saved items context:
+            ---
+            {known_block if known_block else "None."}
+            ---
+           
             Determine if there is sufficient specific detail about the food, drink, or nutritional supplements (e.g. multivitamin, vitamin D, fish oil, zinc, protein shake) in the text to reasonably identify the items and estimate their nutritional values.
             - Specific foods and supplements like "apple", "banana", "chicken and rice", "egg sandwich", "multivitamin", "omega-3 capsule", "vitamin D capsule", "whey protein shake with whole milk", "a slice of pizza" have sufficient data.
             - Nutritional supplements (like a multivitamin) are fully valid nutrition inputs. They may have 0 or negligible calories/macros, but their micronutrients (e.g. vitamin_d_dv_pct, b12_dv_pct, zinc_dv_pct, iron_dv_pct, magnesium_dv_pct, potassium_mg, sodium_mg, etc.) should be estimated based on typical dosage/values, and their calories/macros set to 0. If web search verification data is present and contains specific amounts (e.g., 80mg magnesium, 10mg zinc), use those exact proportions.
@@ -348,32 +539,41 @@ def text_intent_node(state: GraphState):
             - Vague descriptions like "lunch", "snack", "dinner", "eating something", or "food" do NOT have sufficient data.
             
             If there is sufficient data:
-            - Parse/estimate the meal or supplement details.
-            - Determine when the meal or supplement was consumed. If a time is mentioned (e.g. "at 8am", "an hour ago", "at 12:30", "yesterday at 7pm"), resolve it relative to the current system time ({current_time}) and output a valid ISO 8601 timestamp string (e.g. "2026-06-14T08:00:00+02:00"). If no time is specified, default to the current system time ({current_time}).
+            - The user may log MULTIPLE foods across MULTIPLE days in one message. Return ONE item per distinct food/dish.
+              * Same food repeated over several days ("toast for the past tues-thurs") -> ONE item with several entries in its "meal_days".
+              * Different foods on different days ("tuesday a burger, wednesday tacos") -> SEPARATE items, each with its own "meal_days" and macros. NEVER copy one day's food onto another day.
+            - For each item, report days EXACTLY as the user said them (no date math):
+              * "meal_days": raw day references, e.g. ["today"], ["yesterday"], ["tuesday"], or per-day for a range: ["tuesday", "wednesday", "thursday"].
+              * "meal_clock": the clock time "HH:MM" if mentioned for that item (e.g. "at 1pm" -> "13:00"), otherwise null. A time stated for all items applies to each.
             
             Return ONLY a valid JSON object matching the following structure (no other text or wrapper code):
             {{
               "sufficient_data": boolean,
               "clarification_question": "A polite, friendly follow-up question asking for specific items if sufficient_data is false, otherwise null",
-              "meal_name": "Brief descriptive name of the meal or supplement (e.g. 'Supradyn Multivitamin') if sufficient_data is true, otherwise null",
-              "meal_time": "ISO 8601 timestamp string of the consumption time if sufficient_data is true, otherwise null",
-              "calories": integer_or_null,
-              "protein": integer_or_null,
-              "carbs": integer_or_null,
-              "fats": integer_or_null,
-              "fiber": integer_grams_or_null,
-              "sugar": integer_grams_or_null,
-              "micronutrients": {{
-                "vitamin_d_dv_pct": integer_percentage_or_null,
-                "omega_3_dv_pct": integer_percentage_or_null,
-                "magnesium_dv_pct": integer_percentage_or_null,
-                "zinc_dv_pct": integer_percentage_or_null,
-                "b12_dv_pct": integer_percentage_or_null,
-                "iron_dv_pct": integer_percentage_or_null,
-                "sodium_mg": integer_milligrams_or_null,
-                "potassium_mg": integer_milligrams_or_null
-              }},
-              "ai_analysis": "A brief 1-2 sentence nutritional insight or athletic context about this meal/supplement (or null if sufficient_data is false)"
+              "items": [
+                {{
+                  "meal_name": "Brief descriptive name of the meal or supplement",
+                  "meal_days": ["raw day reference strings as the user said them"],
+                  "meal_clock": "HH:MM_or_null",
+                  "calories": integer_or_null,
+                  "protein": integer_or_null,
+                  "carbs": integer_or_null,
+                  "fats": integer_or_null,
+                  "fiber": integer_grams_or_null,
+                  "sugar": integer_grams_or_null,
+                  "micronutrients": {{
+                    "vitamin_d_dv_pct": integer_percentage_or_null,
+                    "omega_3_dv_pct": integer_percentage_or_null,
+                    "magnesium_dv_pct": integer_percentage_or_null,
+                    "zinc_dv_pct": integer_percentage_or_null,
+                    "b12_dv_pct": integer_percentage_or_null,
+                    "iron_dv_pct": integer_percentage_or_null,
+                    "sodium_mg": integer_milligrams_or_null,
+                    "potassium_mg": integer_milligrams_or_null
+                  }},
+                  "ai_analysis": "A brief 1-sentence nutritional insight about this item (or null)"
+                }}
+              ]
             }}
             """
             res = llm_fast.invoke([HumanMessage(content=ext_prompt)]).content
@@ -383,6 +583,10 @@ def text_intent_node(state: GraphState):
                 # Apply static override as a safety fallback if search failed/empty
                 m = check_supplement_overrides(text, m)
                 if m.get("sufficient_data"):
+                    items = m.get("items") or []
+                    if not items and m.get("meal_name"):
+                        items = [m]  # backward compat with single-meal output
+                    logged_summaries = []
                     if supabase:
                         user_id = "00000000-0000-0000-0000-000000000000"
                         try:
@@ -391,27 +595,87 @@ def text_intent_node(state: GraphState):
                                 user_id = res_profile.data[0]["user_id"]
                         except Exception:
                             pass
-                        
-                        micro_payload = {
-                            "fiber": m.get("fiber", 0),
-                            "sugar": m.get("sugar", 0),
-                            "ai_analysis": m.get("ai_analysis", ""),
-                            **m.get("micronutrients", {})
-                        }
 
-                        supabase.table("meals").insert({
-                            "description": m.get("meal_name"),
-                            "calories": m.get("calories", 0),
-                            "protein": m.get("protein", 0),
-                            "carbs": m.get("carbs", 0),
-                            "fat": m.get("fats", 0),
-                            "meal_time": m.get("meal_time") or current_time,
-                            "micronutrients": micro_payload,
-                            "user_id": user_id
-                        }).execute()
-                    
+                        for it in items:
+                            micro_payload = {
+                                "fiber": it.get("fiber", 0),
+                                "sugar": it.get("sugar", 0),
+                                "ai_analysis": it.get("ai_analysis", ""),
+                                **(it.get("micronutrients") or {})
+                            }
+
+                            # Resolve day references in Python (never trust LLM date math).
+                            # Each item carries its own days/clock: ranges fan out per day,
+                            # different-day foods stay separate items.
+                            clock = it.get("meal_clock")
+                            days = it.get("meal_days") or []
+                            if isinstance(days, str):
+                                days = [days]
+                            times = []
+                            for d in days:
+                                t = _resolve_day_reference(str(d))
+                                if t:
+                                    times.append(t)
+                            if not times:
+                                times = [current_time]
+                            if clock:
+                                try:
+                                    hh, mm = str(clock).split(":")[:2]
+                                    times = [
+                                        datetime.fromisoformat(t).replace(hour=int(hh), minute=int(mm), second=0, microsecond=0).isoformat()
+                                        for t in times
+                                    ]
+                                except (ValueError, TypeError):
+                                    pass
+
+                            for meal_time in times:
+                                supabase.table("meals").insert({
+                                    "description": it.get("meal_name"),
+                                    "calories": it.get("calories", 0),
+                                    "protein": it.get("protein", 0),
+                                    "carbs": it.get("carbs", 0),
+                                    "fat": it.get("fats", 0),
+                                    "meal_time": meal_time,
+                                    "micronutrients": micro_payload,
+                                    "user_id": user_id
+                                }).execute()
+
+                            # Track habit usage: bump the matching known item, or
+                            # learn this item as a new known item for next time.
+                            try:
+                                it_name = it.get("meal_name") or ""
+                                it_match = known_match if (known_match and len(items) == 1) else _match_known_item(it_name, known_items)
+                                if it_match:
+                                    supabase.table("known_items").update({
+                                        "use_count": (it_match.get("use_count") or 0) + 1,
+                                        "last_used_at": current_time
+                                    }).eq("id", it_match["id"]).execute()
+                                elif it_name:
+                                    supabase.table("known_items").insert({
+                                        "user_id": user_id,
+                                        "name": it_name,
+                                        "calories": it.get("calories", 0),
+                                        "protein": it.get("protein", 0),
+                                        "carbs": it.get("carbs", 0),
+                                        "fat": it.get("fats", 0),
+                                        "micronutrients": micro_payload,
+                                        "use_count": 1,
+                                        "last_used_at": current_time
+                                    }).execute()
+                            except Exception as e:
+                                logger.warning(f"known_items learn/bump failed: {e}")
+
+                            day_part = f" × {len(times)}d ({times[0][:10]}→{times[-1][:10]})" if len(times) > 1 else f" {times[0][:10]} {times[0][11:16]}"
+                            logged_summaries.append(f"{it.get('meal_name')} ({it.get('calories')} kcal{day_part})")
+
                     search_info = f" (verified via search for '{search_query}')" if search_context else ""
-                    state["response"] = f"Logged meal: {m.get('meal_name')}{search_info} ({m.get('calories')} kcal, {m.get('protein')}g P, {m.get('carbs')}g C, {m.get('fats')}g F) consumed at {m.get('meal_time') or current_time}. Insight: {m.get('ai_analysis')}"
+                    known_info = " ✓ saved item" if known_match else ""
+                    if len(logged_summaries) > 1:
+                        state["response"] = f"Logged {len(logged_summaries)} items{search_info}:\n" + "\n".join(f"• {s}" for s in logged_summaries)
+                    elif logged_summaries:
+                        state["response"] = f"Logged meal: {logged_summaries[0]}{search_info}{known_info}. Insight: {items[0].get('ai_analysis') if items else ''}"
+                    else:
+                        state["response"] = "Understood, but found no food items to log."
                 else:
                     state["response"] = m.get("clarification_question") or "Could you please specify what food or drink items you had for this meal?"
             else:
@@ -422,15 +686,17 @@ def text_intent_node(state: GraphState):
             
             # Fire off Strava sync asynchronously
             try:
-                import subprocess
+                import subprocess, sys
                 # Run the sync_strava.py script in the background
-                subprocess.Popen(["python", "src/workers/sync_strava.py"])
+                sync_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workers", "sync_strava.py")
+                subprocess.Popen([sys.executable, sync_script])
             except Exception as e:
                 logger.error(f"Failed to trigger async strava sync: {e}")
 
             ext_prompt = f"""
             Analyze the user's text: "{text}".
             They are logging a completed workout. Extract the name of the workout template or routine they did (e.g., "chest workout", "leg day", "pull session").
+            Today is {datetime.now().astimezone().strftime("%A, %Y-%m-%d")}. If the user says when they did the workout, capture it EXACTLY as said (e.g. "monday", "yesterday", "last friday", or an explicit "2026-07-13") — do NOT convert it yourself.
             Also extract any dynamic modifications:
             1. "overrides": progressive overload bumps to existing exercises, including "new_reps" if they specify volume instead of weight (e.g. bodyweight exercises).
             2. "skipped_exercises": exercises they skipped today.
@@ -438,6 +704,7 @@ def text_intent_node(state: GraphState):
             Return ONLY a valid JSON object:
             {{
               "workout_name": "the extracted workout template name",
+              "workout_date": "the raw day reference exactly as the user said it, or null if not mentioned",
               "overrides": [ {{"exercise_name": "incline curls", "new_weight": 35, "new_reps": 12}} ],
               "skipped_exercises": [ "bench press" ],
               "added_exercises": [ {{"exercise_name": "crunches", "sets": 3, "weight": 0, "reps": 50}} ]
@@ -452,6 +719,15 @@ def text_intent_node(state: GraphState):
                 overrides = w_data.get("overrides", [])
                 skipped = [s.lower() for s in w_data.get("skipped_exercises", [])]
                 added = w_data.get("added_exercises", [])
+
+                # Resolve the workout date if the user mentioned one
+                workout_time = current_time
+                w_date_str = w_data.get("workout_date")
+                resolved_date = None
+                if w_date_str:
+                    workout_time = _resolve_day_reference(str(w_date_str)) or current_time
+                    if workout_time != current_time:
+                        resolved_date = workout_time[:10]
                 
                 # Default user_id
                 user_id = "00000000-0000-0000-0000-000000000000"
@@ -462,12 +738,20 @@ def text_intent_node(state: GraphState):
                 except Exception:
                     pass
                 
-                # Find template
+                # Find template: token-overlap match against the user's templates,
+                # so "pull session" still matches the "Pull Day" template.
                 try:
-                    tmpl_res = supabase.table("workout_templates").select("id, name").eq("user_id", user_id).ilike("name", f"%{w_name}%").execute()
-                    if tmpl_res.data and len(tmpl_res.data) > 0:
-                        tmpl_id = tmpl_res.data[0]["id"]
-                        actual_name = tmpl_res.data[0]["name"]
+                    tmpl_res = supabase.table("workout_templates").select("id, name").eq("user_id", user_id).execute()
+                    name_tokens = set(re.findall(r"[a-z]+", w_name))
+                    best_tmpl, best_score = None, 0
+                    for tmpl in (tmpl_res.data or []):
+                        tmpl_tokens = set(re.findall(r"[a-z]+", tmpl.get("name", "").lower()))
+                        score = len(name_tokens & tmpl_tokens)
+                        if score > best_score:
+                            best_tmpl, best_score = tmpl, score
+                    if best_tmpl:
+                        tmpl_id = best_tmpl["id"]
+                        actual_name = best_tmpl["name"]
                         
                         ex_res = supabase.table("workout_template_exercises").select("*").eq("template_id", tmpl_id).execute()
                         bumped_messages = []
@@ -475,6 +759,7 @@ def text_intent_node(state: GraphState):
                         added_messages = []
                         
                         logged_count = 0
+                        logged_ids = []
                         if ex_res.data:
                             for ex in ex_res.data:
                                 ex_name_lower = ex.get("exercise_name").lower()
@@ -503,15 +788,16 @@ def text_intent_node(state: GraphState):
                                         bumped_messages.append(f"{ex.get('exercise_name')} to {' '.join(bump_str)}")
                                         break
                                 
-                                supabase.table("workouts").insert({
+                                ins = supabase.table("workouts").insert({
                                     "user_id": user_id,
-                                    "workout_date": current_time,
+                                    "workout_date": workout_time,
                                     "exercise_name": ex.get("exercise_name"),
                                     "sets": ex.get("sets"),
                                     "reps": target_reps,
-                                    "weight": target_weight,
-                                    "muscle_group": ex.get("muscle_group")
+                                    "weight": target_weight
                                 }).execute()
+                                if ins.data:
+                                    logged_ids.append(ins.data[0].get("id"))
                                 logged_count += 1
                         
                         # Process newly added exercises
@@ -520,7 +806,8 @@ def text_intent_node(state: GraphState):
                             a_sets = a.get("sets", 3)
                             a_weight = a.get("weight", 0)
                             a_reps = a.get("reps")
-                            
+                            a_muscle = _resolve_muscle_group(supabase, user_id, a_name)
+
                             # Add permanently to template
                             supabase.table("workout_template_exercises").insert({
                                 "template_id": tmpl_id,
@@ -528,31 +815,83 @@ def text_intent_node(state: GraphState):
                                 "sets": a_sets,
                                 "reps": a_reps,
                                 "weight": a_weight,
+                                "muscle_group": a_muscle,
                                 "sort_order": 99 # Push to end
                             }).execute()
                             
                             # Log for today
-                            supabase.table("workouts").insert({
+                            ins = supabase.table("workouts").insert({
                                 "user_id": user_id,
-                                "workout_date": current_time,
+                                "workout_date": workout_time,
                                 "exercise_name": a_name,
                                 "sets": a_sets,
                                 "reps": a_reps,
                                 "weight": a_weight
                             }).execute()
+                            if ins.data:
+                                logged_ids.append(ins.data[0].get("id"))
                             
                             added_messages.append(f"{a_name} ({a_sets} sets)")
                             logged_count += 1
                             
-                        base_msg = f"Logged {logged_count} exercises for '{actual_name}'!"
+                        # Enrich with watch stats (HR, calories, duration): Mi Fitness
+                        # (Xiaomi cloud) first, Strava as fallback.
+                        strava_note = ""
+                        if logged_ids:
+                            activity = None
+                            try:
+                                from workers.sync_mifitness import get_activity_for_date as mf_activity_for_date
+                                activity = mf_activity_for_date(workout_time[:10])
+                            except Exception as e:
+                                logger.warning(f"Mi Fitness enrichment lookup failed: {e}")
+                            if activity is None:
+                                try:
+                                    from workers.sync_strava import get_activity_for_date
+                                    activity = get_activity_for_date(workout_time[:10])
+                                except Exception as e:
+                                    logger.warning(f"Strava enrichment lookup failed: {e}")
+                            if activity:
+                                try:
+                                    def _int(val):
+                                        try:
+                                            return int(float(val)) if val is not None else None
+                                        except (ValueError, TypeError):
+                                            return None
+                                    stats = {
+                                        "strava_id": str(activity.get("id")),
+                                        "activity_type": activity.get("type"),
+                                        "duration_minutes": round(activity["moving_time"] / 60.0, 1) if activity.get("moving_time") else None,
+                                        "distance_km": round(activity["distance"] / 1000.0, 2) if activity.get("distance") else None,
+                                        "average_heartrate": _int(activity.get("average_heartrate")),
+                                        "max_heartrate": _int(activity.get("max_heartrate")),
+                                        "calories": _int(activity.get("calories") or activity.get("kilojoules")),
+                                        "suffer_score": _int(activity.get("suffer_score")),
+                                    }
+                                    stats = {k: v for k, v in stats.items() if v is not None}
+                                    for rid in logged_ids:
+                                        supabase.table("workouts").update(stats).eq("id", rid).execute()
+                                    hr = stats.get("average_heartrate")
+                                    dur = stats.get("duration_minutes")
+                                    if hr:
+                                        strava_note = f"\nWatch stats attached (avg HR {hr} bpm, {dur} min)."
+                                    else:
+                                        strava_note = "\nWatch stats attached."
+                                except Exception as e:
+                                    logger.warning(f"Workout stat enrichment failed: {e}")
+                                    strava_note = "\n(Found a watch recording but failed to attach stats.)"
+                            else:
+                                strava_note = "\n(No watch recording found for this date.)"
+
+                        date_note = f" on {resolved_date}" if resolved_date else ""
+                        base_msg = f"Logged {logged_count} exercises for '{actual_name}'{date_note}!"
                         if bumped_messages:
                             base_msg += f"\nBumped: {', '.join(bumped_messages)}."
                         if skipped_messages:
                             base_msg += f"\nSkipped: {', '.join(skipped_messages)}."
                         if added_messages:
                             base_msg += f"\nAdded to template: {', '.join(added_messages)}."
-                            
-                        base_msg += "\n(Strava sync triggered in background)"
+
+                        base_msg += strava_note
                         state["response"] = base_msg
                     else:
                         state["response"] = f"Could not find a workout template matching '{w_name}'."
@@ -802,17 +1141,19 @@ Return ONLY a valid JSON object matching the following structure (no other text 
 def image_dispatcher_node(state: GraphState):
     logger.info("Executing Image Dispatcher Node")
     base64_image = state["content"]
-    
+    caption = state.get("caption")
+
     if not llm_fast:
         state["response"] = "OpenRouter API Key not configured."
         return state
-        
+
+    caption_hint = f'\nThe user also says about this image: "{caption}"' if caption else ""
     prompt = [
         HumanMessage(
             content=[
                 {
-                    "type": "text", 
-                    "text": "Look at this image. Is it a picture of food/meal (eating, drinking, ingredients, restaurant food) or is it a screenshot of a health/fitness tracking app dashboard (showing metrics like sleep time, steps, heart rate, workouts, weight, charts)? Respond with exactly one word: 'nutrition' or 'health'."
+                    "type": "text",
+                    "text": "Look at this image. Is it a picture of food/meal (eating, drinking, ingredients, restaurant food) or is it a screenshot of a health/fitness tracking app dashboard (showing metrics like sleep time, steps, heart rate, workouts, weight, charts)? Respond with exactly one word: 'nutrition' or 'health'." + caption_hint
                 },
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
             ]
@@ -837,6 +1178,7 @@ def image_dispatcher_node(state: GraphState):
 def health_image_node(state: GraphState):
     logger.info("Executing Health Image Node")
     base64_image = state["content"]
+    caption = state.get("caption")
     
     if not llm_cloud:
         state["response"] = "Error: OpenRouter API key not configured for Vision tasks."
@@ -846,28 +1188,39 @@ def health_image_node(state: GraphState):
         HumanMessage(
             content=[
                 {
-                    "type": "text", 
-                    "text": """Analyze this health app screenshot. Extract any available metrics such as:
-- Sleep duration (minutes or hours)
-- Deep sleep duration (minutes or hours)
-- REM sleep duration (minutes or hours)
-- Resting heart rate (bpm)
-- HRV (ms)
-- Steps
-- Active calories (kcal)
-- Body weight (kg)
-- VO2 max (ml/kg/min)
-- Heart Rate Zones (time spent in zones or percentages)
+                    "type": "text",
+                    "text": """Analyze this health/fitness app screenshot (e.g. Mi Fitness, Apple Health).
 
-Estimate or default the 'date' to today's date in 'YYYY-MM-DD' format if not explicitly visible in the screenshot.
+First decide the screenshot type:
+- "workout": a single workout/activity summary (shows one session with duration, calories, avg/max heart rate, HR zones, sport name like "Strength Training" or "Outdoor Running")
+- "daily_metrics": a daily dashboard (sleep, steps, resting HR, daily HR range, weight, etc.)
 
-Return ONLY a valid JSON object matching this structure (use null for any values not found):
+Extract any available metrics:
+- Sleep duration / deep / light / REM (convert hours to MINUTES)
+- Bedtime and wake time (HH:MM, 24h) if shown
+- Resting heart rate (bpm), sleeping heart rate (bpm), daily average/min/max heart rate
+- HRV (ms), Steps, Active calories (kcal), Body weight (kg), VO2 max
+- For workouts: sport name, date, start time, duration (minutes), calories, avg/max HR, HR zone minutes
+
+Use the date visible in the screenshot if any, else today's date, in 'YYYY-MM-DD' format.
+Today is @@TODAY@@. Screenshots often show only day+month (e.g. "Jul 17") WITHOUT a year — in that case you MUST use today's year, never a year from your training data.
+@@CAPTION@@
+
+Return ONLY a valid JSON object (null for values not found):
 {
+  "screenshot_type": "workout" or "daily_metrics",
   "date": "YYYY-MM-DD",
   "sleep_duration_minutes": integer_or_null,
   "sleep_deep_minutes": integer_or_null,
+  "sleep_light_minutes": integer_or_null,
   "sleep_rem_minutes": integer_or_null,
+  "sleep_bed_time": "HH:MM_or_null",
+  "sleep_wake_time": "HH:MM_or_null",
   "resting_heart_rate": integer_or_null,
+  "sleeping_heart_rate": integer_or_null,
+  "average_heart_rate": integer_or_null,
+  "min_heart_rate": integer_or_null,
+  "max_heart_rate": integer_or_null,
   "hrv": integer_or_null,
   "steps": integer_or_null,
   "active_calories": integer_or_null,
@@ -879,9 +1232,20 @@ Return ONLY a valid JSON object matching this structure (use null for any values
     "zone3": integer_minutes_or_null,
     "zone4": integer_minutes_or_null,
     "zone5": integer_minutes_or_null
+  },
+  "workout": null_or_{
+    "name": "sport name string",
+    "start_time": "HH:MM or null",
+    "duration_minutes": numeric_or_null,
+    "calories": integer_or_null,
+    "average_heartrate": integer_or_null,
+    "max_heartrate": integer_or_null
   }
 }
-"""
+""".replace("@@TODAY@@", datetime.now().strftime("%Y-%m-%d")).replace(
+                    "@@CAPTION@@",
+                    (f'The user says about this image: "{caption}". If they say when it was (e.g. "on thursday", "yesterday", "last monday"), that overrides the screenshot date — resolve it relative to today and use it as "date". If they name the workout type, use it as the workout name.' if caption else "")
+                )
                 },
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
             ]
@@ -906,21 +1270,125 @@ Return ONLY a valid JSON object matching this structure (use null for any values
                     pass
             
             date_str = data.get("date", datetime.utcnow().strftime("%Y-%m-%d"))
+            # Guard against year-misparsed dates: screenshots rarely show a year,
+            # and the model sometimes defaults to its training-era year (2023).
+            try:
+                parsed_date = datetime.fromisoformat(str(date_str)[:10]).date()
+                today = datetime.now().date()
+                if parsed_date > today or (today - parsed_date).days > 45:
+                    logger.warning(f"Screenshot date {date_str} implausible; using today ({today})")
+                    date_str = today.strftime("%Y-%m-%d")
+            except (ValueError, TypeError):
+                date_str = datetime.now().strftime("%Y-%m-%d")
             sleep_dur = data.get("sleep_duration_minutes")
             sleep_deep = data.get("sleep_deep_minutes")
+            sleep_light = data.get("sleep_light_minutes")
             sleep_rem = data.get("sleep_rem_minutes")
+            bed_time = data.get("sleep_bed_time")
+            wake_time = data.get("sleep_wake_time")
             rhr = data.get("resting_heart_rate")
+            sleeping_hr = data.get("sleeping_heart_rate")
+            avg_hr = data.get("average_heart_rate")
+            min_hr = data.get("min_heart_rate")
+            max_hr = data.get("max_heart_rate")
             hrv = data.get("hrv")
             vo2_max = data.get("vo2_max")
             steps = data.get("steps")
             active_calories = data.get("active_calories")
             weight = data.get("body_weight_kg")
             zones = data.get("heart_rate_zones")
-            
+
+            # Workout summary screenshots (duration, calories, HR zones) belong
+            # in the workouts table, not the daily health_metrics row.
+            w = data.get("workout") or {}
+            if data.get("screenshot_type") == "workout" and (w.get("name") or caption) and supabase:
+                w_name = w.get("name") or caption
+                _resolve_muscle_group(supabase, user_id, w_name)  # learn for the muscle map
+                duration = w.get("duration_minutes")
+                start_time = w.get("start_time") or "12:00"
+                workout_date = f"{date_str}T{start_time}:00"
+
+                def _session_stats():
+                    s = {
+                        "duration_minutes": duration,
+                        "calories": w.get("calories"),
+                        "average_heartrate": w.get("average_heartrate"),
+                        "max_heartrate": w.get("max_heartrate"),
+                    }
+                    if zones:
+                        s["streams"] = {"heart_rate_zones": zones}
+                    return {k: v for k, v in s.items() if v is not None}
+
+                # If the caption names a routine (e.g. "leg day"), log the full
+                # template's exercises and attach the session stats to each row.
+                if caption:
+                    tmpl = _match_workout_template(supabase, user_id, caption)
+                    if tmpl:
+                        ex_res = supabase.table("workout_template_exercises").select("*").eq("template_id", tmpl["id"]).execute()
+                        exercises = ex_res.data or []
+                        if exercises:
+                            try:
+                                dup = supabase.table("workouts").select("id").eq("user_id", user_id).eq("exercise_name", exercises[0].get("exercise_name")).gte("workout_date", f"{date_str}T00:00:00").lte("workout_date", f"{date_str}T23:59:59").execute()
+                            except Exception:
+                                dup = None
+                            if dup and dup.data:
+                                state["response"] = f"'{tmpl['name']}' on {date_str} is already logged — skipped duplicate."
+                                return state
+                            stats = _session_stats()
+                            for ex in exercises:
+                                supabase.table("workouts").insert({
+                                    "user_id": user_id,
+                                    "workout_date": workout_date,
+                                    "exercise_name": ex.get("exercise_name"),
+                                    "sets": ex.get("sets"),
+                                    "reps": ex.get("reps"),
+                                    "weight": ex.get("weight"),
+                                    "activity_type": tmpl["name"],
+                                    **stats,
+                                }).execute()
+                            bits = [
+                                f"{duration} min" if duration else None,
+                                f"{w.get('calories')} kcal" if w.get("calories") else None,
+                                f"avg HR {w.get('average_heartrate')} bpm" if w.get("average_heartrate") else None,
+                                f"max HR {w.get('max_heartrate')} bpm" if w.get("max_heartrate") else None,
+                            ]
+                            detail = ", ".join(b for b in bits if b) or "no stats visible"
+                            state["response"] = f"Logged {len(exercises)} exercises for '{tmpl['name']}' on {date_str} with watch stats ({detail})."
+                            return state
+
+                try:
+                    dup = supabase.table("workouts").select("id").eq("user_id", user_id).eq("exercise_name", w_name).gte("workout_date", f"{date_str}T00:00:00").lte("workout_date", f"{date_str}T23:59:59").execute()
+                except Exception:
+                    dup = None
+                if dup and dup.data:
+                    state["response"] = f"Workout '{w_name}' on {date_str} is already logged — skipped duplicate."
+                    return state
+                w_payload = {
+                    "user_id": user_id,
+                    "workout_date": workout_date,
+                    "exercise_name": w_name,
+                    "activity_type": w_name,
+                    **_session_stats(),
+                }
+                supabase.table("workouts").insert(w_payload).execute()
+                bits = [
+                    f"{duration} min" if duration else None,
+                    f"{w.get('calories')} kcal" if w.get("calories") else None,
+                    f"avg HR {w.get('average_heartrate')} bpm" if w.get("average_heartrate") else None,
+                    f"max HR {w.get('max_heartrate')} bpm" if w.get("max_heartrate") else None,
+                ]
+                detail = ", ".join(b for b in bits if b) or "no stats visible"
+                state["response"] = f"Logged workout from screenshot: {w_name} on {date_str} ({detail})."
+                return state
+
             # Formatting notes for standard schema
             notes_list = []
-            if sleep_dur is not None: notes_list.append(f"Sleep: {sleep_dur} min (Deep: {sleep_deep or 0} min, REM: {sleep_rem or 0} min)")
+            if sleep_dur is not None: notes_list.append(f"Sleep: {sleep_dur} min (Deep: {sleep_deep or 0} min, Light: {sleep_light or 0} min, REM: {sleep_rem or 0} min)")
+            if bed_time or wake_time: notes_list.append(f"Bed: {bed_time or '?'}, Wake: {wake_time or '?'}")
             if rhr is not None: notes_list.append(f"RHR: {rhr} bpm")
+            if sleeping_hr is not None: notes_list.append(f"Sleeping HR: {sleeping_hr} bpm")
+            if avg_hr is not None or min_hr is not None or max_hr is not None:
+                notes_list.append(f"Daily HR: avg {avg_hr or '?'} bpm, min {min_hr or '?'} bpm, max {max_hr or '?'} bpm")
             if hrv is not None: notes_list.append(f"HRV: {hrv} ms")
             if steps is not None: notes_list.append(f"Steps: {steps}")
             if active_calories is not None: notes_list.append(f"Active energy: {active_calories} kcal")
@@ -928,7 +1396,7 @@ Return ONLY a valid JSON object matching this structure (use null for any values
             if vo2_max is not None: notes_list.append(f"VO2 Max: {vo2_max}")
             if zones is not None: notes_list.append(f"HR Zones: {json.dumps(zones)}")
             
-            notes_str = "Apple Health Screenshot Parser:\n" + "\n".join(notes_list)
+            notes_str = "Health screenshot import:\n" + "\n".join(notes_list)
             
             payload = {
                 "user_id": user_id,
@@ -944,10 +1412,12 @@ Return ONLY a valid JSON object matching this structure (use null for any values
             if supabase:
                 # Check for existing record for this date and user
                 existing_id = None
+                existing_notes = None
                 try:
-                    existing = supabase.table("health_metrics").select("id").eq("user_id", user_id).eq("recorded_at", date_str).execute()
+                    existing = supabase.table("health_metrics").select("id, notes").eq("user_id", user_id).eq("recorded_at", date_str).execute()
                     if existing.data and len(existing.data) > 0:
                         existing_id = existing.data[0]["id"]
+                        existing_notes = existing.data[0].get("notes")
                 except Exception as e:
                     logger.warning(f"Failed to check existing health metrics: {e}")
 
@@ -959,10 +1429,25 @@ Return ONLY a valid JSON object matching this structure (use null for any values
                     extended_payload["active_calories"] = active_calories
                     extended_payload["body_weight_kg"] = weight
                     extended_payload["heart_rate_zones"] = zones
-                    
+                    extended_payload["sleep_bed_time"] = bed_time
+                    extended_payload["sleep_wake_time"] = wake_time
+                    extended_payload["sleeping_heart_rate"] = sleeping_hr
+                    extended_payload["average_heart_rate"] = avg_hr
+                    extended_payload["min_heart_rate"] = min_hr
+                    extended_payload["max_heart_rate"] = max_hr
+
                     if existing_id:
-                        supabase.table("health_metrics").update(extended_payload).eq("id", existing_id).execute()
-                        logger.info(f"Updated health metrics for {date_str}")
+                        # MERGE, don't overwrite: only write fields this screenshot
+                        # actually provided, so a sleep screenshot never wipes HR
+                        # data from the same day (and vice versa).
+                        merged = {k: v for k, v in extended_payload.items() if v is not None}
+                        header = "Health screenshot import:"
+                        prev_lines = [l for l in (existing_notes or "").split("\n") if l.strip() and not l.startswith(header)]
+                        new_lines = [l for l in notes_str.split("\n") if l.strip() and not l.startswith(header)]
+                        combined = new_lines + [l for l in prev_lines if l not in new_lines]
+                        merged["notes"] = header + "\n" + "\n".join(combined)
+                        supabase.table("health_metrics").update(merged).eq("id", existing_id).execute()
+                        logger.info(f"Merged health metrics into existing row for {date_str}")
                     else:
                         supabase.table("health_metrics").insert(extended_payload).execute()
                         logger.info(f"Inserted health metrics for {date_str}")

@@ -105,9 +105,10 @@ def process_telegram_message(chat_id: int, message: dict):
                 return
                 
             b64_image = base64.b64encode(file_bytes).decode('utf-8')
-            
+            caption = message.get("caption")
+
             logger.info("Routing Image Base64 to graph...")
-            result = app_graph.invoke({"input_type": "image", "content": b64_image})
+            result = app_graph.invoke({"input_type": "image", "content": b64_image, "caption": caption})
             asyncio.run(send_telegram_message(chat_id, result.get("response", "Parsed!")))
 
     except Exception as e:

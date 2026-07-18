@@ -1,13 +1,17 @@
 import os
 import json
 from datetime import datetime
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
+from pydantic import BaseModel
+
 from telegram_webhook import router as telegram_router
 from utils.logger import SupabaseLogger
+from chat_service import handle_chat
+from pipeline_service import list_pipelines, run_pipeline
 
 # Load environment variables
 load_dotenv()
@@ -24,6 +28,14 @@ app.add_middleware(
 
 # Include the telegram webhook router
 app.include_router(telegram_router)
+
+# Shared-secret guard for the money endpoints (chat + pipelines).
+# The ngrok URL is public; without this anyone could burn LLM credits.
+API_SECRET = os.getenv("API_SECRET")
+
+async def require_api_key(x_api_key: str = Header(None)):
+    if API_SECRET and x_api_key != API_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
 
 @app.on_event("startup")
 async def startup_event():
@@ -89,22 +101,88 @@ async def status_check():
 
 @app.post("/api/sleep")
 async def receive_sleep_data(request: Request):
-    """Receives sleep data from Xiaomi Mi Fitness sync script"""
+    """Receives sleep data (single object or list) and upserts into health_metrics.
+
+    Accepted fields per record (all optional except date):
+      date (YYYY-MM-DD), sleep_duration_minutes, deep_sleep_time / sleep_deep_minutes,
+      light_sleep_time, rem_sleep_time / sleep_rem_minutes, awake_time
+    If no explicit duration is given, total = deep + light + rem.
+    """
     try:
         data = await request.json()
-        
-        # Save to supabase logic goes here
-        # Example structure:
-        # {
-        #   "date": "2026-06-13",
-        #   "deep_sleep_time": 120,
-        #   "light_sleep_time": 240,
-        #   ...
-        # }
-        
-        # Returns 200 to acknowledge
-        SupabaseLogger.info("api", f"Received sleep data payload: {len(data) if isinstance(data, list) else 1} items")
-        return JSONResponse(content={"status": "received", "count": len(data) if isinstance(data, list) else 1})
+        records = data if isinstance(data, list) else [data]
+
+        from utils.logger import get_supabase_client
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(status_code=500, detail="Supabase not configured.")
+
+        user_id = "00000000-0000-0000-0000-000000000000"
+        try:
+            res = supabase.table("user_profiles").select("user_id").limit(1).execute()
+            if res.data:
+                user_id = res.data[0]["user_id"]
+        except Exception:
+            pass
+
+        def pick(d, *keys):
+            for k in keys:
+                if d.get(k) is not None:
+                    return d.get(k)
+            return None
+
+        saved, skipped = 0, 0
+        for rec in records:
+            if not isinstance(rec, dict):
+                skipped += 1
+                continue
+            date_str = rec.get("date") or rec.get("recorded_at")
+            if not date_str:
+                skipped += 1
+                continue
+            date_str = str(date_str)[:10]
+
+            deep = pick(rec, "sleep_deep_minutes", "deep_sleep_time", "deep")
+            rem = pick(rec, "sleep_rem_minutes", "rem_sleep_time", "rem")
+            light = pick(rec, "sleep_light_minutes", "light_sleep_time", "light")
+            total = pick(rec, "sleep_duration_minutes", "total_sleep_time", "duration")
+            if total is None:
+                parts = [p for p in (deep, light, rem) if p is not None]
+                total = sum(parts) if parts else None
+
+            payload = {
+                "user_id": user_id,
+                "recorded_at": date_str,
+                "sleep_duration_minutes": total,
+                "sleep_deep_minutes": deep,
+                "sleep_rem_minutes": rem,
+                "notes": f"Sleep sync: total {total} min (deep {deep or 0}, light {light or 0}, REM {rem or 0}, awake {pick(rec, 'awake_time', 'awake') or 0})",
+            }
+
+            existing_id = None
+            try:
+                existing = supabase.table("health_metrics").select("id").eq("user_id", user_id).eq("recorded_at", date_str).execute()
+                if existing.data:
+                    existing_id = existing.data[0]["id"]
+            except Exception as e:
+                SupabaseLogger.warning("api", f"Sleep upsert lookup failed for {date_str}: {e}")
+
+            try:
+                if existing_id:
+                    # partial update: don't wipe fields this record doesn't carry
+                    merged = {k: v for k, v in payload.items() if v is not None}
+                    supabase.table("health_metrics").update(merged).eq("id", existing_id).execute()
+                else:
+                    supabase.table("health_metrics").insert(payload).execute()
+                saved += 1
+            except Exception as e:
+                SupabaseLogger.error("api", f"Failed to save sleep record for {date_str}: {e}")
+                skipped += 1
+
+        SupabaseLogger.info("api", f"Sleep data ingested: {saved} saved, {skipped} skipped.")
+        return JSONResponse(content={"status": "received", "saved": saved, "skipped": skipped})
+    except HTTPException:
+        raise
     except Exception as e:
         SupabaseLogger.error("api", f"Failed to process sleep data: {e}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -270,6 +348,39 @@ async def get_system_stream(limit: int = 20):
     except Exception as e:
         SupabaseLogger.error("api", f"Error in get_system_stream: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+class ChatRequest(BaseModel):
+    message: str = ""
+    image: str | None = None  # optional base64-encoded image (no data: prefix)
+
+@app.post("/api/chat")
+async def chat(req: ChatRequest, _=Depends(require_api_key)):
+    """Send a text message (optionally with an image) to the LangGraph agent."""
+    if not (req.message or "").strip() and not (req.image or "").strip():
+        raise HTTPException(status_code=400, detail="Message or image is required.")
+    from fastapi.concurrency import run_in_threadpool
+    try:
+        return await run_in_threadpool(handle_chat, req.message, req.image)
+    except Exception as e:
+        SupabaseLogger.error("web-chat", f"Chat request failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/pipelines")
+async def get_pipelines(_=Depends(require_api_key)):
+    """List available data-ingest pipelines with their current run status."""
+    return JSONResponse(content={"status": "success", "data": list_pipelines()})
+
+@app.post("/api/pipelines/{pipeline_id}/run")
+async def trigger_pipeline(pipeline_id: str, _=Depends(require_api_key)):
+    """Trigger a pipeline run in the background."""
+    try:
+        from fastapi.concurrency import run_in_threadpool
+        await run_in_threadpool(run_pipeline, pipeline_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown pipeline: {pipeline_id}")
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return JSONResponse(content={"status": "started", "pipeline_id": pipeline_id})
 
 @app.get("/api/correlations")
 async def get_correlations():

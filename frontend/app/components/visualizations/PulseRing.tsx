@@ -3,12 +3,12 @@
 import { motion } from "framer-motion";
 
 interface PulseRingProps {
-  score: number;
+  score: number | null;
   segments: {
-    health: number;
-    wealth: number;
-    recovery: number;
-    growth: number;
+    health: number | null;
+    wealth: number | null;
+    recovery: number | null;
+    growth: number | null;
   };
   hasAnomaly?: boolean;
 }
@@ -36,7 +36,7 @@ export default function PulseRing({ score, segments, hasAnomaly = false }: Pulse
         />
       )}
 
-      <svg width="320" height="320" viewBox="0 0 320 320" style={{ overflow: "visible" }}>
+      <svg width="320" height="320" viewBox="0 0 320 320" style={{ overflow: "visible", maxWidth: "100%", height: "auto" }}>
         <defs>
           {rings.map(r => (
             <filter key={`glow-${r.key}`} id={`glow-${r.key}`}>
@@ -62,6 +62,7 @@ export default function PulseRing({ score, segments, hasAnomaly = false }: Pulse
 
         {/* Animated arcs */}
         {rings.map((r, i) => {
+          if (r.value == null) return null;
           const circ = 2 * Math.PI * r.radius;
           const pct = r.value / 100;
           const fillLen = circ * pct - 5;
@@ -95,21 +96,17 @@ export default function PulseRing({ score, segments, hasAnomaly = false }: Pulse
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 0.8, delay: 0.5 }}
         >
-          {Math.round(score)}
+          {score != null ? Math.round(score) : "—"}
         </motion.text>
 
         <text x={cx} y={cy + 8} textAnchor="middle" fontSize="10" fontWeight="800"
           fill="#94A3B8" fontFamily="'JetBrains Mono', monospace" letterSpacing="3">
-          LIFE SCORE
-        </text>
-
-        <text x={cx} y={cy + 26} textAnchor="middle" fontSize="11" fontWeight="700"
-          fill="#059669" fontFamily="'JetBrains Mono', monospace">
-          ↑ +3.2 this week
+          {score != null ? "LIFE SCORE" : "AWAITING DATA"}
         </text>
 
         {/* Ring end-cap labels */}
         {rings.map((r) => {
+          if (r.value == null) return null;
           const pct = r.value / 100;
           const angle = pct * 2 * Math.PI - Math.PI / 2;
           const lx = cx + r.radius * Math.cos(angle);
@@ -129,7 +126,7 @@ export default function PulseRing({ score, segments, hasAnomaly = false }: Pulse
       </svg>
 
       {/* Domain score chips */}
-      <div className="grid grid-cols-4 gap-2 w-full mt-1">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 w-full mt-1">
         {rings.map(r => (
           <motion.div
             key={r.key}
@@ -146,10 +143,10 @@ export default function PulseRing({ score, segments, hasAnomaly = false }: Pulse
               {r.label}
             </div>
             <div className="text-lg font-black leading-none" style={{ fontFamily: "var(--font-mono)", color: r.color }}>
-              {r.value}
+              {r.value != null ? r.value : "—"}
             </div>
             <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: `${r.color}20` }}>
-              <div className="h-full rounded-full" style={{ width: `${r.value}%`, background: r.color }} />
+              <div className="h-full rounded-full" style={{ width: `${r.value ?? 0}%`, background: r.color }} />
             </div>
           </motion.div>
         ))}

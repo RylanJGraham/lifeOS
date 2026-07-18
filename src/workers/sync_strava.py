@@ -75,21 +75,50 @@ def get_user_id(supabase):
         pass
     return "00000000-0000-0000-0000-000000000000"
 
+def get_activity_for_date(target_date: str):
+    """Return the Strava activity whose LOCAL start date matches target_date
+    (YYYY-MM-DD), or None. Used to enrich template-logged gym sessions with
+    heart-rate/duration stats recorded on the watch."""
+    load_dotenv()
+    tokens = load_tokens()
+    if not tokens:
+        return None
+    access_token = refresh_strava_tokens(tokens)
+    if not access_token:
+        return None
+
+    day = datetime.fromisoformat(target_date[:10])
+    after = int((day - timedelta(days=2)).timestamp())
+    before = int((day + timedelta(days=2)).timestamp())
+    headers = {"Authorization": f"Bearer {access_token}"}
+    resp = httpx.get(
+        f"https://www.strava.com/api/v3/athlete/activities?after={after}&before={before}&per_page=20",
+        headers=headers, timeout=15.0)
+    resp.raise_for_status()
+    activities = resp.json()
+    if not isinstance(activities, list):
+        return None
+    for a in activities:
+        local = a.get("start_date_local") or a.get("start_date") or ""
+        if local[:10] == target_date[:10]:
+            return a
+    return None
+
+
 def sync_strava_activities():
     load_dotenv()
     
     tokens = load_tokens()
     if not tokens:
-        return
-        
+        raise RuntimeError(f"Strava token file not found at {TOKEN_FILE}. Run setup_strava.py first.")
+
     access_token = refresh_strava_tokens(tokens)
     if not access_token:
-        return
-        
+        raise RuntimeError("Strava token refresh failed.")
+
     supabase = get_supabase_client()
     if not supabase:
-        logger.error("Supabase client not configured.")
-        return
+        raise RuntimeError("Supabase client not configured.")
         
     user_id = get_user_id(supabase)
     logger.info(f"Using user_id: {user_id}")
@@ -114,7 +143,7 @@ def sync_strava_activities():
     except Exception as e:
         logger.error(f"Failed to fetch Strava activities: {e}")
         SupabaseLogger.error("sync_strava", f"Failed to fetch Strava activities: {e}")
-        return
+        raise
         
     logger.info(f"Found {len(activities)} activities in the last {days_to_sync} days.")
     

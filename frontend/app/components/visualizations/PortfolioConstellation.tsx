@@ -7,11 +7,14 @@ import { supabase } from "../../../utils/supabaseClient";
 interface Node {
   id: string;
   symbol: string;
-  value: number;       // Size
-  volatility: number;  // Orbit distance
-  pnl: number;         // Color gradient (green/red)
-  angle: number;       // Initial angle for orbit
+  currency: string;
+  value: number;   // Size — position_value
+  orbit: number;   // 0..1 — magnitude of unrealized P&L % (real data)
+  pnl: number;     // unrealized P&L % (color)
+  angle: number;   // Initial angle for orbit
 }
+
+const curSym = (c: string) => (c === "EUR" ? "€" : "$");
 
 const getColor = (pnl: number) => {
   if (pnl > 20) return "from-emerald-300 to-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.3)] text-white";
@@ -29,27 +32,32 @@ export default function PortfolioConstellation() {
   const [hoveredNode, setHoveredNode] = useState<Node | null>(null);
   const [portfolio, setPortfolio] = useState<Node[]>([]);
   const [maxVal, setMaxVal] = useState(1);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     async function fetchData() {
-      const { data, error } = await supabase.from('advisor_positions').select('*');
+      const { data, error } = await supabase.from('advisor_positions').select('*').eq('status', 'open');
       if (data && !error) {
         let currentMax = 0;
         const nodes = data.map((pos: any, i: number) => {
-           const val = pos.position_value || 0;
+           const val = parseFloat(pos.position_value) || 0;
+           const pnlPct = parseFloat(pos.unrealized_pnl_pct) || 0;
            if (val > currentMax) currentMax = val;
            return {
-             id: pos.id,
+             id: pos.id ?? pos.symbol,
              symbol: pos.symbol,
+             currency: pos.currency || "USD",
              value: val,
-             volatility: Math.random() * 0.8 + 0.2, // Mock volatility as it's not in DB
-             pnl: pos.unrealized_pnl_pct || 0,
+             // Orbit distance = magnitude of unrealized P&L % (scaled, min orbit so flat positions stay visible)
+             orbit: Math.min(1, Math.max(0.15, Math.abs(pnlPct) / 30)),
+             pnl: pnlPct,
              angle: (360 / data.length) * i
            };
         });
         setMaxVal(currentMax || 1);
         setPortfolio(nodes);
       }
+      setLoaded(true);
     }
     fetchData();
   }, []);
@@ -58,12 +66,21 @@ export default function PortfolioConstellation() {
   const centerY = 300;
   const maxOrbitRadius = 250;
 
+  if (loaded && portfolio.length === 0) {
+    return (
+      <div className="w-full h-[300px] bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center justify-center gap-2">
+        <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Portfolio Constellation</h3>
+        <p className="text-xs text-slate-400">No open positions to display.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="w-full h-[600px] bg-slate-50 rounded-xl border border-slate-200 relative overflow-hidden flex items-center justify-center">
-      
+
       <div className="absolute top-4 left-6 z-10">
         <h3 className="text-lg font-bold text-slate-800">Portfolio Constellation</h3>
-        <p className="text-xs text-slate-500">Orbit = Volatility | Size = Position Value</p>
+        <p className="text-xs text-slate-500">Orbit = |Unrealized P&L %| | Size = Position Value</p>
       </div>
 
       {/* Main Container */}
@@ -71,14 +88,14 @@ export default function PortfolioConstellation() {
         {/* Orbit Rings */}
         <svg className="absolute inset-0 w-full h-full pointer-events-none">
            {[0.2, 0.5, 0.8].map((vol, i) => (
-             <circle 
-                key={i} 
-                cx={centerX} 
-                cy={centerY} 
-                r={vol * maxOrbitRadius} 
-                stroke="rgba(0,0,0,0.05)" 
-                strokeWidth="1" 
-                fill="none" 
+             <circle
+                key={i}
+                cx={centerX}
+                cy={centerY}
+                r={vol * maxOrbitRadius}
+                stroke="rgba(0,0,0,0.05)"
+                strokeWidth="1"
+                fill="none"
                 strokeDasharray="4 4"
              />
            ))}
@@ -88,9 +105,9 @@ export default function PortfolioConstellation() {
 
         {/* Orbiting Nodes */}
         {portfolio.map((node) => {
-          const orbitRadius = Math.max(40, node.volatility * maxOrbitRadius);
+          const orbitRadius = Math.max(40, node.orbit * maxOrbitRadius);
           const size = getSize(node.value, maxVal);
-          const orbitDuration = 40 + (node.volatility * 40);
+          const orbitDuration = 40 + (node.orbit * 40);
 
           return (
             <motion.div
@@ -102,7 +119,7 @@ export default function PortfolioConstellation() {
               transition={{ duration: orbitDuration, repeat: Infinity, ease: "linear" }}
             >
               {/* The actual planet */}
-              <div 
+              <div
                 className="absolute pointer-events-auto cursor-pointer flex items-center justify-center group"
                 style={{
                   left: orbitRadius,
@@ -114,7 +131,7 @@ export default function PortfolioConstellation() {
                 onMouseLeave={() => setHoveredNode(null)}
               >
                 {/* Planet Body */}
-                <motion.div 
+                <motion.div
                   className={`w-full h-full rounded-full bg-gradient-to-br ${getColor(node.pnl)} flex items-center justify-center border border-white/40 shadow-sm`}
                   whileHover={{ scale: 1.2 }}
                   animate={{ rotate: -360 }} // Counter-rotate to keep text upright
@@ -133,17 +150,17 @@ export default function PortfolioConstellation() {
             <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100">
                <span className="font-bold text-lg">{hoveredNode.symbol}</span>
                <span className={`text-sm font-bold ${hoveredNode.pnl > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                 {hoveredNode.pnl > 0 ? '+' : ''}{hoveredNode.pnl}%
+                 {hoveredNode.pnl > 0 ? '+' : ''}{hoveredNode.pnl.toFixed(1)}%
                </span>
             </div>
             <div className="space-y-1 text-sm">
               <div className="flex justify-between">
                 <span className="text-slate-500">Position Value</span>
-                <span className="font-mono font-medium">${hoveredNode.value.toLocaleString()}</span>
+                <span className="font-mono font-medium">{curSym(hoveredNode.currency)}{hoveredNode.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-500">Beta/Volatility</span>
-                <span className="font-mono font-medium">{hoveredNode.volatility.toFixed(2)}</span>
+                <span className="text-slate-500">Currency</span>
+                <span className="font-mono font-medium">{hoveredNode.currency}</span>
               </div>
             </div>
           </div>

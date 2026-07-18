@@ -1,52 +1,84 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useEffect, useMemo, ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer,
-  ReferenceLine, RadarChart, PolarGrid, PolarAngleAxis, Radar, Cell,
-  RadialBarChart, RadialBar, PieChart, Pie
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip,
+  ResponsiveContainer, ReferenceLine
 } from "recharts";
 import {
-  Flame, Zap, Target, Clock, Brain, AlertTriangle, CheckCircle,
-  ChevronDown, ChevronUp, ArrowRight, Droplets, TrendingUp,
-  TrendingDown, Minus, Activity, Dumbbell, Info, X, Plus,
-  BookOpen, ShoppingCart
+  Flame, Zap, Target, Clock, Brain, CheckCircle,
+  ChevronDown, ChevronUp, ArrowRight, TrendingUp,
+  Activity, Dumbbell, X, Trash2, Pencil, Plus, Check
 } from "lucide-react";
+import { supabase } from "../../../utils/supabaseClient";
+import { THEME } from "../../../utils/theme";
 
 // ─── Color palette ────────────────────────────────────────────────
 const C = {
+  ...THEME,
   protein:   "#E03535",
   carbs:     "#00A878",
   fat:       "#D97706",
   fiber:     "#0EA5E9",
   calories:  "#5B42E8",
-  optimal:   "#059669",
-  warning:   "#D97706",
-  critical:  "#DC2626",
   text:      "#0F172A",
   textSec:   "#475569",
   textTer:   "#94A3B8",
-  surface:   "#EEF1F8",
-  border:    "#E2E8F0",
 };
 
-// ─── Goals ────────────────────────────────────────────────────────
-const GOALS = { cal: 3200, protein: 180, carbs: 400, fat: 80, fiber: 35 };
-const BMR   = 2100;
-
 // ─── Helpers ─────────────────────────────────────────────────────
-function pct(val: number, goal: number) { return Math.min(100, Math.round((val / goal) * 100)); }
+function pct(val: number, goal: number) { return goal > 0 ? Math.min(100, Math.round((val / goal) * 100)) : 0; }
 
-function DeltaBadge({ value, unit = "" }: { value: number; unit?: string }) {
-  const isPos = value > 0, isNeg = value < 0;
-  const Icon = isPos ? TrendingUp : isNeg ? TrendingDown : Minus;
-  const color = isPos ? C.optimal : isNeg ? C.critical : C.textTer;
-  return (
-    <span className="inline-flex items-center gap-1 text-xs font-bold" style={{ color, fontFamily: "var(--font-mono)" }}>
-      <Icon size={11} />{isPos && "+"}{value}{unit}
-    </span>
-  );
+function rangeLabel(timeFilter: string): string {
+  switch (timeFilter) {
+    case "day": return "today";
+    case "week": return "last 7 days";
+    case "month": return "last 30 days";
+    case "quarter": return "last 90 days";
+    case "year": return "last 365 days";
+    default: return "selected range";
+  }
+}
+
+// Local-calendar day keys for the day drill-down lens
+function toDayKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function dayKeyOf(iso: string): string { return toDayKey(new Date(iso)); }
+function fmtDayLong(dk: string): string {
+  return new Date(dk + "T00:00:00").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+}
+
+function parseMicros(raw: any): Record<string, number> {
+  if (!raw) return {};
+  try {
+    const obj = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+      const out: Record<string, number> = {};
+      Object.entries(obj).forEach(([k, v]) => { if (typeof v === "number" && v > 0) out[k] = v; });
+      return out;
+    }
+  } catch (e) {
+    console.error("Failed to parse micronutrients:", e);
+  }
+  return {};
+}
+
+// Real caloric target from user_profiles (null when not configured)
+function useCaloricTarget() {
+  const [target, setTarget] = useState<number | null>(null);
+  useEffect(() => {
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) return;
+    (async () => {
+      const { data, error } = await supabase
+        .from("user_profiles")
+        .select("daily_caloric_target")
+        .limit(1);
+      if (!error && data?.[0]?.daily_caloric_target) setTarget(data[0].daily_caloric_target);
+    })();
+  }, []);
+  return target;
 }
 
 function StatusBadge({ status }: { status: "optimal" | "warning" | "critical" | "low" }) {
@@ -65,54 +97,58 @@ function StatusBadge({ status }: { status: "optimal" | "warning" | "critical" | 
   );
 }
 
-// ─── Zone 1: Energy Command HUD ──────────────────────────────────
-function EnergyCommandHUD({ totalCal, totalP, totalF_g, activeBurn }: {
-  totalCal: number; totalP: number; totalF_g: number; activeBurn: number;
+// ─── Zone 1: Intake Overview HUD ─────────────────────────────────
+// All figures are sums over the meals in the selected range.
+function IntakeHUD({ totalCal, totalP, totalC, totalFat, loggedDays, calTarget, timeFilter }: {
+  totalCal: number; totalP: number; totalC: number; totalFat: number;
+  loggedDays: number; calTarget: number | null; timeFilter: string;
 }) {
-  const netEnergy  = totalCal - (BMR + activeBurn);
-  const calPct     = pct(totalCal, GOALS.cal);
-  const protPct    = pct(totalP, GOALS.protein);
-  const totalBurn  = BMR + activeBurn;
+  const days = Math.max(1, loggedDays);
+  const avgCal = Math.round(totalCal / days);
+  const macroKcal = totalP * 4 + totalC * 4 + totalFat * 9;
 
   const chips = [
     {
-      id: "net",
-      label: "Net Energy",
-      value: `${netEnergy > 0 ? "+" : ""}${netEnergy}`,
+      id: "cal",
+      label: `Calories · ${rangeLabel(timeFilter)}`,
+      value: totalCal,
       unit: "kcal",
-      sublabel: netEnergy > 0 ? "Caloric Surplus" : netEnergy < 0 ? "Caloric Deficit" : "Balanced",
-      color: netEnergy > 100 ? C.optimal : netEnergy < -300 ? C.critical : C.warning,
-      pct: calPct,
+      sublabel: calTarget
+        ? `~${avgCal}/day vs ${calTarget} target`
+        : `~${avgCal}/day avg (no target set)`,
+      color: C.calories,
+      // Ring only has meaning against a real target
+      pct: calTarget ? pct(avgCal, calTarget) : null,
       icon: Flame,
     },
     {
       id: "protein",
-      label: "Protein Pace",
+      label: "Protein",
       value: totalP,
       unit: "g",
-      sublabel: `${GOALS.protein - totalP}g to target`,
+      sublabel: `~${Math.round(totalP / days)}g/day avg`,
       color: C.protein,
-      pct: protPct,
+      pct: macroKcal > 0 ? Math.round((totalP * 4 / macroKcal) * 100) : null,
       icon: Target,
     },
     {
-      id: "burn",
-      label: "Today's Burn",
-      value: totalBurn,
-      unit: "kcal",
-      sublabel: `BMR ${BMR} + Active ${activeBurn}`,
+      id: "carbs",
+      label: "Carbs",
+      value: totalC,
+      unit: "g",
+      sublabel: `~${Math.round(totalC / days)}g/day avg`,
       color: C.carbs,
-      pct: Math.min(100, Math.round((activeBurn / 800) * 100)),
+      pct: macroKcal > 0 ? Math.round((totalC * 4 / macroKcal) * 100) : null,
       icon: Zap,
     },
     {
-      id: "load",
-      label: "Caloric Load",
-      value: `${calPct}%`,
-      unit: "",
-      sublabel: `${totalCal} / ${GOALS.cal} kcal`,
-      color: calPct > 100 ? C.warning : calPct > 75 ? C.optimal : C.critical,
-      pct: calPct,
+      id: "fat",
+      label: "Fat",
+      value: totalFat,
+      unit: "g",
+      sublabel: `~${Math.round(totalFat / days)}g/day avg`,
+      color: C.fat,
+      pct: macroKcal > 0 ? Math.round((totalFat * 9 / macroKcal) * 100) : null,
       icon: Activity,
     },
   ];
@@ -121,6 +157,7 @@ function EnergyCommandHUD({ totalCal, totalP, totalF_g, activeBurn }: {
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
       {chips.map((chip, i) => {
         const r = 26, circ = 2 * Math.PI * r;
+        const ringPct = chip.pct ?? 0;
         return (
           <motion.div
             key={chip.id}
@@ -130,17 +167,17 @@ function EnergyCommandHUD({ totalCal, totalP, totalF_g, activeBurn }: {
             className="card-surface p-4 flex items-center gap-4"
             style={{ borderRadius: "var(--radius-lg)" }}
           >
-            {/* Radial progress mini-ring */}
+            {/* Radial progress mini-ring (neutral when no target exists) */}
             <div className="relative shrink-0" style={{ width: 58, height: 58 }}>
               <svg width={58} height={58} style={{ transform: "rotate(-90deg)" }}>
                 <circle cx={29} cy={29} r={r} fill="none" stroke={C.border} strokeWidth={5} />
                 <motion.circle
                   cx={29} cy={29} r={r} fill="none"
-                  stroke={chip.color} strokeWidth={5} strokeLinecap="round"
+                  stroke={chip.pct === null ? C.textTer : chip.color} strokeWidth={5} strokeLinecap="round"
                   initial={{ strokeDasharray: `0 ${circ}` }}
-                  animate={{ strokeDasharray: `${circ * (chip.pct / 100)} ${circ * (1 - chip.pct / 100)}` }}
+                  animate={{ strokeDasharray: `${circ * (ringPct / 100)} ${circ * (1 - ringPct / 100)}` }}
                   transition={{ duration: 1.1, ease: [0, 0, 0.2, 1], delay: i * 0.07 + 0.2 }}
-                  style={{ filter: `drop-shadow(0 0 6px ${chip.color}60)` }}
+                  style={{ filter: chip.pct === null ? undefined : `drop-shadow(0 0 6px ${chip.color}60)` }}
                 />
               </svg>
               <div className="absolute inset-0 flex items-center justify-center">
@@ -164,65 +201,56 @@ function EnergyCommandHUD({ totalCal, totalP, totalF_g, activeBurn }: {
   );
 }
 
-// ─── Zone 2: Caloric Timeline ─────────────────────────────────────
-function CaloricTimeline({ dbMeals, dbWorkouts }: { dbMeals: any[]; dbWorkouts: any[] }) {
-  const [hoveredMeal, setHoveredMeal] = useState<any>(null);
+// ─── Zone 2: Intake Timeline ──────────────────────────────────────
+// Day filter: hourly cumulative intake for today.
+// Other filters: daily totals across the range.
+function IntakeTimeline({ dbMeals, calTarget, timeFilter, onDaySelect }: {
+  dbMeals: any[]; calTarget: number | null; timeFilter: string;
+  onDaySelect?: (dk: string) => void;
+}) {
+  const isDay = timeFilter === "day";
 
-  // Build 24-point hourly cumulative intake data
+  // Hourly cumulative (day mode)
   const hourlyData = useMemo(() => {
+    if (!isDay) return [];
     const buckets: Record<number, number> = {};
     for (let h = 6; h <= 23; h++) buckets[h] = 0;
-
-    const todayMeals = dbMeals.filter(m => {
-      const d = new Date(m.meal_time);
-      const now = new Date();
-      return d.toDateString() === now.toDateString();
-    });
-
-    todayMeals.forEach(m => {
+    dbMeals.forEach(m => {
       const h = new Date(m.meal_time).getHours();
       if (h >= 6 && h <= 23) buckets[h] = (buckets[h] || 0) + (m.calories || 0);
     });
-
-    // Cumulative
     let running = 0;
     return Object.keys(buckets).map(h => {
       running += buckets[Number(h)];
-      const goalPace = Math.round((Number(h) - 6) / 17 * GOALS.cal);
-      return { hour: `${h}:00`, h: Number(h), cumulative: running, goalPace };
+      const goalPace = calTarget ? Math.round((Number(h) - 6) / 17 * calTarget) : null;
+      return { hour: `${h}:00`, cumulative: running, goalPace };
     });
-  }, [dbMeals]);
+  }, [dbMeals, calTarget, isDay]);
 
-  // Workout windows
-  const workoutWindows = useMemo(() => {
-    return dbWorkouts.filter(w => {
-      const d = new Date(w.workout_date);
-      const now = new Date();
-      return d.toDateString() === now.toDateString() && w.duration_minutes;
-    }).map(w => {
-      const start = new Date(w.workout_date).getHours();
-      const dur = Math.round((w.duration_minutes || 60) / 60);
-      return { start, end: start + dur, name: w.exercise_name || "Workout" };
+  // Daily totals (range mode)
+  const dailyData = useMemo(() => {
+    if (isDay) return [];
+    const byDay: Record<string, number> = {};
+    dbMeals.forEach(m => {
+      const dk = dayKeyOf(m.meal_time);
+      byDay[dk] = (byDay[dk] || 0) + (m.calories || 0);
     });
-  }, [dbWorkouts]);
+    return Object.keys(byDay).sort().map(dk => ({
+      dk,
+      date: new Date(dk + "T00:00:00").toLocaleDateString([], { month: "short", day: "numeric" }),
+      calories: byDay[dk],
+    }));
+  }, [dbMeals, isDay]);
 
-  // Meal dots on chart
-  const mealDots = useMemo(() => {
-    return dbMeals
-      .filter(m => {
-        const d = new Date(m.meal_time);
-        const now = new Date();
-        return d.toDateString() === now.toDateString();
-      })
-      .map(m => ({
-        hour: new Date(m.meal_time).getHours(),
-        name: m.description || "Meal",
-        cal: m.calories || 0,
-        protein: m.protein || 0,
-        carbs: m.carbs || 0,
-        fat: m.fat || 0,
-      }));
-  }, [dbMeals]);
+  const mealChips = useMemo(() => {
+    return dbMeals.map(m => ({
+      when: isDay
+        ? `${new Date(m.meal_time).getHours()}:00`
+        : new Date(m.meal_time).toLocaleDateString([], { month: "short", day: "numeric" }),
+      name: m.description || "Meal",
+      cal: m.calories || 0,
+    }));
+  }, [dbMeals, isDay]);
 
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (!active || !payload?.length) return null;
@@ -230,13 +258,15 @@ function CaloricTimeline({ dbMeals, dbWorkouts }: { dbMeals: any[]; dbWorkouts: 
       <div className="card-surface px-3 py-2 text-xs shadow-lg" style={{ borderRadius: "var(--radius-md)", minWidth: 140 }}>
         <div className="font-bold mb-1" style={{ color: C.text }}>{label}</div>
         <div className="flex items-center gap-2" style={{ color: C.calories }}>
-          <span>Consumed:</span>
+          <span>{isDay ? "Consumed (cum.):" : "Consumed:"}</span>
           <span className="font-bold font-mono">{payload[0]?.value} kcal</span>
         </div>
-        <div className="flex items-center gap-2" style={{ color: C.textTer }}>
-          <span>Goal pace:</span>
-          <span className="font-mono">{payload[1]?.value} kcal</span>
-        </div>
+        {isDay && calTarget && payload[1] && (
+          <div className="flex items-center gap-2" style={{ color: C.textTer }}>
+            <span>Goal pace:</span>
+            <span className="font-mono">{payload[1]?.value} kcal</span>
+          </div>
+        )}
       </div>
     );
   };
@@ -246,22 +276,19 @@ function CaloricTimeline({ dbMeals, dbWorkouts }: { dbMeals: any[]; dbWorkouts: 
       <div className="flex items-center justify-between mb-5">
         <div>
           <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>
-            Caloric Timeline
+            Caloric Timeline · {rangeLabel(timeFilter)}
           </div>
           <div className="text-[11px] mt-0.5" style={{ color: C.textSec }}>
-            Intake vs. goal pace · meal windows · workout zones
+            {isDay ? "Hourly cumulative intake" : "Daily intake · click a bar to open that day"} {calTarget ? `vs ${calTarget} kcal target` : "· no caloric target configured"}
           </div>
         </div>
         <div className="flex items-center gap-3 text-[10px] font-bold" style={{ color: C.textTer }}>
           <span className="flex items-center gap-1.5">
             <span className="inline-block w-6 h-0.5 rounded" style={{ background: C.calories }} /> Consumed
           </span>
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block w-6 h-0.5 rounded border-dashed border border-gray-400" /> Goal Pace
-          </span>
-          {workoutWindows.length > 0 && (
+          {calTarget && (
             <span className="flex items-center gap-1.5">
-              <span className="inline-block w-4 h-3 rounded" style={{ background: "rgba(224,53,53,0.15)" }} /> Workout
+              <span className="inline-block w-6 h-0.5 rounded border-dashed border border-gray-400" /> Target
             </span>
           )}
         </div>
@@ -269,53 +296,66 @@ function CaloricTimeline({ dbMeals, dbWorkouts }: { dbMeals: any[]; dbWorkouts: 
 
       <div style={{ height: 220 }}>
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={hourlyData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-            <defs>
-              <linearGradient id="fuelCalGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%"  stopColor={C.calories} stopOpacity={0.25} />
-                <stop offset="95%" stopColor={C.calories} stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <XAxis dataKey="hour" axisLine={false} tickLine={false}
-              tick={{ fontSize: 10, fill: C.textTer, fontFamily: "var(--font-mono)" }}
-              interval={2}
-            />
-            <YAxis axisLine={false} tickLine={false}
-              tick={{ fontSize: 10, fill: C.textTer, fontFamily: "var(--font-mono)" }}
-              tickFormatter={v => `${v}`}
-              width={40}
-            />
-            <RechartsTooltip content={<CustomTooltip />} />
-            <ReferenceLine y={GOALS.cal} stroke={C.optimal} strokeDasharray="4 4" strokeWidth={1.5}
-              label={{ value: "Goal", position: "right", fontSize: 10, fill: C.optimal }} />
-
-            {/* Workout windows */}
-            {workoutWindows.map((w, i) => (
-              <ReferenceLine key={i} x={`${w.start}:00`}
-                stroke="rgba(224,53,53,0.5)" strokeWidth={1} strokeDasharray="2 2"
-                label={{ value: "⚡ WO", position: "top", fontSize: 9, fill: C.critical }}
+          {isDay ? (
+            <AreaChart data={hourlyData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="fuelCalGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor={C.calories} stopOpacity={0.25} />
+                  <stop offset="95%" stopColor={C.calories} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="hour" axisLine={false} tickLine={false}
+                tick={{ fontSize: 10, fill: C.textTer, fontFamily: "var(--font-mono)" }}
+                interval={2}
               />
-            ))}
-
-            <Area type="monotone" dataKey="cumulative" stroke={C.calories} strokeWidth={2.5}
-              fill="url(#fuelCalGrad)" dot={false} activeDot={{ r: 5, fill: C.calories }}
-            />
-            <Area type="monotone" dataKey="goalPace" stroke="#CBD5E1" strokeWidth={1.5}
-              strokeDasharray="5 4" fill="none" dot={false}
-            />
-          </AreaChart>
+              <YAxis axisLine={false} tickLine={false}
+                tick={{ fontSize: 10, fill: C.textTer, fontFamily: "var(--font-mono)" }}
+                width={40}
+              />
+              <RechartsTooltip content={<CustomTooltip />} />
+              {calTarget && (
+                <ReferenceLine y={calTarget} stroke={C.optimal} strokeDasharray="4 4" strokeWidth={1.5}
+                  label={{ value: "Target", position: "right", fontSize: 10, fill: C.optimal }} />
+              )}
+              <Area type="monotone" dataKey="cumulative" stroke={C.calories} strokeWidth={2.5}
+                fill="url(#fuelCalGrad)" dot={false} activeDot={{ r: 5, fill: C.calories }}
+              />
+              {calTarget && (
+                <Area type="monotone" dataKey="goalPace" stroke="#CBD5E1" strokeWidth={1.5}
+                  strokeDasharray="5 4" fill="none" dot={false}
+                />
+              )}
+            </AreaChart>
+          ) : (
+            <BarChart data={dailyData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+              <XAxis dataKey="date" axisLine={false} tickLine={false}
+                tick={{ fontSize: 10, fill: C.textTer, fontFamily: "var(--font-mono)" }}
+              />
+              <YAxis axisLine={false} tickLine={false}
+                tick={{ fontSize: 10, fill: C.textTer, fontFamily: "var(--font-mono)" }}
+                width={40}
+              />
+              <RechartsTooltip content={<CustomTooltip />} />
+              {calTarget && (
+                <ReferenceLine y={calTarget} stroke={C.optimal} strokeDasharray="4 4" strokeWidth={1.5}
+                  label={{ value: "Target", position: "right", fontSize: 10, fill: C.optimal }} />
+              )}
+              <Bar dataKey="calories" fill={C.calories} radius={[4, 4, 0, 0]} cursor={onDaySelect ? "pointer" : undefined}
+                onClick={(d: any) => d?.dk && onDaySelect?.(d.dk)} />
+            </BarChart>
+          )}
         </ResponsiveContainer>
       </div>
 
-      {/* Meal dots legend below chart */}
-      {mealDots.length > 0 && (
+      {/* Meal chips below chart */}
+      {mealChips.length > 0 && (
         <div className="flex gap-2 mt-3 overflow-x-auto pb-1">
-          {mealDots.map((m, i) => (
+          {mealChips.map((m, i) => (
             <div key={i}
-              className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer transition-all hover:scale-105"
+              className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-lg"
               style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
               <div className="w-2 h-2 rounded-full" style={{ background: C.calories }} />
-              <span className="text-[10px] font-bold" style={{ color: C.text }}>{m.hour}:00</span>
+              <span className="text-[10px] font-bold" style={{ color: C.text }}>{m.when}</span>
               <span className="text-[10px]" style={{ color: C.textSec }}>{m.name.split(" ").slice(0, 2).join(" ")}</span>
               <span className="text-[10px] font-mono font-bold" style={{ color: C.calories }}>{m.cal}kcal</span>
             </div>
@@ -326,29 +366,92 @@ function CaloricTimeline({ dbMeals, dbWorkouts }: { dbMeals: any[]; dbWorkouts: 
   );
 }
 
-// ─── Zone 3: Macro Intelligence Grid ─────────────────────────────
-function MacroRingPanel({ totalP, totalC, totalFat, totalFib }: {
+// ─── Zone 2b: Macros per Day (stacked grams) ─────────────────────
+function DailyMacroChart({ dbMeals, timeFilter, onDaySelect }: {
+  dbMeals: any[]; timeFilter: string; onDaySelect?: (dk: string) => void;
+}) {
+  const dailyData = useMemo(() => {
+    const byDay: Record<string, { p: number; c: number; f: number }> = {};
+    dbMeals.forEach(m => {
+      const dk = dayKeyOf(m.meal_time);
+      if (!byDay[dk]) byDay[dk] = { p: 0, c: 0, f: 0 };
+      byDay[dk].p += m.protein || 0;
+      byDay[dk].c += m.carbs || 0;
+      byDay[dk].f += m.fat || 0;
+    });
+    return Object.keys(byDay).sort().map(dk => ({
+      dk,
+      date: new Date(dk + "T00:00:00").toLocaleDateString([], { month: "short", day: "numeric" }),
+      protein: byDay[dk].p,
+      carbs: byDay[dk].c,
+      fat: byDay[dk].f,
+    }));
+  }, [dbMeals]);
+
+  if (dailyData.length === 0) return null;
+
+  return (
+    <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>
+            Macros per Day · {rangeLabel(timeFilter)} (grams)
+          </div>
+          <div className="text-[11px] mt-0.5" style={{ color: C.textSec }}>Stacked protein / carbs / fat · click a bar to open that day</div>
+        </div>
+        <div className="flex items-center gap-3 text-[10px] font-bold" style={{ color: C.textTer }}>
+          <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: C.protein }} /> P</span>
+          <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: C.carbs }} /> C</span>
+          <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: C.fat }} /> F</span>
+        </div>
+      </div>
+      <div style={{ height: 200 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={dailyData} margin={{ top: 8, right: 20, left: 0, bottom: 0 }}>
+            <XAxis dataKey="date" axisLine={false} tickLine={false}
+              tick={{ fontSize: 10, fill: C.textTer, fontFamily: "var(--font-mono)" }} />
+            <YAxis axisLine={false} tickLine={false}
+              tick={{ fontSize: 10, fill: C.textTer, fontFamily: "var(--font-mono)" }} width={36} />
+            <RechartsTooltip
+              formatter={(v: number, name: string) => [`${v}g`, name]}
+              contentStyle={{ borderRadius: "8px", border: `1px solid ${C.border}`, boxShadow: "0 4px 16px rgba(0,0,0,0.08)", background: "#fff", fontSize: 11 }}
+            />
+            <Bar dataKey="protein" stackId="m" fill={C.protein} cursor={onDaySelect ? "pointer" : undefined}
+              onClick={(d: any) => d?.dk && onDaySelect?.(d.dk)} />
+            <Bar dataKey="carbs" stackId="m" fill={C.carbs} cursor={onDaySelect ? "pointer" : undefined}
+              onClick={(d: any) => d?.dk && onDaySelect?.(d.dk)} />
+            <Bar dataKey="fat" stackId="m" fill={C.fat} radius={[4, 4, 0, 0]} cursor={onDaySelect ? "pointer" : undefined}
+              onClick={(d: any) => d?.dk && onDaySelect?.(d.dk)} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+// ─── Zone 3: Macro Split + Workout Sync ──────────────────────────
+function MacroSplitPanel({ totalP, totalC, totalFat, totalFib }: {
   totalP: number; totalC: number; totalFat: number; totalFib: number;
 }) {
+  const macroKcal = totalP * 4 + totalC * 4 + totalFat * 9;
   const macros = [
-    { label: "Protein", val: totalP,   goal: GOALS.protein, color: C.protein,  unit: "g", key: "protein" },
-    { label: "Carbs",   val: totalC,   goal: GOALS.carbs,   color: C.carbs,    unit: "g", key: "carbs"   },
-    { label: "Fat",     val: totalFat, goal: GOALS.fat,     color: C.fat,      unit: "g", key: "fat"     },
-    { label: "Fiber",   val: totalFib, goal: GOALS.fiber,   color: C.fiber,    unit: "g", key: "fiber"   },
+    { label: "Protein", val: totalP,   kcal: totalP * 4,   color: C.protein, key: "protein" },
+    { label: "Carbs",   val: totalC,   kcal: totalC * 4,   color: C.carbs,   key: "carbs"   },
+    { label: "Fat",     val: totalFat, kcal: totalFat * 9, color: C.fat,     key: "fat"     },
   ];
 
   return (
     <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-      <div className="text-xs font-bold uppercase tracking-widest mb-5" style={{ color: C.textTer }}>
-        Macro Target Rings
+      <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: C.textTer }}>
+        Macro Split
       </div>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="text-[11px] mb-5" style={{ color: C.textSec }}>
+        Share of macro calories from logged meals
+      </div>
+      <div className="grid grid-cols-3 gap-4">
         {macros.map((m, i) => {
-          const p = pct(m.val, m.goal);
+          const share = macroKcal > 0 ? Math.round((m.kcal / macroKcal) * 100) : 0;
           const r = 36, circ = 2 * Math.PI * r;
-          const remaining = Math.max(0, m.goal - m.val);
-          const status = p >= 100 ? "optimal" : p >= 60 ? "warning" : "critical";
-
           return (
             <motion.div key={m.key}
               initial={{ opacity: 0, scale: 0.9 }}
@@ -357,7 +460,6 @@ function MacroRingPanel({ totalP, totalC, totalFat, totalFib }: {
               className="flex flex-col items-center gap-2 p-3 rounded-xl"
               style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}
             >
-              {/* Ring */}
               <div className="relative" style={{ width: 80, height: 80 }}>
                 <svg width={80} height={80} style={{ transform: "rotate(-90deg)" }}>
                   <circle cx={40} cy={40} r={r} fill="none" stroke={C.border} strokeWidth={7} />
@@ -365,80 +467,69 @@ function MacroRingPanel({ totalP, totalC, totalFat, totalFib }: {
                     cx={40} cy={40} r={r} fill="none"
                     stroke={m.color} strokeWidth={7} strokeLinecap="round"
                     initial={{ strokeDasharray: `0 ${circ}` }}
-                    animate={{ strokeDasharray: `${circ * (p / 100)} ${circ * (1 - p / 100)}` }}
+                    animate={{ strokeDasharray: `${circ * (share / 100)} ${circ * (1 - share / 100)}` }}
                     transition={{ duration: 1.2, ease: [0, 0, 0.2, 1], delay: i * 0.1 + 0.3 }}
                     style={{ filter: `drop-shadow(0 0 8px ${m.color}50)` }}
                   />
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-base font-black leading-none" style={{ fontFamily: "var(--font-mono)", color: m.color }}>{p}%</span>
-                  <span className="text-[9px] font-bold" style={{ color: C.textTer }}>done</span>
+                  <span className="text-base font-black leading-none" style={{ fontFamily: "var(--font-mono)", color: m.color }}>{share}%</span>
+                  <span className="text-[9px] font-bold" style={{ color: C.textTer }}>of kcal</span>
                 </div>
               </div>
 
               <div className="text-center w-full">
                 <div className="text-[11px] font-bold uppercase tracking-widest mb-1" style={{ color: C.textSec }}>{m.label}</div>
                 <div className="text-lg font-black" style={{ fontFamily: "var(--font-mono)", color: C.text, lineHeight: 1 }}>
-                  {m.val}<span className="text-xs font-bold" style={{ color: C.textTer }}>/{m.goal}g</span>
-                </div>
-                <div className="mt-1">
-                  {remaining > 0 ? (
-                    <span className="text-[10px] font-bold" style={{ color: C.textTer }}>
-                      {remaining}g remaining
-                    </span>
-                  ) : (
-                    <span className="text-[10px] font-bold" style={{ color: C.optimal }}>✓ Target hit</span>
-                  )}
+                  {m.val}<span className="text-xs font-bold" style={{ color: C.textTer }}>g</span>
                 </div>
               </div>
             </motion.div>
           );
         })}
       </div>
+      {totalFib > 0 && (
+        <div className="mt-4 flex items-center justify-between text-[11px] px-3 py-2 rounded-lg"
+          style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+          <span className="font-bold uppercase tracking-widest" style={{ color: C.textTer }}>Fiber (from micronutrients)</span>
+          <span className="font-black font-mono" style={{ color: C.fiber }}>{totalFib}g</span>
+        </div>
+      )}
     </div>
   );
 }
 
-function MacroWorkoutCorrelation({ dbWorkouts, totalP, totalC }: {
-  dbWorkouts: any[]; totalP: number; totalC: number;
+function MacroWorkoutCorrelation({ dbWorkouts, totalP, totalC, loggedDays, timeFilter }: {
+  dbWorkouts: any[]; totalP: number; totalC: number; loggedDays: number; timeFilter: string;
 }) {
-  // Find today's workouts and compute context
-  const todayWorkouts = dbWorkouts.filter(w => {
-    const d = new Date(w.workout_date);
-    return d.toDateString() === new Date().toDateString();
-  });
+  const days = Math.max(1, loggedDays);
+  const avgP = Math.round(totalP / days);
+  const avgC = Math.round(totalC / days);
+  const sessionDays = new Set(dbWorkouts.map(w => (w.workout_date || "").split("T")[0])).size;
+  const burn = dbWorkouts.reduce((a, w) => a + (w.calories || 0), 0);
 
-  const hasWorkout = todayWorkouts.length > 0;
-  const workoutBurn = todayWorkouts.reduce((a, w) => a + (w.calories || 0), 0);
-
-  const preCarbAdequacy  = totalC >= 100 ? "optimal" : totalC >= 60 ? "warning" : "critical";
-  const postProteinTiming = totalP >= 120 ? "optimal" : totalP >= 80 ? "warning" : "critical";
-  const energyAvail      = (totalC + totalP) >= 200 ? "optimal" : "warning";
+  const preCarbAdequacy   = avgC >= 100 ? "optimal" : avgC >= 60 ? "warning" : "critical";
+  const postProteinTiming = avgP >= 120 ? "optimal" : avgP >= 80 ? "warning" : "critical";
+  const energyAvail       = (avgC + avgP) >= 200 ? "optimal" : "warning";
 
   const rows = [
     {
       label: "Pre-workout carb priming",
-      detail: `${totalC}g carbs consumed (target: 80–120g pre-session)`,
+      detail: `${avgC}g carbs/day avg (target: 80–120g pre-session)`,
       status: preCarbAdequacy as "optimal" | "warning" | "critical",
-      tip: preCarbAdequacy !== "optimal" ? "Eat 30–50g fast carbs 45 min before training" : "Carb load is optimal for performance",
+      tip: preCarbAdequacy !== "optimal" ? "Eat 30–50g fast carbs 45 min before training" : "Carb load is adequate for performance",
     },
     {
-      label: "Post-workout protein timing",
-      detail: `${totalP}g protein logged (anabolic window: within 2h post-WO)`,
+      label: "Post-workout protein",
+      detail: `${avgP}g protein/day avg across logged days`,
       status: postProteinTiming as "optimal" | "warning" | "critical",
-      tip: postProteinTiming !== "optimal" ? `Need ${GOALS.protein - totalP}g more protein — consume shake or chicken breast` : "Protein synthesis window well-covered",
+      tip: postProteinTiming !== "optimal" ? "Add a protein serving after training sessions" : "Protein intake supports recovery",
     },
     {
-      label: "Energy availability index",
-      detail: `Available energy: ${totalC * 4 + totalP * 4} kcal from P+C macros`,
+      label: "Energy availability",
+      detail: `${avgC * 4 + avgP * 4} kcal/day from protein + carbs`,
       status: energyAvail as "optimal" | "warning",
-      tip: energyAvail !== "optimal" ? "Increase carb intake to sustain performance & hormonal health" : "Energy availability is sufficient",
-    },
-    {
-      label: "Recovery nutrition",
-      detail: `Omega-3 & anti-inflammatories from food log (AI estimated)`,
-      status: "optimal" as "optimal",
-      tip: "Anti-inflammatory profile looks good for overnight HRV recovery",
+      tip: energyAvail !== "optimal" ? "Increase carb intake to sustain performance" : "Energy availability is sufficient",
     },
   ];
 
@@ -447,20 +538,22 @@ function MacroWorkoutCorrelation({ dbWorkouts, totalP, totalC }: {
       <div className="flex items-center justify-between">
         <div>
           <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>
-            Macro–Workout Sync
+            Macro–Workout Sync · {rangeLabel(timeFilter)}
           </div>
           <div className="text-[11px] mt-0.5" style={{ color: C.textSec }}>
-            {hasWorkout ? `${todayWorkouts.length} session${todayWorkouts.length > 1 ? "s" : ""} · ${workoutBurn} kcal burned` : "No sessions logged today"}
+            {sessionDays > 0
+              ? `${sessionDays} training day${sessionDays !== 1 ? "s" : ""}${burn > 0 ? ` · ${burn} kcal burned` : ""}`
+              : "No training logged in range"}
           </div>
         </div>
         <div className={`flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1 rounded-full`}
           style={{
-            background: hasWorkout ? "rgba(5,150,105,0.1)" : "rgba(148,163,184,0.1)",
-            color: hasWorkout ? C.optimal : C.textTer,
-            border: `1px solid ${hasWorkout ? "rgba(5,150,105,0.25)" : "rgba(148,163,184,0.25)"}`
+            background: sessionDays > 0 ? "rgba(5,150,105,0.1)" : "rgba(148,163,184,0.1)",
+            color: sessionDays > 0 ? C.optimal : C.textTer,
+            border: `1px solid ${sessionDays > 0 ? "rgba(5,150,105,0.25)" : "rgba(148,163,184,0.25)"}`
           }}>
           <Dumbbell size={10} />
-          {hasWorkout ? "Training Day" : "Rest Day"}
+          {sessionDays > 0 ? "Training" : "No Sessions"}
         </div>
       </div>
 
@@ -488,125 +581,315 @@ function MacroWorkoutCorrelation({ dbWorkouts, totalP, totalC }: {
   );
 }
 
-// ─── Zone 4: Micro-Nutrient Environment ──────────────────────────
-const MICROS = [
-  { name: "Vitamin D",   score: 40,  unit: "IU",  source: "Salmon, eggs",          status: "critical" as const },
-  { name: "Iron",        score: 88,  unit: "mg",  source: "Red meat, spinach",      status: "optimal"  as const },
-  { name: "Magnesium",   score: 65,  unit: "mg",  source: "Nuts, whole grains",     status: "warning"  as const },
-  { name: "Omega-3",     score: 82,  unit: "g",   source: "Salmon, flaxseed",       status: "optimal"  as const },
-  { name: "Vitamin C",   score: 75,  unit: "mg",  source: "Bell pepper, citrus",    status: "warning"  as const },
-  { name: "Calcium",     score: 60,  unit: "mg",  source: "Dairy, broccoli",        status: "warning"  as const },
-  { name: "Zinc",        score: 90,  unit: "mg",  source: "Red meat, pumpkin seeds",status: "optimal"  as const },
-  { name: "B12",         score: 95,  unit: "mcg", source: "Animal products",        status: "optimal"  as const },
-  { name: "Fiber",       score: 70,  unit: "g",   source: "Vegetables, legumes",    status: "warning"  as const },
-  { name: "Sodium",      score: 78,  unit: "mg",  source: "Varied foods",           status: "warning"  as const },
-];
+// ─── Zone 4: Micronutrients (from meals.micronutrients jsonb) ────
+function MicroPanel({ dbMeals, timeFilter }: { dbMeals: any[]; timeFilter: string }) {
+  const totals = useMemo(() => {
+    const acc: Record<string, number> = {};
+    dbMeals.forEach(m => {
+      const micros = parseMicros(m.micronutrients);
+      Object.entries(micros).forEach(([k, v]) => { acc[k] = (acc[k] || 0) + v; });
+    });
+    return acc;
+  }, [dbMeals]);
 
-function MicroEnvironmentGrid() {
-  const [expanded, setExpanded] = useState(false);
-
-  const radarData = MICROS.map(m => ({ domain: m.name.replace("Vitamin ", "Vit "), score: m.score, fullMark: 100 }));
-
-  const criticalMicros = MICROS.filter(m => m.status === "critical");
-  const warningMicros  = MICROS.filter(m => m.status === "warning");
+  const keys = Object.keys(totals).sort((a, b) => totals[b] - totals[a]);
+  const max = keys.length > 0 ? totals[keys[0]] : 1;
 
   return (
     <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
       <div className="flex items-center justify-between mb-4">
         <div>
           <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>
-            Micro-Nutrient Environment
+            Micronutrients · {rangeLabel(timeFilter)}
           </div>
           <div className="text-[11px] mt-0.5" style={{ color: C.textSec }}>
-            AI-estimated from meal log · 10 biomarkers tracked
+            Aggregated from the micronutrients field of logged meals
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-widest"
-            style={{ background: "rgba(91,66,232,0.1)", color: "var(--accent-sleep)", border: "1px solid rgba(91,66,232,0.25)" }}>
-            AI Simulated
-          </span>
-        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Radar */}
-        <div style={{ height: 280 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <RadarChart cx="50%" cy="50%" outerRadius="65%" data={radarData}>
-              <defs>
-                <linearGradient id="microRadarGrad" x1="0" y1="0" x2="1" y2="1">
-                  <stop offset="0%" stopColor="var(--accent-sleep)" stopOpacity={0.8} />
-                  <stop offset="100%" stopColor={C.carbs} stopOpacity={0.8} />
-                </linearGradient>
-              </defs>
-              <PolarGrid stroke={C.border} />
-              <PolarAngleAxis dataKey="domain"
-                tick={{ fill: C.textTer, fontSize: 10, fontWeight: 700, fontFamily: "var(--font-mono)" }}
-              />
-              <Radar name="Score" dataKey="score"
-                stroke="var(--accent-sleep)" strokeWidth={2}
-                fill="url(#microRadarGrad)" fillOpacity={0.2}
-              />
-              <RechartsTooltip
-                contentStyle={{ borderRadius: "8px", border: `1px solid ${C.border}`, boxShadow: "0 4px 16px rgba(0,0,0,0.08)", background: "#fff", fontSize: 11 }}
-                formatter={(val: any) => [`${val}% DV`, "Status"]}
-              />
-            </RadarChart>
-          </ResponsiveContainer>
+      {keys.length === 0 ? (
+        <div className="flex flex-col items-center justify-center p-8 text-center rounded-xl"
+          style={{ background: "var(--surface-tertiary)", border: "1px dashed var(--border-subtle)" }}>
+          <div className="w-10 h-10 rounded-full flex items-center justify-center mb-3"
+            style={{ background: "var(--surface-quaternary)", border: "1px solid var(--border-subtle)" }}>
+            <Brain size={16} style={{ color: C.textTer }} />
+          </div>
+          <div className="text-xs font-bold mb-1" style={{ color: C.textSec }}>No micronutrient data yet</div>
+          <div className="text-[11px] max-w-sm" style={{ color: C.textTer, lineHeight: 1.6 }}>
+            Log meals in Chat (/chat) — when entries include micronutrient estimates they will aggregate here.
+          </div>
         </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+          {keys.map((k, i) => (
+            <motion.div key={k}
+              initial={{ opacity: 0, x: 12 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: i * 0.04 }}
+              className="flex items-center gap-3"
+            >
+              <div className="w-28 text-[11px] font-bold truncate capitalize" style={{ color: C.textSec }}>{k}</div>
+              <div className="flex-1 h-1.5 rounded-full" style={{ background: C.border }}>
+                <motion.div className="h-full rounded-full"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${Math.round((totals[k] / max) * 100)}%` }}
+                  transition={{ duration: 0.9, ease: [0, 0, 0.2, 1], delay: i * 0.04 + 0.2 }}
+                  style={{ background: C.fiber }}
+                />
+              </div>
+              <div className="w-12 text-right text-[11px] font-black font-mono" style={{ color: C.fiber }}>
+                {Math.round(totals[k] * 10) / 10}
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
-        {/* Micro cards */}
-        <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 280 }}>
-          {MICROS.map((m, i) => {
-            const statusColor = m.status === "optimal" ? C.optimal : m.status === "warning" ? C.warning : C.critical;
-            return (
-              <motion.div key={m.name}
-                initial={{ opacity: 0, x: 12 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: i * 0.04 + 0.2 }}
-                className="flex items-center gap-3 p-2.5 rounded-lg"
-                style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}
-              >
-                <div className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center"
-                  style={{ background: `${statusColor}15`, border: `1px solid ${statusColor}30` }}>
-                  <span className="text-[8px] font-black" style={{ color: statusColor }}>{m.score}%</span>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-xs font-bold truncate" style={{ color: C.text }}>{m.name}</div>
-                    <StatusBadge status={m.status} />
-                  </div>
-                  <div className="mt-1 w-full h-1.5 rounded-full" style={{ background: C.border }}>
-                    <motion.div className="h-full rounded-full"
-                      initial={{ width: 0 }}
-                      animate={{ width: `${m.score}%` }}
-                      transition={{ duration: 0.9, ease: [0, 0, 0.2, 1], delay: i * 0.04 + 0.4 }}
-                      style={{ background: statusColor }}
-                    />
-                  </div>
-                  <div className="text-[10px] mt-0.5 truncate" style={{ color: C.textTer }}>
-                    Source: {m.source}
-                  </div>
-                </div>
-              </motion.div>
-            );
-          })}
+// ─── Saved Items (known_items) ───────────────────────────────────
+// Source: known_items — supplements/habits the chat agent auto-learns.
+// The agent matches by name/alias and uses these exact macros on future logs.
+function relTime(iso?: string | null): string {
+  if (!iso) return "never";
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+function MacroChip({ label, val, color }: { label: string; val: number | null; color: string }) {
+  return (
+    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded"
+      style={{ background: `${color}12`, color, border: `1px solid ${color}25`, fontFamily: "var(--font-mono)" }}>
+      {label} {val ?? "–"}
+    </span>
+  );
+}
+
+const EMPTY_ITEM_FORM = { name: "", aliases: "", calories: "", protein: "", carbs: "", fat: "" };
+
+function SavedItemsPanel() {
+  const [items, setItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ ...EMPTY_ITEM_FORM });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({ calories: "", protein: "", carbs: "", fat: "" });
+
+  const fetchItems = async () => {
+    const { data, error } = await supabase
+      .from("known_items")
+      .select("*")
+      .order("use_count", { ascending: false })
+      .order("created_at", { ascending: false });
+    if (!error && data) setItems(data);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) { setLoading(false); return; }
+    fetchItems();
+  }, []);
+
+  const getUserId = async () => {
+    const { data: profile } = await supabase.from("user_profiles").select("user_id").limit(1);
+    return profile?.[0]?.user_id || "00000000-0000-0000-0000-000000000000";
+  };
+
+  const numOrNull = (v: string) => v.trim() === "" ? null : Math.round(Number(v));
+
+  const addItem = async () => {
+    if (!form.name.trim()) return;
+    const userId = await getUserId();
+    const { error } = await supabase.from("known_items").insert({
+      user_id: userId,
+      name: form.name.trim(),
+      aliases: form.aliases.split(",").map(a => a.trim()).filter(Boolean),
+      calories: numOrNull(form.calories),
+      protein: numOrNull(form.protein),
+      carbs: numOrNull(form.carbs),
+      fat: numOrNull(form.fat),
+    });
+    if (error) { alert("Failed to save item: " + error.message); return; }
+    setForm({ ...EMPTY_ITEM_FORM });
+    setAdding(false);
+    fetchItems();
+  };
+
+  const startEdit = (item: any) => {
+    setEditingId(item.id);
+    setEditForm({
+      calories: item.calories ?? "",
+      protein: item.protein ?? "",
+      carbs: item.carbs ?? "",
+      fat: item.fat ?? "",
+    });
+  };
+
+  const saveEdit = async (id: string) => {
+    const { error } = await supabase.from("known_items").update({
+      calories: numOrNull(editForm.calories),
+      protein: numOrNull(editForm.protein),
+      carbs: numOrNull(editForm.carbs),
+      fat: numOrNull(editForm.fat),
+    }).eq("id", id);
+    if (error) { alert("Failed to update item: " + error.message); return; }
+    setEditingId(null);
+    fetchItems();
+  };
+
+  const removeItem = async (id: string) => {
+    await supabase.from("known_items").delete().eq("id", id);
+    fetchItems();
+  };
+
+  const inputCls = "p-2 rounded-lg text-xs font-mono outline-none";
+  const inputStyle = { background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)", color: C.text };
+
+  return (
+    <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>
+          Saved Items · Habits
         </div>
+        {!adding && (
+          <button onClick={() => setAdding(true)}
+            className="flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-lg transition-all hover:opacity-80"
+            style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)", color: C.textSec }}>
+            <Plus size={11} /> Add
+          </button>
+        )}
+      </div>
+      <div className="text-[11px] mb-4" style={{ color: C.textSec }}>
+        Log these in Chat by name — the agent uses these exact macros.
       </div>
 
-      {/* Deficiency callouts */}
-      {(criticalMicros.length > 0 || warningMicros.length > 0) && (
-        <div className="mt-4 space-y-2">
-          {criticalMicros.map(m => (
-            <div key={m.name} className="flex items-start gap-3 p-3 rounded-xl"
-              style={{ background: "rgba(220,38,38,0.05)", border: "1px solid rgba(220,38,38,0.2)" }}>
-              <AlertTriangle size={14} style={{ color: C.critical, marginTop: 2, flexShrink: 0 }} />
-              <div>
-                <span className="text-xs font-bold" style={{ color: C.critical }}>{m.name} deficiency detected — {m.score}% DV. </span>
-                <span className="text-xs" style={{ color: C.textSec }}>Add {m.source} or consider supplementation.</span>
+      {/* Add form */}
+      <AnimatePresence>
+        {adding && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.25 }}
+            className="overflow-hidden"
+          >
+            <div className="p-3 rounded-xl mb-4 space-y-2" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+              <div className="flex gap-2 flex-wrap">
+                <input placeholder="Name (e.g. Fish Oil)" value={form.name}
+                  onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                  className={`flex-1 min-w-[160px] ${inputCls}`} style={inputStyle} />
+                <input placeholder="Aliases, comma separated" value={form.aliases}
+                  onChange={e => setForm(f => ({ ...f, aliases: e.target.value }))}
+                  className={`flex-1 min-w-[160px] ${inputCls}`} style={inputStyle} />
+              </div>
+              <div className="flex gap-2 flex-wrap items-center">
+                {(["calories", "protein", "carbs", "fat"] as const).map(k => (
+                  <input key={k} type="number" placeholder={k === "calories" ? "kcal" : `${k} (g)`} value={form[k]}
+                    onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))}
+                    className={`w-20 ${inputCls}`} style={inputStyle} />
+                ))}
+                <div className="flex-1" />
+                <button onClick={() => { setAdding(false); setForm({ ...EMPTY_ITEM_FORM }); }}
+                  className="text-xs font-bold px-3 py-1.5" style={{ color: C.textTer }}>Cancel</button>
+                <button onClick={addItem}
+                  className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-lg transition-all hover:opacity-80"
+                  style={{ background: C.optimal, color: "#fff" }}>
+                  <Check size={12} /> Save
+                </button>
               </div>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* List / empty state */}
+      {loading ? (
+        <div className="text-center text-xs py-6" style={{ color: C.textTer }}>Loading saved items…</div>
+      ) : items.length === 0 ? (
+        <div className="flex flex-col items-center justify-center p-8 text-center rounded-xl"
+          style={{ background: "var(--surface-tertiary)", border: "1px dashed var(--border-subtle)" }}>
+          <div className="w-10 h-10 rounded-full flex items-center justify-center mb-3"
+            style={{ background: "var(--surface-quaternary)", border: "1px solid var(--border-subtle)" }}>
+            <Target size={16} style={{ color: C.textTer }} />
+          </div>
+          <div className="text-xs font-bold mb-1" style={{ color: C.textSec }}>No saved items yet</div>
+          <div className="text-[11px] max-w-sm" style={{ color: C.textTer, lineHeight: 1.6 }}>
+            Items you log repeatedly in Chat (/chat) — supplements, shakes, habits — are learned automatically, or add them manually above.
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((item, i) => (
+            <motion.div key={item.id}
+              initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.04 }}
+              className="p-3 rounded-xl"
+              style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold" style={{ color: C.text }}>{item.name}</span>
+                    <MacroChip label="kcal" val={item.calories} color={C.calories} />
+                    <MacroChip label="P" val={item.protein} color={C.protein} />
+                    <MacroChip label="C" val={item.carbs} color={C.carbs} />
+                    <MacroChip label="F" val={item.fat} color={C.fat} />
+                  </div>
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    {(item.aliases || []).map((a: string) => (
+                      <span key={a} className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+                        style={{ background: "var(--surface-quaternary)", color: C.textTer, border: "1px solid var(--border-subtle)" }}>
+                        {a}
+                      </span>
+                    ))}
+                    <span className="text-[10px] font-mono" style={{ color: C.textTer }}>
+                      used {item.use_count ?? 0}x · last {relTime(item.last_used_at)}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button onClick={() => editingId === item.id ? setEditingId(null) : startEdit(item)}
+                    className="p-1.5 rounded-lg transition-colors hover:bg-black/5" style={{ color: C.textTer }}>
+                    <Pencil size={13} />
+                  </button>
+                  <button onClick={() => removeItem(item.id)}
+                    className="p-1.5 rounded-lg transition-colors hover:bg-black/5" style={{ color: C.critical }}>
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Inline macro edit */}
+              <AnimatePresence>
+                {editingId === item.id && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="flex gap-2 flex-wrap items-center mt-2 pt-2" style={{ borderTop: "1px solid var(--border-subtle)" }}>
+                      {(["calories", "protein", "carbs", "fat"] as const).map(k => (
+                        <input key={k} type="number" placeholder={k === "calories" ? "kcal" : `${k} (g)`} value={editForm[k]}
+                          onChange={e => setEditForm(f => ({ ...f, [k]: e.target.value }))}
+                          className={`w-20 ${inputCls}`} style={inputStyle} />
+                      ))}
+                      <button onClick={() => saveEdit(item.id)}
+                        className="flex items-center gap-1 text-[11px] font-bold px-2.5 py-1.5 rounded-lg transition-all hover:opacity-80"
+                        style={{ background: C.optimal, color: "#fff" }}>
+                        <Check size={11} /> Save
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
           ))}
         </div>
       )}
@@ -615,20 +898,12 @@ function MicroEnvironmentGrid() {
 }
 
 // ─── Zone 5: Meal Stream (Rich Cards) ────────────────────────────
-function MealStreamCard({ meal, index, workoutWindows }: {
-  meal: any; index: number; workoutWindows: { start: number; end: number; name: string }[];
-}) {
+function MealStreamCard({ meal, index }: { meal: any; index: number }) {
   const [open, setOpen] = useState(false);
-  const mealHour = new Date(meal.meal_time).getHours();
   const cal = meal.calories || 0;
   const p   = meal.protein  || 0;
   const c   = meal.carbs    || 0;
   const f   = meal.fat      || 0;
-
-  // Check if this meal is within ±2h of a workout
-  const nearWorkout = workoutWindows.find(w =>
-    Math.abs(mealHour - w.start) <= 2 || Math.abs(mealHour - (w.start + 1)) <= 1
-  );
 
   const totalMacroG = p + c + f || 1;
   const macroWidths = {
@@ -636,21 +911,14 @@ function MealStreamCard({ meal, index, workoutWindows }: {
     carbs:   (c / totalMacroG) * 100,
     fat:     (f / totalMacroG) * 100,
   };
-
-  // Simple AI insight per meal
-  const insights: Record<number, string> = {
-    0: "Optimal fasted window — high casein and complex carbs support gradual glucose release.",
-    1: "Good pre-workout fuel. Could add 20g fast carbs 45 min before afternoon session.",
-    2: "Intra/post-workout window. Glycemic spike from simple carbs well-timed with training.",
-    3: "Excellent omega-3 profile for overnight HRV recovery. Anti-inflammatory stack.",
-  };
-  const aiInsight = meal.ai_insight || insights[index % 4] || "Nutritional profile is tracking within optimal ranges.";
+  const micros = parseMicros(meal.micronutrients);
+  const microKeys = Object.keys(micros);
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: index * 0.07 + 0.15, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+      transition={{ delay: Math.min(index, 8) * 0.07 + 0.15, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
       className="card-surface overflow-hidden"
       style={{ borderRadius: "var(--radius-lg)" }}
     >
@@ -667,14 +935,10 @@ function MealStreamCard({ meal, index, workoutWindows }: {
               <div className="flex items-center gap-2 mt-0.5">
                 <Clock size={10} style={{ color: C.textTer }} />
                 <span className="text-[10px] font-bold font-mono" style={{ color: C.textTer }}>
+                  {new Date(meal.meal_time).toLocaleDateString([], { month: "short", day: "numeric" })}
+                  {" · "}
                   {new Date(meal.meal_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 </span>
-                {nearWorkout && (
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full"
-                    style={{ background: "rgba(224,53,53,0.1)", color: C.critical, border: "1px solid rgba(224,53,53,0.25)" }}>
-                    ⚡ Near {nearWorkout.name}
-                  </span>
-                )}
               </div>
             </div>
           </div>
@@ -691,18 +955,20 @@ function MealStreamCard({ meal, index, workoutWindows }: {
           <div style={{ width: `${macroWidths.carbs}%`, background: C.carbs }} />
           <div className="rounded-r-full" style={{ width: `${macroWidths.fat}%`, background: C.fat }} />
         </div>
-        <div className="flex items-center gap-4 text-[10px] font-bold mb-3" style={{ fontFamily: "var(--font-mono)" }}>
+        <div className="flex items-center gap-4 text-[10px] font-bold" style={{ fontFamily: "var(--font-mono)" }}>
           <span style={{ color: C.protein }}>P {p}g</span>
           <span style={{ color: C.carbs }}>C {c}g</span>
           <span style={{ color: C.fat }}>F {f}g</span>
         </div>
 
-        {/* AI insight */}
-        <div className="flex items-start gap-2 p-2.5 rounded-lg"
-          style={{ background: "rgba(91,66,232,0.04)", border: "1px solid rgba(91,66,232,0.12)" }}>
-          <Brain size={12} style={{ color: "var(--accent-sleep)", marginTop: 2, flexShrink: 0 }} />
-          <span className="text-[11px] leading-relaxed" style={{ color: C.textSec }}>{aiInsight}</span>
-        </div>
+        {/* AI insight — only when the meal row actually carries one */}
+        {meal.ai_insight && (
+          <div className="flex items-start gap-2 p-2.5 rounded-lg mt-3"
+            style={{ background: "rgba(91,66,232,0.04)", border: "1px solid rgba(91,66,232,0.12)" }}>
+            <Brain size={12} style={{ color: "var(--accent-sleep)", marginTop: 2, flexShrink: 0 }} />
+            <span className="text-[11px] leading-relaxed" style={{ color: C.textSec }}>{meal.ai_insight}</span>
+          </div>
+        )}
       </div>
 
       {/* Expandable macro detail */}
@@ -735,6 +1001,16 @@ function MealStreamCard({ meal, index, workoutWindows }: {
                   <div className="text-sm font-black" style={{ fontFamily: "var(--font-mono)", color: s.color }}>{s.val}<span className="text-[10px]" style={{ color: C.textTer }}>{s.unit}</span></div>
                 </div>
               ))}
+              {microKeys.length > 0 && (
+                <div className="col-span-4 flex flex-wrap gap-1.5 mt-1 pt-2" style={{ borderTop: `1px solid ${C.border}` }}>
+                  {microKeys.map(k => (
+                    <span key={k} className="text-[9px] font-bold px-1.5 py-0.5 rounded capitalize"
+                      style={{ background: `${C.fiber}12`, color: C.fiber, border: `1px solid ${C.fiber}25`, fontFamily: "var(--font-mono)" }}>
+                      {k} {Math.round(micros[k] * 10) / 10}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -743,89 +1019,165 @@ function MealStreamCard({ meal, index, workoutWindows }: {
   );
 }
 
-function MealStream({ dbMeals, dbWorkouts }: { dbMeals: any[]; dbWorkouts: any[] }) {
-  const todayMeals = dbMeals.filter(m => {
-    const d = new Date(m.meal_time);
-    return d.toDateString() === new Date().toDateString();
-  });
+// ─── Meal Gallery: sideways snap-scroll of day cards ─────────────
+function MealGallery({ dbMeals, timeFilter, onOpenDay }: {
+  dbMeals: any[]; timeFilter: string; onOpenDay?: (dk: string) => void;
+}) {
+  const [expandedDay, setExpandedDay] = useState<string | null>(null);
 
-  const allMeals = todayMeals.length > 0 ? todayMeals : dbMeals.slice(0, 6);
-
-  const workoutWindows = dbWorkouts
-    .filter(w => { const d = new Date(w.workout_date); return d.toDateString() === new Date().toDateString(); })
-    .map(w => ({
-      start: new Date(w.workout_date).getHours(),
-      end:   new Date(w.workout_date).getHours() + Math.round((w.duration_minutes || 60) / 60),
-      name:  w.exercise_name || "Workout",
-    }));
+  const days = useMemo(() => {
+    const byDay: Record<string, any[]> = {};
+    dbMeals.forEach(m => {
+      const dk = dayKeyOf(m.meal_time);
+      if (!byDay[dk]) byDay[dk] = [];
+      byDay[dk].push(m);
+    });
+    return Object.keys(byDay).sort((a, b) => b.localeCompare(a)).map(dk => {
+      const meals = byDay[dk].sort((a, b) => new Date(a.meal_time).getTime() - new Date(b.meal_time).getTime());
+      return {
+        dk,
+        meals,
+        cal: meals.reduce((a, m) => a + (m.calories || 0), 0),
+        p: meals.reduce((a, m) => a + (m.protein || 0), 0),
+        c: meals.reduce((a, m) => a + (m.carbs || 0), 0),
+        f: meals.reduce((a, m) => a + (m.fat || 0), 0),
+      };
+    });
+  }, [dbMeals]);
 
   return (
     <div>
       <div className="text-xs font-bold uppercase tracking-widest mb-3" style={{ color: C.textTer }}>
-        Meal Log Stream · {allMeals.length} entries
+        Meal Log · {rangeLabel(timeFilter)} · {days.length} day{days.length !== 1 ? "s" : ""}
       </div>
-      <div className="space-y-3">
-        {allMeals.map((m, i) => (
-          <MealStreamCard key={m.id || i} meal={m} index={i} workoutWindows={workoutWindows} />
-        ))}
+      <div className="flex gap-3 overflow-x-auto pb-2" style={{ scrollSnapType: "x mandatory" }}>
+        {days.map(d => {
+          const macroTotal = d.p + d.c + d.f || 1;
+          const expanded = expandedDay === d.dk;
+          const shown = expanded
+            ? d.meals
+            : [...d.meals].sort((a, b) => (b.calories || 0) - (a.calories || 0)).slice(0, 3);
+          return (
+            <div key={d.dk} className="card-surface p-4 shrink-0 flex flex-col gap-2.5"
+              style={{ borderRadius: "var(--radius-lg)", minWidth: 230, maxWidth: 260, scrollSnapAlign: "start" }}>
+              <div className="flex items-center justify-between gap-2">
+                <button onClick={() => onOpenDay?.(d.dk)} className="text-xs font-bold hover:underline text-left" style={{ color: C.text }}>
+                  {fmtDayLong(d.dk)}
+                </button>
+                <div className="text-sm font-black shrink-0" style={{ fontFamily: "var(--font-mono)", color: C.calories }}>
+                  {d.cal}<span className="text-[9px] ml-0.5" style={{ color: C.textTer }}>kcal</span>
+                </div>
+              </div>
+              {/* macro mini stacked bar */}
+              <div className="flex h-1.5 rounded-full overflow-hidden gap-0.5">
+                <div style={{ width: `${(d.p / macroTotal) * 100}%`, background: C.protein }} />
+                <div style={{ width: `${(d.c / macroTotal) * 100}%`, background: C.carbs }} />
+                <div style={{ width: `${(d.f / macroTotal) * 100}%`, background: C.fat }} />
+              </div>
+              <div className="flex items-center gap-3 text-[9px] font-bold" style={{ fontFamily: "var(--font-mono)" }}>
+                <span style={{ color: C.protein }}>P {d.p}g</span>
+                <span style={{ color: C.carbs }}>C {d.c}g</span>
+                <span style={{ color: C.fat }}>F {d.f}g</span>
+              </div>
+              <div className="space-y-1.5">
+                {shown.map((m, i) => (
+                  <div key={m.id || i} className="flex items-center justify-between gap-2 text-[10px]">
+                    <span className="truncate" style={{ color: C.textSec }}>{m.description || "Meal"}</span>
+                    <span className="font-mono font-bold shrink-0" style={{ color: C.calories }}>{m.calories || 0}</span>
+                  </div>
+                ))}
+              </div>
+              {d.meals.length > 3 && (
+                <button onClick={() => setExpandedDay(x => x === d.dk ? null : d.dk)}
+                  className="text-[10px] font-bold text-left transition-colors hover:underline" style={{ color: C.textTer }}>
+                  {expanded ? "Show less ▲" : `+${d.meals.length - 3} more ▼`}
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-// ─── Zone 6: AI Action Items ──────────────────────────────────────
-function AIActionItems({ totalCal, totalP, totalC, totalFat, activeBurn, dbWorkouts }: {
-  totalCal: number; totalP: number; totalC: number; totalFat: number; activeBurn: number; dbWorkouts: any[];
+// ─── Day Timeline: clock-ordered meals with running totals ───────
+function DayTimeline({ meals }: { meals: any[] }) {
+  const sorted = [...meals].sort((a, b) => new Date(a.meal_time).getTime() - new Date(b.meal_time).getTime());
+  let running = 0;
+
+  return (
+    <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+      <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: C.textTer }}>
+        Meal Timeline
+      </div>
+      <div>
+        {sorted.map((m, i) => {
+          running += m.calories || 0;
+          const run = running;
+          return (
+            <div key={m.id || i} className="flex gap-3">
+              {/* rail: time + dot + connector */}
+              <div className="flex flex-col items-center shrink-0" style={{ width: 56 }}>
+                <span className="text-[10px] font-bold font-mono" style={{ color: C.textSec }}>
+                  {new Date(m.meal_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </span>
+                <div className="w-2 h-2 rounded-full my-1 shrink-0" style={{ background: C.calories }} />
+                {i < sorted.length - 1 && <div className="w-px flex-1" style={{ background: "var(--border-subtle)" }} />}
+              </div>
+              <div className="flex-1 pb-4 min-w-0">
+                <div className="text-[10px] font-mono mb-1" style={{ color: C.textTer }}>running {run} kcal</div>
+                <MealStreamCard meal={m} index={i} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Zone 6: Action Items (derived from real intake only) ─────────
+function ActionItems({ totalCal, totalP, totalC, loggedDays, calTarget, dbWorkouts, timeFilter }: {
+  totalCal: number; totalP: number; totalC: number; loggedDays: number;
+  calTarget: number | null; dbWorkouts: any[]; timeFilter: string;
 }) {
   const [dismissed, setDismissed] = useState<number[]>([]);
 
-  const hasWorkout = dbWorkouts.some(w => new Date(w.workout_date).toDateString() === new Date().toDateString());
-  const totalBurn  = BMR + activeBurn;
-  const netEnergy  = totalCal - totalBurn;
+  const days = Math.max(1, loggedDays);
+  const avgCal = Math.round(totalCal / days);
+  const avgP = Math.round(totalP / days);
+  const avgC = Math.round(totalC / days);
+  const hasWorkout = dbWorkouts.length > 0;
 
-  // Generate dynamic action items
   const allActions = [
-    totalP < GOALS.protein * 0.7 && {
-      priority: "critical" as const,
-      title: `Consume ${GOALS.protein - totalP}g protein now`,
-      reason: `Post-workout anabolic window is open. You're at ${totalP}g / ${GOALS.protein}g goal. Muscle protein synthesis peaks within 2–3h of training.`,
-      action: "Log Meal",
-      icon: Target,
-    },
-    netEnergy < -400 && {
+    calTarget !== null && avgCal < calTarget * 0.7 && {
       priority: "warning" as const,
-      title: `${Math.abs(netEnergy)} kcal deficit — add a meal`,
-      reason: `Sustained deficits on training days impair recovery and cortisol regulation. BMR ${BMR} + active burn ${activeBurn} = ${totalBurn} total expenditure.`,
+      title: `Intake below target — ~${avgCal} vs ${calTarget} kcal/day`,
+      reason: `Average intake across ${days} logged day${days !== 1 ? "s" : ""} in the ${rangeLabel(timeFilter)} is ${calTarget - avgCal} kcal under your configured daily target.`,
       action: "Log Meal",
       icon: Flame,
     },
-    totalC < 150 && hasWorkout && {
+    calTarget !== null && avgCal > calTarget * 1.15 && {
+      priority: "warning" as const,
+      title: `Intake above target — ~${avgCal} vs ${calTarget} kcal/day`,
+      reason: `Average intake across ${days} logged day${days !== 1 ? "s" : ""} exceeds your configured daily target by ${avgCal - calTarget} kcal.`,
+      action: "Review Meals",
+      icon: TrendingUp,
+    },
+    hasWorkout && avgC < 150 && {
       priority: "critical" as const,
-      title: "Carb intake critically low for training day",
-      reason: `Only ${totalC}g carbs consumed. With a training session today, glycogen replenishment requires 300–400g. Performance and recovery are at risk.`,
+      title: "Carb intake low for a training period",
+      reason: `Only ~${avgC}g carbs/day on average while ${new Set(dbWorkouts.map(w => (w.workout_date || "").split("T")[0])).size} training day(s) are logged in this range. Glycogen replenishment typically requires considerably more.`,
       action: "View Carb Sources",
       icon: Zap,
     },
-    MICROS.find(m => m.status === "critical") && {
-      priority: "warning" as const,
-      title: `${MICROS.find(m => m.status === "critical")?.name} deficiency — action needed`,
-      reason: `${MICROS.find(m => m.status === "critical")?.name} is at ${MICROS.find(m => m.status === "critical")?.score}% DV. Chronic deficiency impairs bone density, immune function, and hormonal balance.`,
-      action: "View Supplements",
-      icon: AlertTriangle,
-    },
-    totalCal > GOALS.cal * 1.1 && {
-      priority: "warning" as const,
-      title: `Caloric surplus: +${totalCal - GOALS.cal} kcal over target`,
-      reason: `You've consumed ${totalCal} kcal vs. ${GOALS.cal} kcal target. This is optimal for hypertrophy if today is a strength session. Ensure surplus is quality macros.`,
-      action: "Review Macros",
-      icon: TrendingUp,
-    },
     {
       priority: "optimal" as const,
-      title: "Schedule tomorrow's nutrition pre-loading",
-      reason: `Based on your training history, you likely have a session tomorrow. Pre-logging meals the night before improves adherence by 40%.`,
-      action: "Plan Meals",
-      icon: BookOpen,
+      title: `${days} day${days !== 1 ? "s" : ""} logged in the ${rangeLabel(timeFilter)}`,
+      reason: `Averages per logged day: ${avgCal} kcal · ${avgP}g protein · ${avgC}g carbs. Log meals in Chat (/chat) to keep the record complete.`,
+      action: "Open Chat",
+      icon: CheckCircle,
     },
   ].filter(Boolean) as Array<{
     priority: "critical" | "warning" | "optimal";
@@ -844,7 +1196,7 @@ function AIActionItems({ totalCal, totalP, totalC, totalFat, activeBurn, dbWorko
     <div>
       <div className="flex items-center justify-between mb-3">
         <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>
-          AI Action Items
+          Action Items
         </div>
         <div className="text-[10px] font-bold px-2 py-0.5 rounded-full"
           style={{ background: "rgba(91,66,232,0.1)", color: "var(--accent-sleep)", border: "1px solid rgba(91,66,232,0.25)" }}>
@@ -899,8 +1251,8 @@ function AIActionItems({ totalCal, totalP, totalC, totalFat, activeBurn, dbWorko
             style={{ background: "rgba(5,150,105,0.06)", border: "1px solid rgba(5,150,105,0.2)" }}>
             <CheckCircle size={20} style={{ color: C.optimal }} />
             <div>
-              <div className="text-sm font-bold" style={{ color: C.optimal }}>All systems optimal</div>
-              <div className="text-xs" style={{ color: C.textSec }}>No nutritional action items at this time. Keep it up.</div>
+              <div className="text-sm font-bold" style={{ color: C.optimal }}>All caught up</div>
+              <div className="text-xs" style={{ color: C.textSec }}>No nutritional action items for this range.</div>
             </div>
           </div>
         )}
@@ -913,74 +1265,171 @@ function AIActionItems({ totalCal, totalP, totalC, totalFat, activeBurn, dbWorko
 interface FuelTabProps {
   dbMeals?: any[];
   dbWorkouts?: any[];
+  timeFilter?: string;
+  viewMode?: "range" | "day";
+  selectedDay?: string;
+  onJumpToDay?: (dk: string) => void;
+  dayLens?: ReactNode;
 }
 
-export default function FuelTab({ dbMeals = [], dbWorkouts = [] }: FuelTabProps) {
-  // Aggregate totals
+export default function FuelTab({
+  dbMeals = [], dbWorkouts = [], timeFilter = "month",
+  viewMode = "range", selectedDay, onJumpToDay, dayLens,
+}: FuelTabProps) {
+  const calTarget = useCaloricTarget();
+
+  // Range aggregates (also used for the day-vs-average comparison chip)
   let totalCal = 0, totalP = 0, totalC = 0, totalFat = 0, totalFib = 0;
   dbMeals.forEach(m => {
     totalCal += m.calories || 0;
     totalP   += m.protein  || 0;
     totalC   += m.carbs    || 0;
     totalFat += m.fat      || 0;
-    
-    let fib = m.fiber || 0;
-    if (m.micronutrients) {
-      try {
-        const micros = typeof m.micronutrients === 'string' ? JSON.parse(m.micronutrients) : m.micronutrients;
-        fib = fib || micros.fiber || 0;
-      } catch (e) {
-        console.error("Failed to parse micronutrients:", e);
-      }
-    }
-    totalFib += fib;
+    totalFib += parseMicros(m.micronutrients).fiber || 0;
+  });
+  const loggedDays = new Set(dbMeals.map(m => dayKeyOf(m.meal_time))).size;
+
+  // Day lens: narrow to the picked day
+  const isDay = viewMode === "day" && !!selectedDay;
+  const dayMeals = isDay ? dbMeals.filter(m => dayKeyOf(m.meal_time) === selectedDay) : dbMeals;
+  let dCal = 0, dP = 0, dC = 0, dF = 0;
+  dayMeals.forEach(m => {
+    dCal += m.calories || 0;
+    dP   += m.protein  || 0;
+    dC   += m.carbs    || 0;
+    dF   += m.fat      || 0;
   });
 
-  const activeBurn = dbWorkouts.reduce((acc, w) => acc + (w.calories || w.calories_burned || 0), 0);
-
-  // No data state
-  if (!dbMeals || dbMeals.length === 0) {
+  // No data in the active lens — honest empty state, not stale all-time data
+  if (dayMeals.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center p-16 text-center"
-        style={{ minHeight: 400 }}>
-        <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4"
-          style={{ background: "rgba(0,168,120,0.1)", border: "1px solid rgba(0,168,120,0.2)" }}>
-          <Flame size={28} style={{ color: "var(--accent-nutrition)" }} />
-        </div>
-        <div className="text-base font-bold mb-2" style={{ color: C.text }}>No nutritional telemetry</div>
-        <div className="text-sm max-w-xs" style={{ color: C.textSec, lineHeight: 1.6 }}>
-          Log your meals via Telegram to populate the Fuel Intelligence Dashboard. The AI will then generate personalized insights tied to your workouts.
+      <div className="space-y-5">
+        {dayLens}
+        <div className="flex flex-col items-center justify-center p-16 text-center"
+          style={{ minHeight: 400 }}>
+          <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4"
+            style={{ background: "rgba(0,168,120,0.1)", border: "1px solid rgba(0,168,120,0.2)" }}>
+            <Flame size={28} style={{ color: "var(--accent-nutrition)" }} />
+          </div>
+          <div className="text-base font-bold mb-2" style={{ color: C.text }}>
+            {isDay ? `No meals logged on ${fmtDayLong(selectedDay!)}` : `No meals logged · ${rangeLabel(timeFilter)}`}
+          </div>
+          <div className="text-sm max-w-xs" style={{ color: C.textSec, lineHeight: 1.6 }}>
+            Log meals in Chat (/chat) — text or a photo — and the Fuel dashboard will populate with intake, macros and micronutrients.
+          </div>
         </div>
       </div>
     );
   }
 
+  // ── Day mode: one day in detail ──
+  if (isDay) {
+    const avgCal = loggedDays > 0 ? Math.round(totalCal / loggedDays) : 0;
+    const delta = dCal - avgCal;
+    const macroKcal = dP * 4 + dC * 4 + dF * 9;
+    const dayMacros = [
+      { label: "Protein", g: dP, kcal: dP * 4, color: C.protein },
+      { label: "Carbs", g: dC, kcal: dC * 4, color: C.carbs },
+      { label: "Fat", g: dF, kcal: dF * 9, color: C.fat },
+    ];
+    return (
+      <div className="space-y-6 pb-4">
+        {dayLens}
+
+        {/* Day summary */}
+        <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+            <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>
+              Fuel · {fmtDayLong(selectedDay!)}
+            </div>
+            <div className="text-[10px] font-bold px-2 py-1 rounded-lg font-mono"
+              style={{
+                background: delta > 0 ? "rgba(217,119,6,0.08)" : "rgba(5,150,105,0.08)",
+                color: delta > 0 ? C.warning : C.optimal,
+                border: `1px solid ${delta > 0 ? "rgba(217,119,6,0.2)" : "rgba(5,150,105,0.2)"}`,
+              }}>
+              {delta > 0 ? "+" : ""}{delta} kcal vs {rangeLabel(timeFilter)} daily avg ({avgCal})
+            </div>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+            {[
+              { label: "Calories", val: dCal, unit: "kcal", color: C.calories },
+              { label: "Protein", val: dP, unit: "g", color: C.protein },
+              { label: "Carbs", val: dC, unit: "g", color: C.carbs },
+              { label: "Fat", val: dF, unit: "g", color: C.fat },
+            ].map(s => (
+              <div key={s.label} className="p-3 rounded-xl text-center" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+                <div className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: C.textTer }}>{s.label}</div>
+                <div className="text-lg font-black" style={{ fontFamily: "var(--font-mono)", color: s.color, lineHeight: 1 }}>
+                  {s.val}<span className="text-[10px] ml-0.5" style={{ color: C.textTer }}>{s.unit}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* Day macro split — 100% stacked bar */}
+          <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: C.textTer }}>Macro Split (share of macro kcal)</div>
+          <div className="flex h-6 rounded-lg overflow-hidden" style={{ background: "var(--border-subtle)" }}>
+            {dayMacros.map(m => {
+              const share = macroKcal > 0 ? Math.round((m.kcal / macroKcal) * 100) : 0;
+              return (
+                <motion.div key={m.label}
+                  initial={{ width: 0 }} animate={{ width: `${share}%` }}
+                  transition={{ duration: 0.8, ease: [0, 0, 0.2, 1] }}
+                  className="flex items-center justify-center"
+                  style={{ background: m.color }}>
+                  {share >= 10 && <span className="text-[10px] font-bold text-white">{m.label} {share}%</span>}
+                </motion.div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Hourly intake curve for the day */}
+        <IntakeTimeline dbMeals={dayMeals} calTarget={calTarget} timeFilter="day" />
+
+        {/* Clock-ordered meal timeline */}
+        <DayTimeline meals={dayMeals} />
+
+        <SavedItemsPanel />
+      </div>
+    );
+  }
+
+  // ── Range mode ──
   return (
     <div className="space-y-6 pb-4">
+      {dayLens}
 
-      {/* Zone 1 — Energy Command HUD */}
-      <EnergyCommandHUD
-        totalCal={totalCal} totalP={totalP} totalF_g={totalFat} activeBurn={activeBurn}
+      {/* Zone 1 — Intake Overview HUD */}
+      <IntakeHUD
+        totalCal={totalCal} totalP={totalP} totalC={totalC} totalFat={totalFat}
+        loggedDays={loggedDays} calTarget={calTarget} timeFilter={timeFilter}
       />
 
-      {/* Zone 2 — Caloric Timeline */}
-      <CaloricTimeline dbMeals={dbMeals} dbWorkouts={dbWorkouts} />
+      {/* Zone 2 — Intake Timeline (clickable) */}
+      <IntakeTimeline dbMeals={dbMeals} calTarget={calTarget} timeFilter={timeFilter} onDaySelect={onJumpToDay} />
 
-      {/* Zone 3 — Macro Intelligence Grid */}
+      {/* Zone 2b — Macros per Day (stacked grams, clickable) */}
+      <DailyMacroChart dbMeals={dbMeals} timeFilter={timeFilter} onDaySelect={onJumpToDay} />
+
+      {/* Zone 3 — Macro Split + Workout Sync */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <MacroRingPanel totalP={totalP} totalC={totalC} totalFat={totalFat} totalFib={totalFib} />
-        <MacroWorkoutCorrelation dbWorkouts={dbWorkouts} totalP={totalP} totalC={totalC} />
+        <MacroSplitPanel totalP={totalP} totalC={totalC} totalFat={totalFat} totalFib={totalFib} />
+        <MacroWorkoutCorrelation dbWorkouts={dbWorkouts} totalP={totalP} totalC={totalC} loggedDays={loggedDays} timeFilter={timeFilter} />
       </div>
 
-      {/* Zone 4 — Micro-Nutrient Environment */}
-      <MicroEnvironmentGrid />
+      {/* Zone 4 — Micronutrients */}
+      <MicroPanel dbMeals={dbMeals} timeFilter={timeFilter} />
 
-      {/* Zone 5 + 6 — Meal Stream & AI Actions */}
+      {/* Saved Items (known_items) */}
+      <SavedItemsPanel />
+
+      {/* Zone 5 + 6 — Meal Gallery & Actions */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <MealStream dbMeals={dbMeals} dbWorkouts={dbWorkouts} />
-        <AIActionItems
-          totalCal={totalCal} totalP={totalP} totalC={totalC} totalFat={totalFat}
-          activeBurn={activeBurn} dbWorkouts={dbWorkouts}
+        <MealGallery dbMeals={dbMeals} timeFilter={timeFilter} onOpenDay={onJumpToDay} />
+        <ActionItems
+          totalCal={totalCal} totalP={totalP} totalC={totalC}
+          loggedDays={loggedDays} calTarget={calTarget} dbWorkouts={dbWorkouts} timeFilter={timeFilter}
         />
       </div>
 
