@@ -15,7 +15,6 @@ import {
   Shield, Zap, RefreshCw, Info, CreditCard, Layers, Activity
 } from "lucide-react";
 
-import PortfolioConstellation from "../../components/visualizations/PortfolioConstellation";
 import CashflowWaterfall from "../../components/visualizations/CashflowWaterfall";
 import { supabase } from "../../../utils/supabaseClient";
 import { THEME } from "../../../utils/theme";
@@ -32,6 +31,9 @@ const C = {
   alert: "#DC2626",
 };
 
+const curSym = (c: string) => (c === "EUR" ? "€" : "$");
+const fmt2 = (n: number) => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 // ─── Shared Subcomponents ────────────────────────────────────────
 
 function DeltaBadge({ value, prefix = "" }: { value: number | string; prefix?: string }) {
@@ -45,31 +47,6 @@ function DeltaBadge({ value, prefix = "" }: { value: number | string; prefix?: s
       <Icon size={11} />
       {isPos && "+"}{prefix}{value}
     </span>
-  );
-}
-
-function ExpandableSection({ title, icon: Icon, defaultOpen = false, accentColor, badge, children }: {
-  title: string; icon: React.ElementType; defaultOpen?: boolean; accentColor?: string; badge?: React.ReactNode; children: React.ReactNode;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <div className="card-surface overflow-hidden" style={{ borderRadius: "var(--radius-lg)" }}>
-      <button className="expandable-header w-full text-left" onClick={() => setOpen(x => !x)}>
-        <div className="flex items-center gap-2">
-          <Icon size={16} style={{ color: accentColor ?? "var(--text-tertiary)" }} />
-          <span className="font-semibold text-sm" style={{ color: "var(--text-primary)" }}>{title}</span>
-          {badge}
-        </div>
-        <div style={{ color: "var(--text-tertiary)" }}>{open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</div>
-      </button>
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.div key="content" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }} className="overflow-hidden">
-            <div className="p-4 pt-0">{children}</div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
   );
 }
 
@@ -109,6 +86,20 @@ function getFilteredData(data: any[], timeFilter: string, dateField: string = "t
   });
 }
 
+// ─── Empty State Component ───────────────────────────────────────
+function EmptyState({ message, icon: Icon }: { message: string, icon?: any }) {
+  return (
+    <div className="flex flex-col items-center justify-center p-10 card-surface mt-4 mb-4" style={{ borderRadius: "var(--radius-xl)", minHeight: "200px" }}>
+      <div className="w-12 h-12 rounded-full flex items-center justify-center mb-4" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+        {Icon && <Icon size={20} style={{ color: "var(--text-tertiary)" }} />}
+      </div>
+      <div className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-secondary)" }}>Awaiting Telemetry</div>
+      <div className="text-sm text-center max-w-xs" style={{ color: "var(--text-tertiary)", lineHeight: 1.6 }}>
+        {message}
+      </div>
+    </div>
+  );
+}
 
 // ─── Shared Transactions Table ──────────────────────────────────
 function TransactionsTable({ transactions }: { transactions: any[] }) {
@@ -155,7 +146,7 @@ function TransactionsTable({ transactions }: { transactions: any[] }) {
 }
 
 // ─── Tab: Spending / Capital Outflow ────────────────────────────
-function SpendingTab({ transactions, timeFilter }: { transactions: any[], timeFilter: string }) {
+function SpendingTab({ transactions, allTransactions, timeFilter }: { transactions: any[], allTransactions: any[], timeFilter: string }) {
   if (!transactions || transactions.length === 0) {
     return <EmptyState message="No spending transactions recorded for this period." icon={CreditCard} />;
   }
@@ -180,6 +171,57 @@ function SpendingTab({ transactions, timeFilter }: { transactions: any[], timeFi
 
   const PIE_COLORS = [C.alert, C.warning, C.crypto, C.equity, C.growth, C.wealth, C.textTertiary];
 
+  // ── Daily spending trend (filtered period) ──
+  const byDay: Record<string, number> = {};
+  expenses.forEach(t => {
+    if (!t.transaction_date) return;
+    byDay[t.transaction_date] = (byDay[t.transaction_date] || 0) + Math.abs(parseFloat(t.amount) || 0);
+  });
+  const dailyData = Object.entries(byDay)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, spend]) => ({ date: date.slice(5), spend: +spend.toFixed(2) }));
+
+  // ── Merchant leaderboard (filtered period) ──
+  const byMerchant: Record<string, { total: number; count: number }> = {};
+  expenses.forEach(t => {
+    const m = t.merchant_name || "Unknown";
+    if (!byMerchant[m]) byMerchant[m] = { total: 0, count: 0 };
+    byMerchant[m].total += Math.abs(parseFloat(t.amount) || 0);
+    byMerchant[m].count += 1;
+  });
+  const merchants = Object.entries(byMerchant)
+    .map(([name, v]) => ({ name, ...v }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 8);
+  const maxMerchant = merchants.length > 0 ? merchants[0].total : 1;
+
+  // ── Month-over-month comparison (calendar months, all transactions) ──
+  const nowD = new Date();
+  const mThisKey = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, "0")}`;
+  const prevD = new Date(nowD.getFullYear(), nowD.getMonth() - 1, 1);
+  const mLastKey = `${prevD.getFullYear()}-${String(prevD.getMonth() + 1).padStart(2, "0")}`;
+  const mLastLabel = prevD.toLocaleDateString("en-US", { month: "short" });
+
+  const monthAgg = (key: string) => {
+    let spend = 0;
+    const cats: Record<string, number> = {};
+    (allTransactions || []).forEach(t => {
+      const amt = parseFloat(t.amount) || 0;
+      if (amt >= 0 || !t.transaction_date || !t.transaction_date.startsWith(key)) return;
+      const abs = Math.abs(amt);
+      spend += abs;
+      const cat = t.category || "Uncategorized";
+      cats[cat] = (cats[cat] || 0) + abs;
+    });
+    const top = Object.entries(cats).sort((a, b) => b[1] - a[1])[0];
+    return { spend, topCat: top ? { name: top[0], value: top[1] } : null, cats };
+  };
+  const mThis = monthAgg(mThisKey);
+  const mLast = monthAgg(mLastKey);
+  const momPct = mLast.spend > 0 ? ((mThis.spend - mLast.spend) / mLast.spend) * 100 : null;
+  const topCatLastVal = mThis.topCat ? (mLast.cats[mThis.topCat.name] || 0) : 0;
+  const topCatDelta = mThis.topCat ? mThis.topCat.value - topCatLastVal : null;
+
   return (
     <div className="space-y-5">
       {/* KPI Header */}
@@ -197,19 +239,94 @@ function SpendingTab({ transactions, timeFilter }: { transactions: any[], timeFi
         </div>
       </div>
 
+      {/* Month-over-month chips */}
+      {mThis.spend > 0 && (
+        <div className="flex flex-wrap gap-2">
+          <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+            <span className="font-bold uppercase tracking-widest text-[9px]" style={{ color: "var(--text-tertiary)" }}>This month</span>
+            <span className="font-black font-mono" style={{ color: "var(--text-primary)" }}>${fmt2(mThis.spend)}</span>
+            {momPct != null && (
+              <span className="font-bold font-mono" style={{ color: momPct <= 0 ? C.optimal : C.alert }}>
+                {momPct <= 0 ? "▼" : "▲"} {Math.abs(momPct).toFixed(0)}% vs {mLastLabel}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+            <span className="font-bold uppercase tracking-widest text-[9px]" style={{ color: "var(--text-tertiary)" }}>{mLastLabel}</span>
+            <span className="font-black font-mono" style={{ color: "var(--text-secondary)" }}>
+              {mLast.spend > 0 ? `$${fmt2(mLast.spend)}` : "no data"}
+            </span>
+          </div>
+          {mThis.topCat && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+              <span className="font-bold uppercase tracking-widest text-[9px]" style={{ color: "var(--text-tertiary)" }}>Top · {mThis.topCat.name}</span>
+              <span className="font-black font-mono" style={{ color: "var(--text-primary)" }}>${fmt2(mThis.topCat.value)}</span>
+              {topCatDelta != null && mLast.spend > 0 && (
+                <span className="font-bold font-mono" style={{ color: topCatDelta <= 0 ? C.optimal : C.alert }}>
+                  {topCatDelta <= 0 ? "−" : "+"}${fmt2(Math.abs(topCatDelta))} vs {mLastLabel}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Daily spending trend */}
+      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+        <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Daily Spending Trend</div>
+        <div className="h-[220px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={dailyData} margin={{ top: 5, right: 5, left: 0, bottom: 0 }}>
+              <XAxis dataKey="date" stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} />
+              <YAxis stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} tickFormatter={v => `$${v}`} width={50} />
+              <Tooltip
+                formatter={(value: number) => [`$${fmt2(value)}`, "Spend"]}
+                cursor={{ fill: "rgba(0,0,0,0.03)" }}
+                contentStyle={{ background: "var(--surface-secondary)", border: "1px solid var(--border-subtle)", borderRadius: "8px", fontSize: 12 }}
+              />
+              <Bar dataKey="spend" fill={C.alert} radius={[3, 3, 0, 0]} maxBarSize={28} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Pie Chart */}
+        {/* Merchant leaderboard */}
+        <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+          <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Merchant Leaderboard · Top {merchants.length}</div>
+          <div className="space-y-3">
+            {merchants.map((m, i) => (
+              <div key={m.name}>
+                <div className="flex items-center justify-between text-[12px] mb-1">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-[10px] font-black font-mono w-4 shrink-0" style={{ color: "var(--text-tertiary)" }}>{i + 1}</span>
+                    <span className="font-bold truncate" style={{ color: "var(--text-primary)" }}>{m.name}</span>
+                    <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-tertiary)" }}>×{m.count}</span>
+                  </div>
+                  <span className="font-mono font-bold shrink-0 ml-2" style={{ color: "var(--text-secondary)" }}>${fmt2(m.total)}</span>
+                </div>
+                <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--surface-tertiary)" }}>
+                  <motion.div className="h-full rounded-full" style={{ background: C.wealth }}
+                    initial={{ width: 0 }} animate={{ width: `${(m.total / maxMerchant) * 100}%` }}
+                    transition={{ duration: 0.7, ease: [0, 0, 0.2, 1], delay: i * 0.05 }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Category donut + list */}
         <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
           <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Spending Distribution</div>
-          <div className="h-[250px] w-full">
+          <div className="h-[200px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
                   data={pieData}
                   cx="50%"
                   cy="50%"
-                  innerRadius={60}
-                  outerRadius={90}
+                  innerRadius={55}
+                  outerRadius={85}
                   paddingAngle={5}
                   dataKey="value"
                   stroke="none"
@@ -225,16 +342,11 @@ function SpendingTab({ transactions, timeFilter }: { transactions: any[], timeFi
               </PieChart>
             </ResponsiveContainer>
           </div>
-        </div>
-
-        {/* Categories List */}
-        <div className="card-surface p-5 overflow-auto max-h-[320px]" style={{ borderRadius: "var(--radius-xl)" }}>
-          <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Top Categories</div>
-          <div className="space-y-3">
+          <div className="space-y-2 mt-3 overflow-auto max-h-[160px]">
             {pieData.map((item, idx) => (
-              <div key={item.name} className="flex justify-between items-center text-sm">
+              <div key={item.name} className="flex justify-between items-center text-xs">
                 <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }}></div>
+                  <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }}></div>
                   <span className="font-semibold">{item.name}</span>
                 </div>
                 <span className="font-mono" style={{ color: "var(--text-secondary)" }}>${item.value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
@@ -266,12 +378,19 @@ function SpendingTab({ transactions, timeFilter }: { transactions: any[], timeFi
 }
 
 // ─── Tab: Net Worth ──────────────────────────────────────────────
-function NetWorthTab({ snapshots }: { snapshots: any[] }) {
-  if (!snapshots || snapshots.length === 0) {
-    return <EmptyState message="No historical portfolio snapshots found. OpenClaw needs to log daily snapshots to build your net worth chart." icon={TrendingUp} />;
-  }
+function NetWorthTab({ snapshots, bankBalance, positions }: { snapshots: any[], bankBalance: number | null, positions: any[] }) {
+  // Portfolio totals per currency (no FX conversion)
+  const totals: Record<string, number> = {};
+  (positions || []).forEach(p => {
+    const cur = p.currency || "USD";
+    totals[cur] = (totals[cur] || 0) + (parseFloat(p.position_value) || 0);
+  });
+  const eurPortfolio = totals["EUR"] || 0;
+  const usdPortfolio = totals["USD"] || 0;
+  const hasPortfolio = Object.keys(totals).length > 0;
+  const eurTotal = (bankBalance ?? 0) + eurPortfolio;
 
-  const points = snapshots
+  const points = (snapshots || [])
     .map(s => ({
       date: s.record_date,
       value: parseFloat(s.total_value ?? s.value ?? s.net_worth) || 0,
@@ -279,80 +398,111 @@ function NetWorthTab({ snapshots }: { snapshots: any[] }) {
     .filter(p => p.date && p.value > 0)
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-  if (points.length === 0) {
-    return <EmptyState message="Portfolio snapshots exist but contain no usable values yet." icon={TrendingUp} />;
-  }
-
-  const latest    = points[points.length - 1];
-  const first     = points[0];
-  const delta     = latest.value - first.value;
-  const deltaPct  = first.value !== 0 ? (delta / first.value) * 100 : 0;
+  const hasHistory = points.length > 0;
+  const latest    = hasHistory ? points[points.length - 1] : null;
+  const first     = hasHistory ? points[0] : null;
+  const delta     = hasHistory ? latest!.value - first!.value : 0;
+  const deltaPct  = hasHistory && first!.value !== 0 ? (delta / first!.value) * 100 : 0;
   const deltaPos  = delta >= 0;
 
   return (
     <div className="space-y-5">
-      {/* KPI row */}
+      {/* Current net worth — honest, point-in-time */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {[
-          { label: "Net Worth",        val: `$${latest.value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: C.growth },
-          { label: "Period Change",    val: `${deltaPos ? "+" : "−"}$${Math.abs(delta).toLocaleString(undefined, { maximumFractionDigits: 0 })} (${deltaPos ? "+" : ""}${deltaPct.toFixed(1)}%)`, color: deltaPos ? C.optimal : C.alert },
-          { label: "Snapshots",        val: `${points.length}`, color: C.equity },
-        ].map(k => (
-          <div key={k.label} className="card-surface p-4" style={{ borderRadius: "var(--radius-xl)" }}>
-            <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-tertiary)" }}>{k.label}</div>
-            <div className="text-2xl font-black" style={{ fontFamily: "var(--font-mono)", color: k.color }}>{k.val}</div>
-          </div>
-        ))}
+        <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+          <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-tertiary)" }}>Cash · Live Estimate</div>
+          {bankBalance != null ? (
+            <div className="text-2xl font-black" style={{ fontFamily: "var(--font-mono)", color: C.growth }}>€{fmt2(bankBalance)}</div>
+          ) : (
+            <div className="text-xs leading-relaxed" style={{ color: "var(--text-tertiary)" }}>
+              Set your bank balance in <a href="/settings" className="font-bold underline">Settings</a>.
+            </div>
+          )}
+        </div>
+        <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+          <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-tertiary)" }}>Investments</div>
+          {hasPortfolio ? Object.entries(totals).map(([cur, v]) => (
+            <div key={cur} className="text-2xl font-black" style={{ fontFamily: "var(--font-mono)", color: C.equity }}>
+              {curSym(cur)}{fmt2(v)} <span className="text-xs font-bold" style={{ color: "var(--text-tertiary)" }}>{cur}</span>
+            </div>
+          )) : (
+            <div className="text-xs" style={{ color: "var(--text-tertiary)" }}>No open positions.</div>
+          )}
+        </div>
+        <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+          <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-tertiary)" }}>Net Worth · Current</div>
+          {bankBalance != null || hasPortfolio ? (
+            <>
+              {(bankBalance != null || eurPortfolio > 0) && (
+                <div className="text-2xl font-black" style={{ fontFamily: "var(--font-mono)", color: C.wealth }}>
+                  €{fmt2(eurTotal)} <span className="text-xs font-bold" style={{ color: "var(--text-tertiary)" }}>EUR</span>
+                </div>
+              )}
+              {usdPortfolio > 0 && (
+                <div className="text-2xl font-black" style={{ fontFamily: "var(--font-mono)", color: C.wealth }}>
+                  ${fmt2(usdPortfolio)} <span className="text-xs font-bold" style={{ color: "var(--text-tertiary)" }}>USD</span>
+                </div>
+              )}
+              <div className="text-[10px] mt-1" style={{ color: "var(--text-tertiary)" }}>per currency · no FX conversion</div>
+            </>
+          ) : (
+            <div className="text-xs" style={{ color: "var(--text-tertiary)" }}>—</div>
+          )}
+        </div>
       </div>
 
-      {/* History chart */}
-      <div className="card-surface p-6" style={{ borderRadius: "var(--radius-xl)" }}>
-        <div className="text-[10px] font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>
-          Net Worth History · {first.date} → {latest.date}
+      {/* History — only when real snapshots exist */}
+      {hasHistory ? (
+        <div className="card-surface p-6" style={{ borderRadius: "var(--radius-xl)" }}>
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+            <div className="text-[10px] font-bold uppercase tracking-widest" style={{ color: "var(--text-tertiary)" }}>
+              Net Worth History · {first!.date} → {latest!.date}
+            </div>
+            <div className="text-xs font-bold font-mono" style={{ color: deltaPos ? C.optimal : C.alert }}>
+              {deltaPos ? "+" : "−"}${Math.abs(delta).toLocaleString(undefined, { maximumFractionDigits: 0 })} ({deltaPos ? "+" : ""}{deltaPct.toFixed(1)}%)
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={320}>
+            <AreaChart data={points} margin={{ top: 5, right: 5, left: 10, bottom: 0 }}>
+              <defs>
+                <linearGradient id="nwFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={C.growth} stopOpacity={0.15}/>
+                  <stop offset="95%" stopColor={C.growth} stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="date" stroke="var(--text-tertiary)" fontSize={11} tickLine={false} axisLine={false} />
+              <YAxis tickFormatter={v => `$${(v / 1000).toFixed(0)}K`} stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} domain={["auto", "auto"]} />
+              <Tooltip formatter={(v: number) => `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} contentStyle={{ background: "var(--surface-secondary)", border: "1px solid var(--border-subtle)", borderRadius: "8px", fontSize: 12 }} />
+              <Area type="monotone" dataKey="value" stroke={C.growth} strokeWidth={2.5} fill="url(#nwFill)" name="Net Worth" />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
-        <ResponsiveContainer width="100%" height={320}>
-          <AreaChart data={points} margin={{ top: 5, right: 5, left: 10, bottom: 0 }}>
-            <defs>
-              <linearGradient id="nwFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor={C.growth} stopOpacity={0.15}/>
-                <stop offset="95%" stopColor={C.growth} stopOpacity={0}/>
-              </linearGradient>
-            </defs>
-            <XAxis dataKey="date" stroke="var(--text-tertiary)" fontSize={11} tickLine={false} axisLine={false} />
-            <YAxis tickFormatter={v => `$${(v / 1000).toFixed(0)}K`} stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} domain={["auto", "auto"]} />
-            <Tooltip formatter={(v: number) => `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} contentStyle={{ background: "var(--surface-secondary)", border: "1px solid var(--border-subtle)", borderRadius: "8px", fontSize: 12 }} />
-            <Area type="monotone" dataKey="value" stroke={C.growth} strokeWidth={2.5} fill="url(#nwFill)" name="Net Worth" />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
+      ) : (
+        <div className="card-surface p-6 flex items-start gap-3" style={{ borderRadius: "var(--radius-xl)" }}>
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+            <TrendingUp size={16} style={{ color: "var(--text-tertiary)" }} />
+          </div>
+          <div>
+            <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: "var(--text-secondary)" }}>History starts when snapshots arrive</div>
+            <div className="text-xs leading-relaxed" style={{ color: "var(--text-tertiary)" }}>
+              The figures above are today's live point-in-time net worth. Once the advisor begins logging daily
+              portfolio snapshots, the net-worth history chart will build itself here — no backfilled or estimated history.
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // ─── Tab: Portfolio ──────────────────────────────────────────────
 
-// ─── Empty State Component ───────────────────────────────────────
-function EmptyState({ message, icon: Icon }: { message: string, icon?: any }) {
-  return (
-    <div className="flex flex-col items-center justify-center p-10 card-surface mt-4 mb-4" style={{ borderRadius: "var(--radius-xl)", minHeight: "200px" }}>
-      <div className="w-12 h-12 rounded-full flex items-center justify-center mb-4" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-        {Icon && <Icon size={20} style={{ color: "var(--text-tertiary)" }} />}
-      </div>
-      <div className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-secondary)" }}>Awaiting Telemetry</div>
-      <div className="text-sm text-center max-w-xs" style={{ color: "var(--text-tertiary)", lineHeight: 1.6 }}>
-        {message}
-      </div>
-    </div>
-  );
-}
-
-function FinancialsTab({ positions, purchases }: { positions: any[], purchases: any[] }) {
+function FinancialsTab({ positions }: { positions: any[] }) {
   if (!positions || positions.length === 0) {
     return <EmptyState message="No open positions found. Positions logged by the advisor engine will appear here." icon={PieIcon} />;
   }
 
-  const curSym = (c: string) => (c === "EUR" ? "€" : "$");
-  const fmt = (n: number) => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmt = fmt2;
 
   // Positions are mixed USD/EUR — total per currency, never fake an FX conversion
   const totals: Record<string, { val: number; pnl: number }> = {};
@@ -363,6 +513,28 @@ function FinancialsTab({ positions, purchases }: { positions: any[], purchases: 
     totals[cur].pnl += parseFloat(p.unrealized_pnl) || 0;
   });
   const mixed = Object.keys(totals).length > 1;
+
+  // Allocation donut — top 8 positions by value + Other (raw values, mixed currencies)
+  const ALLOC_COLORS = [C.equity, C.growth, C.wealth, C.crypto, C.warning, C.alert, "#0D9488", "#64748B", C.cash];
+  const sortedByVal = [...positions].sort((a, b) => (parseFloat(b.position_value) || 0) - (parseFloat(a.position_value) || 0));
+  const totalVal = sortedByVal.reduce((a, p) => a + (parseFloat(p.position_value) || 0), 0);
+  const topAlloc = sortedByVal.slice(0, 8);
+  const otherVal = sortedByVal.slice(8).reduce((a, p) => a + (parseFloat(p.position_value) || 0), 0);
+  const allocData = topAlloc.map(p => ({
+    name: p.symbol,
+    value: parseFloat(p.position_value) || 0,
+    currency: p.currency || "USD",
+  }));
+  if (otherVal > 0) allocData.push({ name: "Other", value: otherVal, currency: "USD" });
+
+  // Per-position P&L bars
+  const pnlData = [...positions]
+    .map(p => ({
+      symbol: p.symbol,
+      pnl: +(parseFloat(p.unrealized_pnl) || 0).toFixed(2),
+      currency: p.currency || "USD",
+    }))
+    .sort((a, b) => b.pnl - a.pnl);
 
   return (
     <div className="space-y-5">
@@ -391,9 +563,74 @@ function FinancialsTab({ positions, purchases }: { positions: any[], purchases: 
         </div>
       )}
 
-      {/* Portfolio Constellation */}
-      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-         <PortfolioConstellation />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Allocation donut */}
+        <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+          <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: "var(--text-tertiary)" }}>Allocation by Position Value</div>
+          <div className="text-[10px] mb-3" style={{ color: "var(--text-tertiary)" }}>Share of raw position value · mixed USD/EUR</div>
+          <div className="h-[200px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={allocData}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={55}
+                  outerRadius={85}
+                  paddingAngle={4}
+                  dataKey="value"
+                  stroke="none"
+                >
+                  {allocData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={ALLOC_COLORS[index % ALLOC_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip
+                  formatter={(value: number, name: string, props: any) => [`${curSym(props.payload.currency)}${fmt2(value)}`, name]}
+                  contentStyle={{ background: "var(--surface-secondary)", border: "1px solid var(--border-subtle)", borderRadius: "8px", fontSize: 12 }}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="space-y-2 mt-3 overflow-auto max-h-[160px]">
+            {allocData.map((item, idx) => (
+              <div key={item.name} className="flex justify-between items-center text-xs">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: ALLOC_COLORS[idx % ALLOC_COLORS.length] }}></div>
+                  <span className="font-semibold">{item.name}</span>
+                </div>
+                <span className="font-mono" style={{ color: "var(--text-secondary)" }}>
+                  {totalVal > 0 ? `${((item.value / totalVal) * 100).toFixed(1)}%` : "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Per-position P&L bars */}
+        <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+          <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: "var(--text-tertiary)" }}>Unrealized P&L by Position</div>
+          <div className="text-[10px] mb-3" style={{ color: "var(--text-tertiary)" }}>Each bar in the position's own currency (see table)</div>
+          <div style={{ height: Math.max(220, pnlData.length * 30) }} className="w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={pnlData} layout="vertical" margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
+                <XAxis type="number" stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} />
+                <YAxis type="category" dataKey="symbol" stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} width={50} />
+                <Tooltip
+                  formatter={(value: number, name: string, props: any) => [`${curSym(props.payload.currency)}${fmt2(value)}`, "P&L"]}
+                  cursor={{ fill: "rgba(0,0,0,0.03)" }}
+                  contentStyle={{ background: "var(--surface-secondary)", border: "1px solid var(--border-subtle)", borderRadius: "8px", fontSize: 12 }}
+                />
+                <ReferenceLine x={0} stroke="var(--border-active)" />
+                <Bar dataKey="pnl" radius={[0, 3, 3, 0]} maxBarSize={16}>
+                  {pnlData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.pnl >= 0 ? C.optimal : C.alert} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
       </div>
 
       {/* Positions Table */}
@@ -430,33 +667,14 @@ function FinancialsTab({ positions, purchases }: { positions: any[], purchases: 
           })}
         </div>
       </div>
-
-      {/* Activity Feed */}
-      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-        <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Trade Activity Queue</div>
-        {purchases && purchases.length > 0 ? (
-          <div className="space-y-2">
-            {purchases.map(trade => (
-              <div key={trade.id} className="flex justify-between items-center p-3 rounded-lg text-sm" style={{ background: "rgba(255,255,255,0.02)", border: "1px solid var(--border-subtle)" }}>
-                <div><span className="font-bold uppercase" style={{ color: trade.direction === 'in' ? C.optimal : C.alert }}>{trade.action}</span> <span className="font-mono">{parseFloat(trade.quantity).toFixed(2)} {trade.symbol}</span></div>
-                <div className="font-mono" style={{ color: "var(--text-secondary)" }}>${parseFloat(trade.total_cost).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-                <div className="text-xs font-bold uppercase tracking-widest">
-                  {trade.processed ? <span style={{ color: C.optimal }}>✓ Synced</span> : <span style={{ color: C.warning }}>⏳ Pending</span>}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-           <div className="text-sm text-slate-500">No recent trades.</div>
-        )}
-      </div>
     </div>
   );
 }
 
-function CashflowTab({ transactions, timeFilter, bankBalance, bankBalanceStored, bankBalanceAt }: {
+function CashflowTab({ transactions, timeFilter, bankBalance, bankBalanceStored, bankBalanceAt, savingsTarget }: {
   transactions: any[], timeFilter: string,
   bankBalance: number | null, bankBalanceStored: number | null, bankBalanceAt: string | null,
+  savingsTarget: number | null,
 }) {
   // Bank Balance KPI — live estimate, independent of the selected time range
   const balanceCard = (
@@ -491,21 +709,34 @@ function CashflowTab({ transactions, timeFilter, bankBalance, bankBalanceStored,
     );
   }
 
-  const isShortTerm = timeFilter === "day" || timeFilter === "week" || timeFilter === "month";
-  const timeMap: Record<string, { income: number, expense: number, time: string, cumulative: number }> = {};
+  // Bucket weekly for short ranges, monthly for the year view
+  const useMonthly = timeFilter === "year";
+  const weekKey = (dateStr: string) => {
+    const d = new Date(dateStr + "T00:00:00");
+    const dow = (d.getDay() + 6) % 7; // Monday = 0
+    d.setDate(d.getDate() - dow);
+    return d.toISOString().slice(0, 10);
+  };
+  const bucketLabel = (key: string) => useMonthly
+    ? new Date(key + "-01T00:00:00").toLocaleDateString("en-US", { month: "short" })
+    : new Date(key + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+  const timeMap: Record<string, { income: number, expense: number, sortKey: string, cumulative: number }> = {};
 
   transactions.forEach(t => {
     if (!t.transaction_date) return;
-    const tKey = isShortTerm ? t.transaction_date : t.transaction_date.substring(0, 7);
+    const key = useMonthly ? t.transaction_date.substring(0, 7) : weekKey(t.transaction_date);
     const amt = parseFloat(t.amount) || 0;
 
-    if (!timeMap[tKey]) timeMap[tKey] = { time: tKey, income: 0, expense: 0, cumulative: 0 };
+    if (!timeMap[key]) timeMap[key] = { sortKey: key, income: 0, expense: 0, cumulative: 0 };
 
-    if (amt > 0) timeMap[tKey].income += amt;
-    else timeMap[tKey].expense += Math.abs(amt);
+    if (amt > 0) timeMap[key].income += amt;
+    else timeMap[key].expense += Math.abs(amt);
   });
 
-  const barData = Object.values(timeMap).sort((a, b) => a.time.localeCompare(b.time));
+  const barData = Object.values(timeMap)
+    .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
+    .map(d => ({ ...d, time: bucketLabel(d.sortKey) }));
 
   let currentCumulative = 0;
   barData.forEach(d => {
@@ -516,6 +747,7 @@ function CashflowTab({ transactions, timeFilter, bankBalance, bankBalanceStored,
   const totalIncome = barData.reduce((acc, curr) => acc + curr.income, 0);
   const totalExpense = barData.reduce((acc, curr) => acc + curr.expense, 0);
   const netRetention = totalIncome - totalExpense;
+  const savingsRate = totalIncome > 0 ? (netRetention / totalIncome) * 100 : null;
 
   // Waterfall: income vs. top expense categories for the selected period (real data)
   const expByCat: Record<string, number> = {};
@@ -569,8 +801,31 @@ function CashflowTab({ transactions, timeFilter, bankBalance, bankBalanceStored,
         {balanceCard}
       </div>
 
+      {/* Savings rate vs target */}
+      {savingsRate != null && savingsTarget != null && savingsTarget > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
+            style={{
+              background: savingsRate >= savingsTarget ? "rgba(5,150,105,0.06)" : "rgba(217,119,6,0.06)",
+              border: `1px solid ${savingsRate >= savingsTarget ? "rgba(5,150,105,0.25)" : "rgba(217,119,6,0.25)"}`,
+            }}>
+            <Target size={12} style={{ color: savingsRate >= savingsTarget ? C.optimal : C.warning }} />
+            <span className="font-bold uppercase tracking-widest text-[9px]" style={{ color: "var(--text-tertiary)" }}>Savings rate</span>
+            <span className="font-black font-mono" style={{ color: savingsRate >= savingsTarget ? C.optimal : C.warning }}>
+              {savingsRate.toFixed(1)}%
+            </span>
+            <span className="font-mono" style={{ color: "var(--text-tertiary)" }}>· target {savingsTarget}%</span>
+            <span className="font-bold" style={{ color: savingsRate >= savingsTarget ? C.optimal : C.warning }}>
+              {savingsRate >= savingsTarget ? "on track" : "below target"}
+            </span>
+          </div>
+        </div>
+      )}
+
       <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-        <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>{isShortTerm ? 'Daily' : 'Monthly'} Cash Flow Dynamics</div>
+        <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>
+          Income vs Expenses · {useMonthly ? "Monthly" : "Weekly"}
+        </div>
         <div className="h-[350px] w-full mt-4">
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={barData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
@@ -594,8 +849,8 @@ function CashflowTab({ transactions, timeFilter, bankBalance, bankBalanceStored,
                 cursor={{ fill: "rgba(0,0,0,0.03)" }}
                 contentStyle={{ background: "rgba(255,255,255,0.9)", backdropFilter: "blur(10px)", border: "1px solid var(--border-subtle)", borderRadius: "12px", color: "var(--text-primary)", boxShadow: "var(--shadow-modal)" }}
               />
-              <Bar dataKey="income" fill="url(#colorIncome)" radius={[4, 4, 0, 0]} name="Income" maxBarSize={60} />
-              <Bar dataKey="expense" fill="url(#colorExpense)" radius={[4, 4, 0, 0]} name="Expense" maxBarSize={60} />
+              <Bar dataKey="income" fill="url(#colorIncome)" radius={[4, 4, 0, 0]} name="Income" maxBarSize={40} />
+              <Bar dataKey="expense" fill="url(#colorExpense)" radius={[4, 4, 0, 0]} name="Expense" maxBarSize={40} />
               <Area type="monotone" dataKey="cumulative" stroke="#008FFB" strokeWidth={3} fill="url(#colorCumulative)" name="Net Cumulative" />
             </ComposedChart>
           </ResponsiveContainer>
@@ -618,13 +873,10 @@ function SignalIntelligenceTab() {
   return <EmptyState message="No trade signals yet. Signals generated by the advisor swarm will appear here." icon={Zap} />;
 }
 
-// ─── AI Copilot Bar ──────────────────────────────────────────────
-// ─── System Banner ────────────────────────────────────────────────
 // ─── Main Page ───────────────────────────────────────────────────
 export default function WealthOS() {
   const [activeTab, setActiveTab] = useState("spending");
   const [positions, setPositions] = useState<any[]>([]);
-  const [purchases, setPurchases] = useState<any[]>([]);
   const [snapshots, setSnapshots] = useState<any[]>([]);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [profile, setProfile] = useState<any>(null);
@@ -638,17 +890,13 @@ export default function WealthOS() {
       if (res.data) setPositions(res.data);
     });
 
-    supabase.from('advisor_purchases').select('*').order('executed_at', { ascending: false }).limit(10).then(res => {
-      if (res.data) setPurchases(res.data);
-    });
-
     supabase.from('advisor_portfolio_snapshots').select('*').order('record_date', { ascending: false }).limit(30).then(res => {
       if (res.data) setSnapshots(res.data);
     });
     supabase.from('transactions').select('*').order('transaction_date', { ascending: false }).limit(5000).then(res => {
       if (res.data) setTransactions(res.data);
     });
-    supabase.from('user_profiles').select('bank_balance, bank_balance_updated_at').limit(1).then(res => {
+    supabase.from('user_profiles').select('bank_balance, bank_balance_updated_at, base_salary, target_savings_rate').limit(1).then(res => {
       if (res.data && res.data.length > 0) setProfile(res.data[0]);
     });
   }, []);
@@ -675,6 +923,8 @@ export default function WealthOS() {
       liveBalance = stored + net;
     }
   }
+
+  const savingsTarget = profile?.target_savings_rate != null ? parseFloat(profile.target_savings_rate) : null;
 
   const tabs = [
     { id: "spending",   label: "Capital Outflow", icon: ArrowRightLeft, color: C.wealth },
@@ -738,11 +988,11 @@ export default function WealthOS() {
       <div className="pb-24">
         <AnimatePresence mode="wait">
           <motion.div key={activeTab} variants={tabVariants} initial="hidden" animate="visible" exit="exit">
-          {activeTab === "spending"   && <SpendingTab transactions={filteredTransactions} timeFilter={timeFilter} />}
-            {activeTab === "networth"  && <NetWorthTab snapshots={getFilteredData(snapshots, timeFilter, "record_date")} />}
-            {activeTab === "financials" && <FinancialsTab positions={positions} purchases={getFilteredData(purchases, timeFilter, "executed_at")} />}
-            {activeTab === "cashflow"  && <CashflowTab transactions={filteredTransactions} timeFilter={timeFilter} bankBalance={liveBalance} bankBalanceStored={profile?.bank_balance ?? null} bankBalanceAt={profile?.bank_balance_updated_at ?? null} />}
-            {activeTab === "signals"   && <SignalIntelligenceTab />}
+            {activeTab === "spending"   && <SpendingTab transactions={filteredTransactions} allTransactions={transactions} timeFilter={timeFilter} />}
+            {activeTab === "networth"   && <NetWorthTab snapshots={getFilteredData(snapshots, timeFilter, "record_date")} bankBalance={liveBalance} positions={positions} />}
+            {activeTab === "financials" && <FinancialsTab positions={positions} />}
+            {activeTab === "cashflow"   && <CashflowTab transactions={filteredTransactions} timeFilter={timeFilter} bankBalance={liveBalance} bankBalanceStored={profile?.bank_balance ?? null} bankBalanceAt={profile?.bank_balance_updated_at ?? null} savingsTarget={savingsTarget} />}
+            {activeTab === "signals"    && <SignalIntelligenceTab />}
           </motion.div>
         </AnimatePresence>
       </div>

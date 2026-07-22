@@ -2,27 +2,29 @@
 
 import { motion } from "framer-motion";
 
+export interface PulseSegment {
+  key: string;
+  label: string;
+  value: number | null; // 0–100, null = no data for this domain
+  color: string;
+  hint?: string;        // small real-data caption shown under the value
+}
+
 interface PulseRingProps {
   score: number | null;
-  segments: {
-    health: number | null;
-    wealth: number | null;
-    recovery: number | null;
-    growth: number | null;
-  };
+  segments: PulseSegment[];
   hasAnomaly?: boolean;
 }
 
 export default function PulseRing({ score, segments, hasAnomaly = false }: PulseRingProps) {
   const cx = 160, cy = 160;
 
-  // 4 concentric rings, inner → outer
-  const rings = [
-    { key: "recovery", label: "Recovery", value: segments.recovery, radius: 52,  color: "#8b5cf6", strokeW: 10 },
-    { key: "growth",   label: "Growth",   value: segments.growth,   radius: 74,  color: "#f97316", strokeW: 10 },
-    { key: "wealth",   label: "Wealth",   value: segments.wealth,   radius: 96,  color: "#3b82f6", strokeW: 10 },
-    { key: "health",   label: "Health",   value: segments.health,   radius: 118, color: "#10b981", strokeW: 10 },
-  ];
+  // Up to 4 concentric rings, inner → outer, in the order given
+  const rings = segments.slice(0, 4).map((s, i) => ({
+    ...s,
+    radius: 52 + i * 22,
+    strokeW: 10,
+  }));
 
   return (
     <div className="relative flex flex-col items-center w-full">
@@ -36,19 +38,7 @@ export default function PulseRing({ score, segments, hasAnomaly = false }: Pulse
         />
       )}
 
-      <svg width="320" height="320" viewBox="0 0 320 320" style={{ overflow: "visible", maxWidth: "100%", height: "auto" }}>
-        <defs>
-          {rings.map(r => (
-            <filter key={`glow-${r.key}`} id={`glow-${r.key}`}>
-              <feGaussianBlur stdDeviation="3" result="coloredBlur" />
-              <feMerge>
-                <feMergeNode in="coloredBlur" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
-            </filter>
-          ))}
-        </defs>
-
+      <svg width="320" height="320" viewBox="0 0 320 320" style={{ overflow: "visible" }}>
         {/* Background tracks */}
         {rings.map(r => (
           <circle
@@ -64,7 +54,7 @@ export default function PulseRing({ score, segments, hasAnomaly = false }: Pulse
         {rings.map((r, i) => {
           if (r.value == null) return null;
           const circ = 2 * Math.PI * r.radius;
-          const pct = r.value / 100;
+          const pct = Math.min(1, Math.max(0, r.value / 100));
           const fillLen = circ * pct - 5;
           const gapLen = circ * (1 - pct) + 5;
           return (
@@ -107,7 +97,7 @@ export default function PulseRing({ score, segments, hasAnomaly = false }: Pulse
         {/* Ring end-cap labels */}
         {rings.map((r) => {
           if (r.value == null) return null;
-          const pct = r.value / 100;
+          const pct = Math.min(1, Math.max(0, r.value / 100));
           const angle = pct * 2 * Math.PI - Math.PI / 2;
           const lx = cx + r.radius * Math.cos(angle);
           const ly = cy + r.radius * Math.sin(angle);
@@ -143,11 +133,16 @@ export default function PulseRing({ score, segments, hasAnomaly = false }: Pulse
               {r.label}
             </div>
             <div className="text-lg font-black leading-none" style={{ fontFamily: "var(--font-mono)", color: r.color }}>
-              {r.value != null ? r.value : "—"}
+              {r.value != null ? Math.round(r.value) : "—"}
             </div>
             <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: `${r.color}20` }}>
               <div className="h-full rounded-full" style={{ width: `${r.value ?? 0}%`, background: r.color }} />
             </div>
+            {r.hint && (
+              <div className="text-[8px] font-mono text-center leading-tight" style={{ color: "var(--text-tertiary)" }}>
+                {r.hint}
+              </div>
+            )}
           </motion.div>
         ))}
       </div>
