@@ -360,7 +360,7 @@ export default function SettingsOS() {
               >
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
                   <div className="p-3 rounded-lg bg-white border border-slate-200">
-                    <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1 flex items-center gap-1.5">
+                    <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1 flex items-center flex-wrap gap-1.5">
                       Weight
                       {calcResult.weight_was_estimated && (
                         <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full text-amber-700 bg-amber-100 border border-amber-200 normal-case tracking-normal">

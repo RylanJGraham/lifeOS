@@ -783,7 +783,7 @@ function MicroPanel({ dbMeals, timeFilter, dayLabel }: { dbMeals: any[]; timeFil
                         className="flex items-center gap-3"
                         title={`${r.name}: ${r.status}`}
                       >
-                        <div className="w-28 text-[11px] font-bold truncate" style={{ color: C.textSec }}>{r.name}</div>
+                        <div className="w-20 sm:w-28 shrink-0 text-[11px] font-bold truncate" style={{ color: C.textSec }}>{r.name}</div>
                         <div className="flex-1 h-1.5 rounded-full" style={{ background: C.border }}>
                           <motion.div className="h-full rounded-full"
                             initial={{ width: 0 }}
@@ -792,7 +792,7 @@ function MicroPanel({ dbMeals, timeFilter, dayLabel }: { dbMeals: any[]; timeFil
                             style={{ background: col }}
                           />
                         </div>
-                        <div className="w-20 text-right text-[11px] font-black font-mono" style={{ color: col }}>
+                        <div className="w-16 sm:w-20 shrink-0 text-right text-[11px] font-black font-mono" style={{ color: col }}>
                           {r.valueLabel}
                         </div>
                       </motion.div>

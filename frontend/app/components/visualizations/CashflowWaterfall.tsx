@@ -35,8 +35,9 @@ export default function CashflowWaterfall({ data }: CashflowWaterfallProps) {
         <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Cashflow Waterfall</h3>
       </div>
       
-      <div className="w-full h-full mt-6">
-        <ResponsiveContainer width="100%" height="100%">
+      <div className="w-full h-full mt-6 overflow-x-auto">
+        <div className="h-full w-full" style={{ minWidth: 520 }}>
+          <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={waterfallData} margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
             <XAxis 
@@ -69,6 +70,7 @@ export default function CashflowWaterfall({ data }: CashflowWaterfallProps) {
             </Bar>
           </ComposedChart>
         </ResponsiveContainer>
+        </div>
       </div>
     </div>
   );

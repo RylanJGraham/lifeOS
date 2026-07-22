@@ -228,7 +228,7 @@ function SpendingTab({ transactions, allTransactions, timeFilter }: { transactio
       <div className="grid grid-cols-2 gap-4">
         <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
            <div className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-tertiary)" }}>Total Outflow (Period)</div>
-           <div className="text-3xl font-black" style={{ fontFamily: "var(--font-mono)", color: C.alert }}>${totalOutflow.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+           <div className="text-2xl sm:text-3xl font-black break-all" style={{ fontFamily: "var(--font-mono)", color: C.alert }}>${totalOutflow.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
         </div>
         <div className="card-surface p-5 flex flex-col justify-center" style={{ borderRadius: "var(--radius-xl)" }}>
            <div className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-tertiary)" }}>Highest Category</div>
@@ -274,19 +274,21 @@ function SpendingTab({ transactions, allTransactions, timeFilter }: { transactio
       {/* Daily spending trend */}
       <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
         <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Daily Spending Trend</div>
-        <div className="h-[220px] w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={dailyData} margin={{ top: 5, right: 5, left: 0, bottom: 0 }}>
-              <XAxis dataKey="date" stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} />
-              <YAxis stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} tickFormatter={v => `$${v}`} width={50} />
-              <Tooltip
-                formatter={(value: number) => [`$${fmt2(value)}`, "Spend"]}
-                cursor={{ fill: "rgba(0,0,0,0.03)" }}
-                contentStyle={{ background: "var(--surface-secondary)", border: "1px solid var(--border-subtle)", borderRadius: "8px", fontSize: 12 }}
-              />
-              <Bar dataKey="spend" fill={C.alert} radius={[3, 3, 0, 0]} maxBarSize={28} />
-            </BarChart>
-          </ResponsiveContainer>
+        <div className="h-[220px] w-full overflow-x-auto">
+          <div className="h-full w-full" style={{ minWidth: dailyData.length * 24 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={dailyData} margin={{ top: 5, right: 5, left: 0, bottom: 0 }}>
+                <XAxis dataKey="date" stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} />
+                <YAxis stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} tickFormatter={v => `$${v}`} width={50} />
+                <Tooltip
+                  formatter={(value: number) => [`$${fmt2(value)}`, "Spend"]}
+                  cursor={{ fill: "rgba(0,0,0,0.03)" }}
+                  contentStyle={{ background: "var(--surface-secondary)", border: "1px solid var(--border-subtle)", borderRadius: "8px", fontSize: 12 }}
+                />
+                <Bar dataKey="spend" fill={C.alert} radius={[3, 3, 0, 0]} maxBarSize={28} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </div>
       </div>
 
@@ -344,12 +346,12 @@ function SpendingTab({ transactions, allTransactions, timeFilter }: { transactio
           </div>
           <div className="space-y-2 mt-3 overflow-auto max-h-[160px]">
             {pieData.map((item, idx) => (
-              <div key={item.name} className="flex justify-between items-center text-xs">
-                <div className="flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }}></div>
-                  <span className="font-semibold">{item.name}</span>
+              <div key={item.name} className="flex justify-between items-center gap-2 text-xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }}></div>
+                  <span className="font-semibold truncate">{item.name}</span>
                 </div>
-                <span className="font-mono" style={{ color: "var(--text-secondary)" }}>${item.value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                <span className="font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>${item.value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
               </div>
             ))}
           </div>
@@ -361,12 +363,12 @@ function SpendingTab({ transactions, allTransactions, timeFilter }: { transactio
         <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Recent Expenses</div>
         <div className="space-y-2 max-h-[400px] overflow-auto">
           {expenses.slice(0, 15).map(t => (
-            <div key={t.id} className="flex justify-between items-center p-3 rounded-lg text-sm" style={{ background: "rgba(255,255,255,0.02)", border: "1px solid var(--border-subtle)" }}>
-              <div className="flex flex-col">
-                <span className="font-bold">{t.merchant_name}</span>
-                <span className="text-xs text-slate-500">{t.transaction_date} • {t.category}</span>
+            <div key={t.id} className="flex justify-between items-center gap-3 p-3 rounded-lg text-sm" style={{ background: "rgba(255,255,255,0.02)", border: "1px solid var(--border-subtle)" }}>
+              <div className="flex flex-col min-w-0">
+                <span className="font-bold truncate">{t.merchant_name}</span>
+                <span className="text-xs text-slate-500 truncate">{t.transaction_date} • {t.category}</span>
               </div>
-              <div className="font-mono font-bold" style={{ color: C.alert }}>
+              <div className="font-mono font-bold shrink-0" style={{ color: C.alert }}>
                 -${Math.abs(parseFloat(t.amount) || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
               </div>
             </div>
@@ -594,12 +596,12 @@ function FinancialsTab({ positions }: { positions: any[] }) {
           </div>
           <div className="space-y-2 mt-3 overflow-auto max-h-[160px]">
             {allocData.map((item, idx) => (
-              <div key={item.name} className="flex justify-between items-center text-xs">
-                <div className="flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: ALLOC_COLORS[idx % ALLOC_COLORS.length] }}></div>
-                  <span className="font-semibold">{item.name}</span>
+              <div key={item.name} className="flex justify-between items-center gap-2 text-xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: ALLOC_COLORS[idx % ALLOC_COLORS.length] }}></div>
+                  <span className="font-semibold truncate">{item.name}</span>
                 </div>
-                <span className="font-mono" style={{ color: "var(--text-secondary)" }}>
+                <span className="font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
                   {totalVal > 0 ? `${((item.value / totalVal) * 100).toFixed(1)}%` : "—"}
                 </span>
               </div>
@@ -826,8 +828,9 @@ function CashflowTab({ transactions, timeFilter, bankBalance, bankBalanceStored,
         <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>
           Income vs Expenses · {useMonthly ? "Monthly" : "Weekly"}
         </div>
-        <div className="h-[350px] w-full mt-4">
-          <ResponsiveContainer width="100%" height="100%">
+        <div className="h-[350px] w-full mt-4 overflow-x-auto">
+          <div className="h-full w-full" style={{ minWidth: barData.length * 48 }}>
+            <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={barData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
               <defs>
                 <linearGradient id="colorIncome" x1="0" y1="0" x2="0" y2="1">
@@ -854,6 +857,7 @@ function CashflowTab({ transactions, timeFilter, bankBalance, bankBalanceStored,
               <Area type="monotone" dataKey="cumulative" stroke="#008FFB" strokeWidth={3} fill="url(#colorCumulative)" name="Net Cumulative" />
             </ComposedChart>
           </ResponsiveContainer>
+          </div>
         </div>
       </div>
 

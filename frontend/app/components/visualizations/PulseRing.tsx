@@ -38,7 +38,7 @@ export default function PulseRing({ score, segments, hasAnomaly = false }: Pulse
         />
       )}
 
-      <svg width="320" height="320" viewBox="0 0 320 320" style={{ overflow: "visible" }}>
+      <svg viewBox="0 0 320 320" style={{ overflow: "visible", width: "100%", maxWidth: 320, height: "auto" }}>
         {/* Background tracks */}
         {rings.map(r => (
           <circle

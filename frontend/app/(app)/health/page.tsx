@@ -475,23 +475,23 @@ function SleepScheduleChart({ rows, label, onJumpToDay }: {
         ))}
       </div>
 
-      {/* Clock tick header */}
+      {/* Clock tick header — every other tick hidden on small screens */}
       <div className="flex">
-        <div className="w-12 shrink-0" />
+        <div className="w-10 sm:w-12 shrink-0" />
         <div className="relative flex-1 h-4 mb-1">
-          {ticks.map(t => (
-            <span key={t} className="absolute text-[9px] font-mono"
+          {ticks.map((t, i) => (
+            <span key={t} className={`absolute text-[9px] font-mono ${i % 2 === 1 ? "hidden sm:block" : ""}`}
               style={{ left: X(t), transform: "translateX(-50%)", color: "var(--text-tertiary)" }}>
               {clock(t)}
             </span>
           ))}
         </div>
-        <div className="w-20 shrink-0" />
+        <div className="w-16 sm:w-20 shrink-0" />
       </div>
 
       <div className="flex">
         {/* Row labels: weekday + date */}
-        <div className="w-12 shrink-0 flex flex-col">
+        <div className="w-10 sm:w-12 shrink-0 flex flex-col">
           {entries.map(e => (
             <div key={e.dk} style={{ height: ROW_H }} className="flex items-center text-[10px] font-mono font-bold" >
               <span style={{ color: "var(--text-tertiary)" }}>{e.label} <span style={{ color: "var(--text-secondary)" }}>{e.dateNum}</span></span>
@@ -546,10 +546,10 @@ function SleepScheduleChart({ rows, label, onJumpToDay }: {
           {hoverEntry && hover != null && (
             <div className="absolute z-10 card-surface px-3 py-2 text-xs shadow-lg pointer-events-none"
               style={{
-                left: `${Math.min(Math.max(hover.x, 12), 62)}%`,
+                left: `${Math.min(Math.max(hover.x, 10), 55)}%`,
                 top: hover.i * ROW_H - 4,
                 transform: "translateY(-100%)",
-                borderRadius: "var(--radius-md)", minWidth: 180,
+                borderRadius: "var(--radius-md)", minWidth: 150, maxWidth: 200,
               }}>
               <div className="font-bold mb-1" style={{ color: "var(--text-primary)" }}>{hoverEntry.label} {hoverEntry.dateNum}</div>
               <div className="font-mono" style={{ color: C.sleep }}>
@@ -574,7 +574,7 @@ function SleepScheduleChart({ rows, label, onJumpToDay }: {
         </div>
 
         {/* Right labels: duration + quality dot */}
-        <div className="w-20 shrink-0 flex flex-col">
+        <div className="w-16 sm:w-20 shrink-0 flex flex-col">
           {entries.map(e => (
             <div key={e.dk} style={{ height: ROW_H }} className="flex items-center justify-end gap-1.5 pr-1">
               <span className="text-[10px] font-mono font-bold" style={{ color: "var(--text-secondary)" }}>{fmt(e.total)}</span>
@@ -1186,7 +1186,7 @@ function MuscleCoveragePanel({ dbWorkouts, templateExercises, timeFilter, label 
       ) : (
         <>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-            <div className="lg:col-span-2 flex justify-center gap-2">
+            <div className="lg:col-span-2 flex flex-col items-center sm:flex-row sm:justify-center gap-2">
               <div className="text-center">
                 <Model
                   type="anterior"
