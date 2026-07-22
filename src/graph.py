@@ -597,11 +597,26 @@ def text_intent_node(state: GraphState):
                             pass
 
                         for it in items:
+                            # Known-item override: a saved item's canonical values
+                            # always win over LLM estimates (macros + micronutrients).
+                            it_name = it.get("meal_name") or ""
+                            it_match = known_match if (known_match and len(items) == 1) else _match_known_item(it_name, known_items)
+                            if it_match:
+                                for field in ("calories", "protein", "carbs"):
+                                    if it_match.get(field) is not None:
+                                        it[field] = it_match.get(field)
+                                if it_match.get("fat") is not None:
+                                    it["fats"] = it_match.get("fat")
+                                it["meal_name"] = it_match.get("name")
+
+                            known_micros = (it_match or {}).get("micronutrients") or {}
                             micro_payload = {
-                                "fiber": it.get("fiber", 0),
-                                "sugar": it.get("sugar", 0),
+                                **known_micros,
+                                "fiber": it.get("fiber") or known_micros.get("fiber", 0),
+                                "sugar": it.get("sugar") or known_micros.get("sugar", 0),
                                 "ai_analysis": it.get("ai_analysis", ""),
-                                **(it.get("micronutrients") or {})
+                                **{k: v for k, v in (it.get("micronutrients") or {}).items() if v is not None},
+                                **known_micros,  # canonical values win over LLM
                             }
 
                             # Resolve day references in Python (never trust LLM date math).

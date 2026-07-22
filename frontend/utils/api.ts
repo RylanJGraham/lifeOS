@@ -70,3 +70,34 @@ export async function getBackendStatus(): Promise<BackendStatus> {
   if (!res.ok) throw await parseError(res, "Failed to fetch backend status");
   return res.json();
 }
+
+export interface CalculateTargetsRequest {
+  height_cm: number;
+  age: number;
+  sex: "male" | "female";
+  physique_description: string;
+  goal: "cut" | "lean_bulk" | "bulk" | "maintain";
+  activity_level: "sedentary" | "light" | "moderate" | "athlete";
+  current_weight_kg?: number | null;
+}
+
+export interface CalculatedTargets {
+  estimated_weight_kg: number;
+  weight_was_estimated: boolean;
+  bmr: number;
+  tdee: number;
+  calories: number;
+  protein_g: number;
+  carbs_g: number;
+  fat_g: number;
+}
+
+export async function calculateTargets(req: CalculateTargetsRequest): Promise<CalculatedTargets> {
+  const res = await fetch(`${API_URL}/api/calculate-targets`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) throw await parseError(res, "Failed to calculate targets");
+  return res.json();
+}

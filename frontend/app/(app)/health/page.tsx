@@ -10,7 +10,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import Model from "react-body-highlighter";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, ReferenceLine, ComposedChart, Line, Scatter, LabelList
+  ResponsiveContainer, ReferenceLine, ComposedChart, Line, Scatter
 } from "recharts";
 import {
   Heart, Moon, Dumbbell, Activity, Brain, AlertTriangle,
@@ -374,6 +374,235 @@ function CardioTab({ metricsHistory, timeFilter }: { metricsHistory: any[]; time
   );
 }
 
+// ─── Sleep schedule hero chart (hand-rolled Gantt) ───────────────
+// Horizontal bed→wake floating bars on an 18:00→18:00 clock axis,
+// each bar segmented by deep/REM/light proportions from real columns.
+function SleepScheduleChart({ rows, label, onJumpToDay }: {
+  rows: any[]; label: string; onJumpToDay?: (dk: string) => void;
+}) {
+  const [hover, setHover] = useState<{ i: number; x: number } | null>(null);
+
+  const STAGE_SEGMENTS = [
+    { key: "deep", label: "Deep", color: "#5B42E8" },
+    { key: "rem", label: "REM", color: "#9B85F2" },
+    { key: "light", label: "Light", color: "#D3CBF9" },
+  ] as const;
+
+  const parseHM = (s?: string | null): number | null => {
+    if (!s) return null;
+    const m = /^(\d{1,2}):(\d{2})/.exec(String(s).trim());
+    if (!m) return null;
+    return Number(m[1]) + Number(m[2]) / 60;
+  };
+  const fmt = (m: number) => `${Math.floor(m / 60)}h ${Math.round(m % 60)}m`;
+  const clock = (h: number) => `${String(Math.round(h) % 24).padStart(2, "0")}:00`;
+  const clockHM = (h: number) => {
+    const hh = Math.floor(h) % 24;
+    const mm = Math.round((h - Math.floor(h)) * 60) % 60;
+    return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+  };
+
+  // Nights with real bed/wake times anchor the averages
+  const timed = rows.map(r => {
+    const bed = parseHM(r.sleep_bed_time);
+    const wake = parseHM(r.sleep_wake_time);
+    if (bed == null || wake == null) return null;
+    return { start: bed >= 12 ? bed : bed + 24, end: wake >= 12 ? wake : wake + 24 };
+  }).filter(Boolean) as Array<{ start: number; end: number }>;
+
+  const avgBed = timed.length ? timed.reduce((a, t) => a + t.start, 0) / timed.length : 24;
+  const avgWake = timed.length ? timed.reduce((a, t) => a + t.end, 0) / timed.length : null;
+  const bedStdMin = timed.length > 1
+    ? Math.round(Math.sqrt(timed.reduce((a, t) => a + Math.pow(t.start - avgBed, 2), 0) / timed.length) * 60)
+    : null;
+
+  const entries = rows.map(r => {
+    const bed = parseHM(r.sleep_bed_time);
+    const wake = parseHM(r.sleep_wake_time);
+    const hasTimes = bed != null && wake != null;
+    const start = hasTimes ? (bed! >= 12 ? bed! : bed! + 24) : avgBed;
+    const deep = r.sleep_deep_minutes ?? 0;
+    const rem = r.sleep_rem_minutes ?? 0;
+    const light = Math.max(0, r.sleep_duration_minutes - deep - rem);
+    const d = new Date(r.recorded_at);
+    return {
+      dk: dayKeyOf(r.recorded_at),
+      label: d.toLocaleDateString([], { weekday: "short" }),
+      dateNum: d.getDate(),
+      start,
+      durH: r.sleep_duration_minutes / 60,
+      estimated: !hasTimes,
+      bed: r.sleep_bed_time, wake: r.sleep_wake_time,
+      deep, rem, light, total: r.sleep_duration_minutes,
+      sleepHr: r.sleeping_heart_rate ?? null,
+      quality: r.sleep_duration_minutes >= 420 ? C.optimal : r.sleep_duration_minutes >= 360 ? C.warning : C.critical,
+    };
+  });
+
+  const avgDurMin = rows.length ? Math.round(rows.reduce((a, r) => a + r.sleep_duration_minutes, 0) / rows.length) : 0;
+  const ROW_H = 32;
+  const X = (h: number) => `${((h - 18) / 18) * 100}%`;
+  const ticks = [18, 20, 22, 24, 26, 28, 30, 32, 34, 36];
+  const hoverEntry = hover != null ? entries[hover.i] : null;
+
+  const stats = [
+    { label: "Avg Duration", val: fmt(avgDurMin), color: C.sleep },
+    { label: "Avg Bed", val: timed.length ? clockHM(avgBed) : "—", color: C.sleep },
+    { label: "Avg Wake", val: avgWake != null ? clockHM(avgWake) : "—", color: C.warning },
+    {
+      label: "Consistency",
+      val: bedStdMin != null ? `±${bedStdMin} min` : "—",
+      color: bedStdMin == null ? C.textTertiary : bedStdMin <= 30 ? C.optimal : bedStdMin <= 60 ? C.warning : C.critical,
+    },
+  ];
+
+  return (
+    <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--text-tertiary)" }}>
+          Bed &amp; Wake Schedule · {label}
+        </div>
+        <div className="text-[10px] italic" style={{ color: "var(--text-tertiary)" }}>click a night for its day view</div>
+      </div>
+
+      {/* Stats header — computed from nights that have real bed/wake times */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+        {stats.map(s => (
+          <div key={s.label} className="p-3 rounded-xl text-center" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+            <div className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: "var(--text-tertiary)" }}>{s.label}</div>
+            <div className="text-lg font-black" style={{ fontFamily: "var(--font-mono)", color: s.color, lineHeight: 1 }}>{s.val}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Clock tick header */}
+      <div className="flex">
+        <div className="w-12 shrink-0" />
+        <div className="relative flex-1 h-4 mb-1">
+          {ticks.map(t => (
+            <span key={t} className="absolute text-[9px] font-mono"
+              style={{ left: X(t), transform: "translateX(-50%)", color: "var(--text-tertiary)" }}>
+              {clock(t)}
+            </span>
+          ))}
+        </div>
+        <div className="w-20 shrink-0" />
+      </div>
+
+      <div className="flex">
+        {/* Row labels: weekday + date */}
+        <div className="w-12 shrink-0 flex flex-col">
+          {entries.map(e => (
+            <div key={e.dk} style={{ height: ROW_H }} className="flex items-center text-[10px] font-mono font-bold" >
+              <span style={{ color: "var(--text-tertiary)" }}>{e.label} <span style={{ color: "var(--text-secondary)" }}>{e.dateNum}</span></span>
+            </div>
+          ))}
+        </div>
+
+        {/* Plot area */}
+        <div className="relative flex-1" style={{ height: entries.length * ROW_H }}>
+          {/* Target band 23:00 → 07:00 */}
+          <div className="absolute top-0 bottom-0 rounded"
+            style={{ left: X(23), width: `${((31 - 23) / 18) * 100}%`, background: "rgba(91,66,232,0.06)" }} />
+          {/* Gridlines */}
+          {ticks.map(t => (
+            <div key={t} className="absolute top-0 bottom-0 w-px" style={{ left: X(t), background: "var(--border-subtle)" }} />
+          ))}
+
+          {/* Night bars — stage-segmented */}
+          {entries.map((e, i) => (
+            <div key={e.dk}
+              className="absolute flex overflow-hidden cursor-pointer transition-transform hover:scale-y-110"
+              style={{
+                top: i * ROW_H + 5, height: ROW_H - 10,
+                left: X(e.start), width: `${(e.durH / 18) * 100}%`,
+                borderRadius: 6,
+                border: e.estimated ? `1.5px dashed ${C.sleep}` : "none",
+                opacity: e.estimated ? 0.55 : 1,
+              }}
+              onClick={() => onJumpToDay?.(e.dk)}
+              onMouseEnter={() => setHover({ i, x: ((e.start - 18) / 18) * 100 })}
+              onMouseLeave={() => setHover(null)}
+            >
+              <div style={{ width: `${(e.deep / e.total) * 100}%`, background: STAGE_SEGMENTS[0].color }} />
+              <div style={{ width: `${(e.rem / e.total) * 100}%`, background: STAGE_SEGMENTS[1].color }} />
+              <div style={{ width: `${(e.light / e.total) * 100}%`, background: STAGE_SEGMENTS[2].color }} />
+            </div>
+          ))}
+
+          {/* Average bed / wake reference lines */}
+          {timed.length > 0 && (
+            <div className="absolute top-0 bottom-0" style={{ left: X(avgBed), borderLeft: `2px dashed ${C.sleep}` }}>
+              <span className="absolute top-0 left-1 text-[8px] font-bold whitespace-nowrap" style={{ color: C.sleep }}>avg bed</span>
+            </div>
+          )}
+          {avgWake != null && timed.length > 1 && (
+            <div className="absolute top-0 bottom-0" style={{ left: X(avgWake), borderLeft: `2px dashed ${C.warning}` }}>
+              <span className="absolute top-0 left-1 text-[8px] font-bold whitespace-nowrap" style={{ color: C.warning }}>avg wake</span>
+            </div>
+          )}
+
+          {/* Rich hover tooltip */}
+          {hoverEntry && hover != null && (
+            <div className="absolute z-10 card-surface px-3 py-2 text-xs shadow-lg pointer-events-none"
+              style={{
+                left: `${Math.min(Math.max(hover.x, 12), 62)}%`,
+                top: hover.i * ROW_H - 4,
+                transform: "translateY(-100%)",
+                borderRadius: "var(--radius-md)", minWidth: 180,
+              }}>
+              <div className="font-bold mb-1" style={{ color: "var(--text-primary)" }}>{hoverEntry.label} {hoverEntry.dateNum}</div>
+              <div className="font-mono" style={{ color: C.sleep }}>
+                {hoverEntry.estimated
+                  ? `~${clockHM(hoverEntry.start)} → ~${clockHM(hoverEntry.start + hoverEntry.durH)} (est.)`
+                  : `${hoverEntry.bed} → ${hoverEntry.wake}`}
+              </div>
+              <div className="font-mono" style={{ color: "var(--text-secondary)" }}>Duration: {fmt(hoverEntry.total)}</div>
+              <div className="font-mono" style={{ color: STAGE_SEGMENTS[0].color }}>Deep: {fmt(hoverEntry.deep)}</div>
+              <div className="font-mono" style={{ color: STAGE_SEGMENTS[1].color }}>REM: {fmt(hoverEntry.rem)}</div>
+              <div className="font-mono" style={{ color: "#A79DEC" }}>Light: {fmt(hoverEntry.light)}</div>
+              {hoverEntry.sleepHr != null && (
+                <div className="font-mono" style={{ color: C.cv }}>Sleeping HR: {hoverEntry.sleepHr} bpm</div>
+              )}
+              {hoverEntry.estimated && (
+                <div className="text-[9px] italic mt-0.5" style={{ color: "var(--text-tertiary)" }}>
+                  bed/wake not recorded — start estimated from average
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Right labels: duration + quality dot */}
+        <div className="w-20 shrink-0 flex flex-col">
+          {entries.map(e => (
+            <div key={e.dk} style={{ height: ROW_H }} className="flex items-center justify-end gap-1.5 pr-1">
+              <span className="text-[10px] font-mono font-bold" style={{ color: "var(--text-secondary)" }}>{fmt(e.total)}</span>
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ background: e.quality }}
+                title="green ≥7h · amber 6–7h · red <6h" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="flex items-center flex-wrap gap-3 mt-3 text-[10px] font-bold" style={{ color: "var(--text-tertiary)" }}>
+        {STAGE_SEGMENTS.map(s => (
+          <span key={s.key} className="flex items-center gap-1">
+            <span className="inline-block w-2 h-2 rounded-sm" style={{ background: s.color }} /> {s.label}
+          </span>
+        ))}
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-3 h-2 rounded-sm" style={{ background: "rgba(91,66,232,0.12)" }} /> 23:00–07:00 target
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-3 h-2 rounded-sm" style={{ border: `1.5px dashed ${C.sleep}`, opacity: 0.6 }} /> estimated time
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // ─── Tab: Sleep Architecture ─────────────────────────────────────
 // Source: health_metrics sleep columns. Range mode: hero bed→wake chart,
 // per-night stage strips, sleeping HR, cumulative balance. Day mode: one night in detail.
@@ -458,6 +687,9 @@ function SleepTab({ metricsHistory, timeFilter, viewMode, onViewModeChange, sele
             })}
           </div>
         </div>
+
+        {/* Single-night schedule bar on the clock axis */}
+        <SleepScheduleChart rows={[row]} label={fmtDayLong(selectedDay)} onJumpToDay={onJumpToDay} />
       </div>
     );
   }
@@ -475,44 +707,6 @@ function SleepTab({ metricsHistory, timeFilter, viewMode, onViewModeChange, sele
   const latest = rows[rows.length - 1];
   const lp = stageParts(latest);
   const avgMin = Math.round(rows.reduce((a, r) => a + r.sleep_duration_minutes, 0) / rows.length);
-
-  // Bed & wake schedule — parse "HH:MM" onto a 18:00→18:00 axis so
-  // post-midnight bedtimes float correctly across midnight
-  const parseHM = (s?: string | null): number | null => {
-    if (!s) return null;
-    const m = /^(\d{1,2}):(\d{2})/.exec(String(s).trim());
-    if (!m) return null;
-    return Number(m[1]) + Number(m[2]) / 60;
-  };
-  const scheduleData = rows.map(r => {
-    const bed = parseHM(r.sleep_bed_time);
-    const wake = parseHM(r.sleep_wake_time);
-    if (bed == null || wake == null) return null;
-    const start = bed >= 12 ? bed : bed + 24;
-    const end = wake >= 12 ? wake : wake + 24;
-    const durMin = Math.round((end - start) * 60);
-    return {
-      date: fmtDay(r.recorded_at), dk: dayKeyOf(r.recorded_at),
-      base: start, span: Math.max(0.25, end - start),
-      bed: r.sleep_bed_time, wake: r.sleep_wake_time,
-      durLabel: fmt(durMin),
-    };
-  }).filter(Boolean) as Array<{ date: string; dk: string; base: number; span: number; bed: string; wake: string; durLabel: string }>;
-  const clockTick = (h: number) => `${String(Math.round(h) % 24).padStart(2, "0")}:00`;
-  const avgBed = scheduleData.length ? scheduleData.reduce((a, d) => a + d.base, 0) / scheduleData.length : null;
-  const avgWake = scheduleData.length ? scheduleData.reduce((a, d) => a + d.base + d.span, 0) / scheduleData.length : null;
-
-  const ScheduleTooltip = ({ active, payload, label }: any) => {
-    if (!active || !payload?.length) return null;
-    const d = payload[0]?.payload;
-    if (!d) return null;
-    return (
-      <div className="card-surface px-3 py-2 text-xs shadow-lg" style={{ borderRadius: "var(--radius-md)" }}>
-        <div className="font-bold mb-1" style={{ color: "var(--text-primary)" }}>{label}</div>
-        <div className="font-mono" style={{ color: C.sleep }}>{d.bed} → {d.wake} · {d.durLabel}</div>
-      </div>
-    );
-  };
 
   // Sleeping heart rate per night (when present)
   const sleepHrData = rows
@@ -557,43 +751,17 @@ function SleepTab({ metricsHistory, timeFilter, viewMode, onViewModeChange, sele
         </div>
       </div>
 
-      {/* HERO: Bed & wake schedule — horizontal floating bars on a clock axis */}
-      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-        <div className="flex items-center justify-between mb-4">
-          <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--text-tertiary)" }}>
+      {/* HERO: Bed & wake schedule — hand-rolled stage-segmented Gantt */}
+      {rows.length >= 2 ? (
+        <SleepScheduleChart rows={rows} label={rangeLabel(timeFilter)} onJumpToDay={onJumpToDay} />
+      ) : (
+        <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+          <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>
             Bed &amp; Wake Schedule · {rangeLabel(timeFilter)}
           </div>
-          <div className="text-[10px] italic" style={{ color: "var(--text-tertiary)" }}>click a night for its day view</div>
+          <NeedMoreNote message={`Need at least 2 recorded nights in the ${rangeLabel(timeFilter)} — ${rows.length} available.`} />
         </div>
-        {scheduleData.length >= 2 ? (
-          <div style={{ height: Math.max(200, scheduleData.length * 38 + 40) }} className="w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart layout="vertical" data={scheduleData} margin={{ top: 4, right: 60, left: 0, bottom: 0 }}>
-                <XAxis type="number" domain={[18, 36]} ticks={[18, 20, 22, 24, 26, 28, 30, 32, 34, 36]}
-                  tickFormatter={clockTick} stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} />
-                <YAxis type="category" dataKey="date" width={52}
-                  stroke="var(--text-tertiary)" fontSize={11} tickLine={false} axisLine={false} />
-                <Tooltip content={<ScheduleTooltip />} cursor={{ fill: "rgba(91,66,232,0.05)" }} />
-                {avgBed != null && (
-                  <ReferenceLine x={avgBed} stroke={C.sleep} strokeDasharray="4 3" strokeWidth={1.5}
-                    label={{ value: `avg bed ${clockTick(avgBed)}`, position: "top", fontSize: 9, fill: C.sleep }} />
-                )}
-                {avgWake != null && (
-                  <ReferenceLine x={avgWake} stroke={C.warning} strokeDasharray="4 3" strokeWidth={1.5}
-                    label={{ value: `avg wake ${clockTick(avgWake)}`, position: "top", fontSize: 9, fill: C.warning }} />
-                )}
-                <Bar dataKey="base" stackId="sleep" fill="transparent" isAnimationActive={false} />
-                <Bar dataKey="span" stackId="sleep" name="Asleep" fill={C.sleep} fillOpacity={0.75} radius={[0, 4, 4, 0]}
-                  cursor="pointer" onClick={(d: any) => d?.dk && onJumpToDay(d.dk)}>
-                  <LabelList dataKey="durLabel" position="right" style={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: "var(--font-mono)" }} />
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        ) : (
-          <NeedMoreNote message={`Need at least 2 nights with bed & wake times in the ${rangeLabel(timeFilter)} — ${scheduleData.length} available.`} />
-        )}
-      </div>
+      )}
 
       {/* Stage strips — one 100% stacked bar per night */}
       <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>

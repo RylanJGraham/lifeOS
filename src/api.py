@@ -382,6 +382,68 @@ async def trigger_pipeline(pipeline_id: str, _=Depends(require_api_key)):
         raise HTTPException(status_code=409, detail=str(e))
     return JSONResponse(content={"status": "started", "pipeline_id": pipeline_id})
 
+class TargetsRequest(BaseModel):
+    height_cm: float
+    age: int
+    sex: str = "male"
+    physique_description: str = ""
+    goal: str = "maintain"              # cut | lean_bulk | bulk | maintain
+    activity_level: str = "moderate"    # sedentary | light | moderate | athlete
+    current_weight_kg: float | None = None
+
+_ACTIVITY_MULTIPLIERS = {"sedentary": 1.2, "light": 1.375, "moderate": 1.55, "athlete": 1.725}
+_GOAL_ADJUSTMENTS = {"cut": -500, "lean_bulk": 250, "bulk": 500, "maintain": 0}
+_PROTEIN_PER_KG = {"cut": 2.2, "lean_bulk": 2.0, "bulk": 1.8, "maintain": 1.8}
+
+@app.post("/api/calculate-targets")
+async def calculate_targets(req: TargetsRequest, _=Depends(require_api_key)):
+    """AI-assisted TDEE + macro targets. Weight is estimated by the LLM from a
+    free-text physique description when the user doesn't know it; the energy
+    math itself is deterministic (Mifflin-St Jeor)."""
+    from fastapi.concurrency import run_in_threadpool
+
+    def _compute():
+        weight = req.current_weight_kg
+        weight_estimated = False
+        if not weight:
+            # LLM estimate from the physique description
+            from graph import llm_fast
+            from langchain_core.messages import HumanMessage
+            if not llm_fast:
+                raise RuntimeError("LLM not configured and no weight provided.")
+            prompt = (
+                f'Estimate the body weight in kg of a {req.age}-year-old {req.sex}, '
+                f'{req.height_cm} cm tall, described as: "{req.physique_description}". '
+                f'Return ONLY a JSON object like {{"weight_kg": 76}} with your single best estimate.'
+            )
+            import re as _re, json as _json
+            res = llm_fast.invoke([HumanMessage(content=prompt)]).content
+            match = _re.search(r'\{.*\}', res, _re.DOTALL)
+            weight = float(_json.loads(match.group(0))["weight_kg"])
+            weight_estimated = True
+
+        bmr = 10 * weight + 6.25 * req.height_cm - 5 * req.age + (5 if req.sex == "male" else -161)
+        tdee = bmr * _ACTIVITY_MULTIPLIERS.get(req.activity_level, 1.55)
+        calories = round(tdee + _GOAL_ADJUSTMENTS.get(req.goal, 0))
+        protein_g = round(_PROTEIN_PER_KG.get(req.goal, 1.8) * weight)
+        fat_g = round(0.9 * weight)
+        carbs_g = round(max(0, (calories - protein_g * 4 - fat_g * 9) / 4))
+        return {
+            "estimated_weight_kg": round(weight, 1),
+            "weight_was_estimated": weight_estimated,
+            "bmr": round(bmr),
+            "tdee": round(tdee),
+            "calories": calories,
+            "protein_g": protein_g,
+            "carbs_g": carbs_g,
+            "fat_g": fat_g,
+        }
+
+    try:
+        return await run_in_threadpool(_compute)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/correlations")
 async def get_correlations():
     """Generates a dummy correlation matrix for P0 feature demo"""

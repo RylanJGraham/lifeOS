@@ -65,20 +65,35 @@ function parseMicros(raw: any): Record<string, number> {
   return {};
 }
 
-// Real caloric target from user_profiles (null when not configured)
-function useCaloricTarget() {
-  const [target, setTarget] = useState<number | null>(null);
+// Real nutrition targets from user_profiles (null fields when not configured)
+interface NutritionTargets {
+  calories: number | null;
+  protein: number | null;
+  carbs: number | null;
+  fat: number | null;
+}
+
+function useNutritionTargets(): NutritionTargets {
+  const [targets, setTargets] = useState<NutritionTargets>({ calories: null, protein: null, carbs: null, fat: null });
   useEffect(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL) return;
     (async () => {
       const { data, error } = await supabase
         .from("user_profiles")
-        .select("daily_caloric_target")
+        .select("daily_caloric_target, protein_target_g, carbs_target_g, fat_target_g")
         .limit(1);
-      if (!error && data?.[0]?.daily_caloric_target) setTarget(data[0].daily_caloric_target);
+      if (!error && data?.[0]) {
+        const p = data[0];
+        setTargets({
+          calories: p.daily_caloric_target ?? null,
+          protein:  p.protein_target_g ?? null,
+          carbs:    p.carbs_target_g ?? null,
+          fat:      p.fat_target_g ?? null,
+        });
+      }
     })();
   }, []);
-  return target;
+  return targets;
 }
 
 function StatusBadge({ status }: { status: "optimal" | "warning" | "critical" | "low" }) {
@@ -99,12 +114,17 @@ function StatusBadge({ status }: { status: "optimal" | "warning" | "critical" | 
 
 // ─── Zone 1: Intake Overview HUD ─────────────────────────────────
 // All figures are sums over the meals in the selected range.
-function IntakeHUD({ totalCal, totalP, totalC, totalFat, loggedDays, calTarget, timeFilter }: {
+function IntakeHUD({ totalCal, totalP, totalC, totalFat, loggedDays, calTarget, pTarget, cTarget, fTarget, timeFilter }: {
   totalCal: number; totalP: number; totalC: number; totalFat: number;
-  loggedDays: number; calTarget: number | null; timeFilter: string;
+  loggedDays: number; calTarget: number | null;
+  pTarget: number | null; cTarget: number | null; fTarget: number | null;
+  timeFilter: string;
 }) {
   const days = Math.max(1, loggedDays);
   const avgCal = Math.round(totalCal / days);
+  const avgP = Math.round(totalP / days);
+  const avgC = Math.round(totalC / days);
+  const avgF = Math.round(totalFat / days);
   const macroKcal = totalP * 4 + totalC * 4 + totalFat * 9;
 
   const chips = [
@@ -126,9 +146,11 @@ function IntakeHUD({ totalCal, totalP, totalC, totalFat, loggedDays, calTarget, 
       label: "Protein",
       value: totalP,
       unit: "g",
-      sublabel: `~${Math.round(totalP / days)}g/day avg`,
+      sublabel: pTarget
+        ? `~${avgP}g/day vs ${pTarget}g target`
+        : `~${avgP}g/day avg`,
       color: C.protein,
-      pct: macroKcal > 0 ? Math.round((totalP * 4 / macroKcal) * 100) : null,
+      pct: pTarget ? pct(avgP, pTarget) : (macroKcal > 0 ? Math.round((totalP * 4 / macroKcal) * 100) : null),
       icon: Target,
     },
     {
@@ -136,9 +158,11 @@ function IntakeHUD({ totalCal, totalP, totalC, totalFat, loggedDays, calTarget, 
       label: "Carbs",
       value: totalC,
       unit: "g",
-      sublabel: `~${Math.round(totalC / days)}g/day avg`,
+      sublabel: cTarget
+        ? `~${avgC}g/day vs ${cTarget}g target`
+        : `~${avgC}g/day avg`,
       color: C.carbs,
-      pct: macroKcal > 0 ? Math.round((totalC * 4 / macroKcal) * 100) : null,
+      pct: cTarget ? pct(avgC, cTarget) : (macroKcal > 0 ? Math.round((totalC * 4 / macroKcal) * 100) : null),
       icon: Zap,
     },
     {
@@ -146,9 +170,11 @@ function IntakeHUD({ totalCal, totalP, totalC, totalFat, loggedDays, calTarget, 
       label: "Fat",
       value: totalFat,
       unit: "g",
-      sublabel: `~${Math.round(totalFat / days)}g/day avg`,
+      sublabel: fTarget
+        ? `~${avgF}g/day vs ${fTarget}g target`
+        : `~${avgF}g/day avg`,
       color: C.fat,
-      pct: macroKcal > 0 ? Math.round((totalFat * 9 / macroKcal) * 100) : null,
+      pct: fTarget ? pct(avgF, fTarget) : (macroKcal > 0 ? Math.round((totalFat * 9 / macroKcal) * 100) : null),
       icon: Activity,
     },
   ];
@@ -581,34 +607,150 @@ function MacroWorkoutCorrelation({ dbWorkouts, totalP, totalC, loggedDays, timeF
   );
 }
 
-// ─── Zone 4: Micronutrients (from meals.micronutrients jsonb) ────
-function MicroPanel({ dbMeals, timeFilter }: { dbMeals: any[]; timeFilter: string }) {
-  const totals = useMemo(() => {
-    const acc: Record<string, number> = {};
+// ─── Zone 4: Micronutrient Goals (from meals.micronutrients jsonb) ────
+// Values are normalized per logged day, then compared against daily goals —
+// raw range sums are meaningless for %-of-daily-value nutrients.
+const MICRO_GROUP_VIT = "Vitamins";
+const MICRO_GROUP_MIN = "Minerals & Electrolytes";
+const MICRO_GROUP_FS  = "Fiber & Sugar";
+
+const NUTRIENT_META: Record<string, {
+  name: string; group: string; unit: "%DV" | "mg" | "g"; goal: number; kind: "goal" | "limit";
+}> = {
+  vitamin_a_dv_pct:   { name: "Vitamin A",   group: MICRO_GROUP_VIT, unit: "%DV", goal: 100, kind: "goal" },
+  vitamin_c_dv_pct:   { name: "Vitamin C",   group: MICRO_GROUP_VIT, unit: "%DV", goal: 100, kind: "goal" },
+  vitamin_d_dv_pct:   { name: "Vitamin D",   group: MICRO_GROUP_VIT, unit: "%DV", goal: 100, kind: "goal" },
+  vitamin_e_dv_pct:   { name: "Vitamin E",   group: MICRO_GROUP_VIT, unit: "%DV", goal: 100, kind: "goal" },
+  vitamin_k_dv_pct:   { name: "Vitamin K",   group: MICRO_GROUP_VIT, unit: "%DV", goal: 100, kind: "goal" },
+  b6_dv_pct:          { name: "B6",          group: MICRO_GROUP_VIT, unit: "%DV", goal: 100, kind: "goal" },
+  b12_dv_pct:         { name: "B12",         group: MICRO_GROUP_VIT, unit: "%DV", goal: 100, kind: "goal" },
+  biotin_dv_pct:      { name: "Biotin",      group: MICRO_GROUP_VIT, unit: "%DV", goal: 100, kind: "goal" },
+  folic_acid_dv_pct:  { name: "Folic Acid",  group: MICRO_GROUP_VIT, unit: "%DV", goal: 100, kind: "goal" },
+  magnesium_dv_pct:   { name: "Magnesium",   group: MICRO_GROUP_MIN, unit: "%DV", goal: 100, kind: "goal" },
+  zinc_dv_pct:        { name: "Zinc",        group: MICRO_GROUP_MIN, unit: "%DV", goal: 100, kind: "goal" },
+  iron_dv_pct:        { name: "Iron",        group: MICRO_GROUP_MIN, unit: "%DV", goal: 100, kind: "goal" },
+  calcium_dv_pct:     { name: "Calcium",     group: MICRO_GROUP_MIN, unit: "%DV", goal: 100, kind: "goal" },
+  selenium_dv_pct:    { name: "Selenium",    group: MICRO_GROUP_MIN, unit: "%DV", goal: 100, kind: "goal" },
+  iodine_dv_pct:      { name: "Iodine",      group: MICRO_GROUP_MIN, unit: "%DV", goal: 100, kind: "goal" },
+  copper_dv_pct:      { name: "Copper",      group: MICRO_GROUP_MIN, unit: "%DV", goal: 100, kind: "goal" },
+  manganese_dv_pct:   { name: "Manganese",   group: MICRO_GROUP_MIN, unit: "%DV", goal: 100, kind: "goal" },
+  phosphorus_dv_pct:  { name: "Phosphorus",  group: MICRO_GROUP_MIN, unit: "%DV", goal: 100, kind: "goal" },
+  omega_3_dv_pct:     { name: "Omega-3",     group: MICRO_GROUP_MIN, unit: "%DV", goal: 100, kind: "goal" },
+  sodium_mg:          { name: "Sodium",      group: MICRO_GROUP_MIN, unit: "mg",  goal: 2300, kind: "limit" },
+  potassium_mg:       { name: "Potassium",   group: MICRO_GROUP_MIN, unit: "mg",  goal: 3500, kind: "goal" },
+  fiber:              { name: "Fiber",       group: MICRO_GROUP_FS,  unit: "g",   goal: 30,  kind: "goal" },
+  sugar:              { name: "Sugar",       group: MICRO_GROUP_FS,  unit: "g",   goal: 50,  kind: "limit" },
+};
+
+const MICRO_GROUP_ORDER = [MICRO_GROUP_VIT, MICRO_GROUP_MIN, MICRO_GROUP_FS];
+
+// Strip junk keys and merge legacy non-suffixed duplicates (e.g. vitamin_d,
+// omega_3) into their *_dv_pct equivalents — the suffixed key wins when both exist.
+function normalizeMicros(micros: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  const isDirect = (k: string) => k.endsWith("_dv_pct") || k in NUTRIENT_META;
+  Object.entries(micros).forEach(([k, v]) => {
+    if (k === "ai_analysis") return;
+    if (isDirect(k)) out[k] = v;
+  });
+  Object.entries(micros).forEach(([k, v]) => {
+    if (k === "ai_analysis" || isDirect(k)) return;
+    const suffixed = `${k}_dv_pct`;
+    // Only alias known legacy duplicates; skip anything unrecognized
+    if (suffixed in NUTRIENT_META && !(suffixed in out)) out[suffixed] = v;
+  });
+  return out;
+}
+
+type MicroStatus = "low" | "ok" | "covered" | "over";
+
+interface MicroRow {
+  key: string;
+  name: string;
+  group: string;
+  avg: number;
+  barPct: number;
+  valueLabel: string;
+  status: MicroStatus;
+}
+
+const MICRO_STATUS_COLOR: Record<MicroStatus, string> = {
+  low: C.critical, ok: C.warning, covered: C.optimal, over: C.critical,
+};
+
+function buildMicroRow(key: string, avg: number): MicroRow {
+  const meta = NUTRIENT_META[key] || {
+    name: key.replace(/_dv_pct$/, "").replace(/_/g, " ").replace(/\b\w/g, ch => ch.toUpperCase()),
+    group: MICRO_GROUP_VIT, unit: "%DV" as const, goal: 100, kind: "goal" as const,
+  };
+  const status: MicroStatus = meta.kind === "limit"
+    ? (avg > meta.goal ? "over" : "covered")
+    : (avg >= 90 ? "covered" : avg >= 50 ? "ok" : "low");
+  const barPct = Math.min(150, (avg / meta.goal) * 100);
+  const valueLabel = meta.unit === "%DV"
+    ? `${Math.round(avg)}% DV`
+    : meta.unit === "mg"
+    ? `${Math.round(avg).toLocaleString()} mg`
+    : `${Math.round(avg * 10) / 10} g`;
+  return { key, name: meta.name, group: meta.group, avg, barPct, valueLabel, status };
+}
+
+function MicroPanel({ dbMeals, timeFilter, dayLabel }: { dbMeals: any[]; timeFilter: string; dayLabel?: string }) {
+  const rows = useMemo<MicroRow[]>(() => {
+    // Sum each nutrient per local day, then average over logged days only —
+    // days without logged food don't dilute the average.
+    const byDay: Record<string, Record<string, number>> = {};
     dbMeals.forEach(m => {
-      const micros = parseMicros(m.micronutrients);
-      Object.entries(micros).forEach(([k, v]) => { acc[k] = (acc[k] || 0) + v; });
+      const dk = dayKeyOf(m.meal_time);
+      const norm = normalizeMicros(parseMicros(m.micronutrients));
+      const day = byDay[dk] || (byDay[dk] = {});
+      Object.entries(norm).forEach(([k, v]) => { day[k] = (day[k] || 0) + v; });
     });
-    return acc;
+    const days = Object.keys(byDay).length;
+    if (days === 0) return [];
+    const avg: Record<string, number> = {};
+    Object.values(byDay).forEach(day => {
+      Object.entries(day).forEach(([k, v]) => { avg[k] = (avg[k] || 0) + v / days; });
+    });
+    // Attention sort: low/over first, then ok, then covered; alphabetical within
+    const rank: Record<MicroStatus, number> = { low: 0, over: 0, ok: 1, covered: 2 };
+    return Object.entries(avg)
+      .map(([k, v]) => buildMicroRow(k, v))
+      .sort((a, b) => rank[a.status] - rank[b.status] || a.name.localeCompare(b.name));
   }, [dbMeals]);
 
-  const keys = Object.keys(totals).sort((a, b) => totals[b] - totals[a]);
-  const max = keys.length > 0 ? totals[keys[0]] : 1;
+  const covered = rows.filter(r => r.status === "covered").length;
+  const low     = rows.filter(r => r.status === "low").length;
+  const over    = rows.filter(r => r.status === "over").length;
 
   return (
     <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
         <div>
           <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>
-            Micronutrients · {rangeLabel(timeFilter)}
+            Micronutrient Goals · {dayLabel || `avg/day, ${rangeLabel(timeFilter)}`}
           </div>
           <div className="text-[11px] mt-0.5" style={{ color: C.textSec }}>
-            Aggregated from the micronutrients field of logged meals
+            Progress toward daily goals from logged meals
           </div>
         </div>
+        {rows.length > 0 && (
+          <div className="flex items-center gap-1.5">
+            {[
+              { n: covered, label: "covered", color: C.optimal },
+              { n: low,     label: "low",     color: C.warning },
+              { n: over,    label: "over",    color: C.critical },
+            ].map(s => (
+              <span key={s.label} className="text-[10px] font-bold px-2 py-0.5 rounded-full"
+                style={{ color: s.color, background: `${s.color}10`, border: `1px solid ${s.color}30`, fontFamily: "var(--font-mono)" }}>
+                {s.n} {s.label}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
-      {keys.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="flex flex-col items-center justify-center p-8 text-center rounded-xl"
           style={{ background: "var(--surface-tertiary)", border: "1px dashed var(--border-subtle)" }}>
           <div className="w-10 h-10 rounded-full flex items-center justify-center mb-3"
@@ -621,29 +763,49 @@ function MicroPanel({ dbMeals, timeFilter }: { dbMeals: any[]; timeFilter: strin
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
-          {keys.map((k, i) => (
-            <motion.div key={k}
-              initial={{ opacity: 0, x: 12 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: i * 0.04 }}
-              className="flex items-center gap-3"
-            >
-              <div className="w-28 text-[11px] font-bold truncate capitalize" style={{ color: C.textSec }}>{k}</div>
-              <div className="flex-1 h-1.5 rounded-full" style={{ background: C.border }}>
-                <motion.div className="h-full rounded-full"
-                  initial={{ width: 0 }}
-                  animate={{ width: `${Math.round((totals[k] / max) * 100)}%` }}
-                  transition={{ duration: 0.9, ease: [0, 0, 0.2, 1], delay: i * 0.04 + 0.2 }}
-                  style={{ background: C.fiber }}
-                />
+        <>
+          {MICRO_GROUP_ORDER.map(group => {
+            const groupRows = rows.filter(r => r.group === group);
+            if (groupRows.length === 0) return null;
+            return (
+              <div key={group} className="mb-4 last:mb-0">
+                <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: C.textTer }}>
+                  {group}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+                  {groupRows.map((r, i) => {
+                    const col = MICRO_STATUS_COLOR[r.status];
+                    return (
+                      <motion.div key={r.key}
+                        initial={{ opacity: 0, x: 12 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: i * 0.04 }}
+                        className="flex items-center gap-3"
+                        title={`${r.name}: ${r.status}`}
+                      >
+                        <div className="w-28 text-[11px] font-bold truncate" style={{ color: C.textSec }}>{r.name}</div>
+                        <div className="flex-1 h-1.5 rounded-full" style={{ background: C.border }}>
+                          <motion.div className="h-full rounded-full"
+                            initial={{ width: 0 }}
+                            animate={{ width: `${Math.min(100, r.barPct)}%` }}
+                            transition={{ duration: 0.9, ease: [0, 0, 0.2, 1], delay: i * 0.04 + 0.2 }}
+                            style={{ background: col }}
+                          />
+                        </div>
+                        <div className="w-20 text-right text-[11px] font-black font-mono" style={{ color: col }}>
+                          {r.valueLabel}
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </div>
               </div>
-              <div className="w-12 text-right text-[11px] font-black font-mono" style={{ color: C.fiber }}>
-                {Math.round(totals[k] * 10) / 10}
-              </div>
-            </motion.div>
-          ))}
-        </div>
+            );
+          })}
+          <div className="text-[10px] mt-4 pt-3" style={{ color: C.textTer, borderTop: "1px solid var(--border-subtle)", lineHeight: 1.6 }}>
+            Estimates from logged meals — supplements with label values included. Days without logged food aren't counted.
+          </div>
+        </>
       )}
     </div>
   );
@@ -1276,7 +1438,8 @@ export default function FuelTab({
   dbMeals = [], dbWorkouts = [], timeFilter = "month",
   viewMode = "range", selectedDay, onJumpToDay, dayLens,
 }: FuelTabProps) {
-  const calTarget = useCaloricTarget();
+  const targets = useNutritionTargets();
+  const calTarget = targets.calories;
 
   // Range aggregates (also used for the day-vs-average comparison chip)
   let totalCal = 0, totalP = 0, totalC = 0, totalFat = 0, totalFib = 0;
@@ -1353,16 +1516,21 @@ export default function FuelTab({
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
             {[
-              { label: "Calories", val: dCal, unit: "kcal", color: C.calories },
-              { label: "Protein", val: dP, unit: "g", color: C.protein },
-              { label: "Carbs", val: dC, unit: "g", color: C.carbs },
-              { label: "Fat", val: dF, unit: "g", color: C.fat },
+              { label: "Calories", val: dCal, unit: "kcal", color: C.calories, target: targets.calories },
+              { label: "Protein", val: dP, unit: "g", color: C.protein, target: targets.protein },
+              { label: "Carbs", val: dC, unit: "g", color: C.carbs, target: targets.carbs },
+              { label: "Fat", val: dF, unit: "g", color: C.fat, target: targets.fat },
             ].map(s => (
               <div key={s.label} className="p-3 rounded-xl text-center" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
                 <div className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: C.textTer }}>{s.label}</div>
                 <div className="text-lg font-black" style={{ fontFamily: "var(--font-mono)", color: s.color, lineHeight: 1 }}>
                   {s.val}<span className="text-[10px] ml-0.5" style={{ color: C.textTer }}>{s.unit}</span>
                 </div>
+                {s.target != null && (
+                  <div className="text-[10px] font-semibold mt-1" style={{ color: C.textTer, fontFamily: "var(--font-mono)" }}>
+                    / {s.target}{s.unit} target
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -1387,6 +1555,9 @@ export default function FuelTab({
         {/* Hourly intake curve for the day */}
         <IntakeTimeline dbMeals={dayMeals} calTarget={calTarget} timeFilter="day" />
 
+        {/* Micronutrient goals for this day */}
+        <MicroPanel dbMeals={dayMeals} timeFilter="day" dayLabel={fmtDayLong(selectedDay!)} />
+
         {/* Clock-ordered meal timeline */}
         <DayTimeline meals={dayMeals} />
 
@@ -1403,7 +1574,9 @@ export default function FuelTab({
       {/* Zone 1 — Intake Overview HUD */}
       <IntakeHUD
         totalCal={totalCal} totalP={totalP} totalC={totalC} totalFat={totalFat}
-        loggedDays={loggedDays} calTarget={calTarget} timeFilter={timeFilter}
+        loggedDays={loggedDays} calTarget={calTarget}
+        pTarget={targets.protein} cTarget={targets.carbs} fTarget={targets.fat}
+        timeFilter={timeFilter}
       />
 
       {/* Zone 2 — Intake Timeline (clickable) */}
