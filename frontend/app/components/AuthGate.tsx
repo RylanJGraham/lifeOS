@@ -12,17 +12,30 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   const [authed, setAuthed] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    let settled = false;
+    const settle = (session: any) => {
+      if (settled) return;
+      settled = true;
       if (session) setAuthed(true);
       else router.replace("/login");
-    });
+    };
+
+    // getSession() can hang (auth lock / network); never trap the user on the
+    // spinner — fall through to /login after 5s regardless.
+    const timeout = setTimeout(() => settle(null), 5000);
+    supabase.auth.getSession()
+      .then(({ data: { session } }) => settle(session))
+      .catch(() => settle(null));
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session) setAuthed(true);
       else router.replace("/login");
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      clearTimeout(timeout);
+      subscription.unsubscribe();
+    };
   }, [router]);
 
   if (!authed) {
