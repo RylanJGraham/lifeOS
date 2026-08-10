@@ -38,3 +38,6 @@ desktop.ini
 .strava_tokens.json
 .mi_fitness_auth.json
 .mi_fitness_device_id
+
+# Contains live credentials (Appendix A) — local handoff only
+docs/trading-bot-integration.md

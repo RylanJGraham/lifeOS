@@ -21,6 +21,8 @@ A comprehensive financial dashboard mapping to the `transactions` and `advisor_p
   * **Financials:** The primary investment hub. Displays active stock/crypto positions in a detailed grid. Calculates Unrealized and Realized PnL locally in React, and maps to the `advisor_positions` table. Includes micro-sparklines or localized price charts.
   * **Cash Flow:** Uses compound bar charts (Income vs Expenses) allowing the user to see exactly where cash is moving. Highlights the "Highest Category" (e.g., 'Housing & Utilities') and renders an AI anomaly detection card using a glassmorphic tooltip.
   * **Trends:** Provides mathematical linear regression or runway forecasts based on past spending velocity.
+  * **Signal Intelligence:** Live feed of `advisor_signals` — action badges (BUY/SELL/HOLD), confidence bars, reasoning prose, price targets and stop losses.
+* **Daily Report Modal:** `DailyReportModal.tsx` (header "Daily Report" button) fetches the latest 14 rows of `advisor_daily_reports`, offers date-chip switching, and renders the bot's self-contained `html_content` in a fully sandboxed `<iframe srcdoc>`.
 
 ## 3. Health OS (`/health/page.tsx`)
 An autonomous health command center fetching from `workouts`, `meals`, and `health_metrics`.
