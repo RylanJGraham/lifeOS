@@ -1,18 +1,16 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import InsightBanners from "../../components/InsightBanners";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, ReferenceLine, ComposedChart, Line,
-  PieChart, Pie, Cell, ScatterChart, Scatter
+  ResponsiveContainer, ComposedChart,
+  PieChart, Pie, Cell
 } from "recharts";
 import {
   Wallet, TrendingUp, TrendingDown, PieChart as PieIcon, ArrowRightLeft,
-  Brain, AlertTriangle, ChevronDown, ChevronUp, Check, X,
-  Send, Settings, FileText, Search, Target, DollarSign,
-  BarChart2, Clock, ArrowUpRight, ArrowDownRight, Minus,
-  Shield, Zap, RefreshCw, Info, CreditCard, Layers, Activity
+  FileText, Target, DollarSign, Minus, CreditCard
 } from "lucide-react";
 
 import CashflowWaterfall from "../../components/visualizations/CashflowWaterfall";
@@ -32,7 +30,8 @@ const C = {
   alert: "#DC2626",
 };
 
-const curSym = (c: string) => (c === "EUR" ? "€" : "$");
+const CURRENCY_SYMBOLS: Record<string, string> = { EUR: "€", USD: "$", GBP: "£" };
+const curSym = (c: string) => CURRENCY_SYMBOLS[c] ?? "$";
 const fmt2 = (n: number) => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // ─── Shared Subcomponents ────────────────────────────────────────
@@ -462,7 +461,7 @@ function NetWorthTab({ snapshots, bankBalance, positions }: { snapshots: any[], 
               Net Worth History · {first!.date} → {latest!.date}
             </div>
             <div className="text-xs font-bold font-mono" style={{ color: deltaPos ? C.optimal : C.alert }}>
-              {deltaPos ? "+" : "−"}${Math.abs(delta).toLocaleString(undefined, { maximumFractionDigits: 0 })} ({deltaPos ? "+" : ""}{deltaPct.toFixed(1)}%)
+              {deltaPos ? "+" : "−"}{curSym("EUR")}{Math.abs(delta).toLocaleString(undefined, { maximumFractionDigits: 0 })} ({deltaPos ? "+" : ""}{deltaPct.toFixed(1)}%)
             </div>
           </div>
           <ResponsiveContainer width="100%" height={320}>
@@ -474,8 +473,8 @@ function NetWorthTab({ snapshots, bankBalance, positions }: { snapshots: any[], 
                 </linearGradient>
               </defs>
               <XAxis dataKey="date" stroke="var(--text-tertiary)" fontSize={11} tickLine={false} axisLine={false} />
-              <YAxis tickFormatter={v => `$${(v / 1000).toFixed(0)}K`} stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} domain={["auto", "auto"]} />
-              <Tooltip formatter={(v: number) => `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} contentStyle={{ background: "var(--surface-secondary)", border: "1px solid var(--border-subtle)", borderRadius: "8px", fontSize: 12 }} />
+              <YAxis tickFormatter={v => `${curSym("EUR")}${(v / 1000).toFixed(0)}K`} stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} domain={["auto", "auto"]} />
+              <Tooltip formatter={(v: number) => `${curSym("EUR")}${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} contentStyle={{ background: "var(--surface-secondary)", border: "1px solid var(--border-subtle)", borderRadius: "8px", fontSize: 12 }} />
               <Area type="monotone" dataKey="value" stroke={C.growth} strokeWidth={2.5} fill="url(#nwFill)" name="Net Worth" />
             </AreaChart>
           </ResponsiveContainer>
@@ -498,182 +497,7 @@ function NetWorthTab({ snapshots, bankBalance, positions }: { snapshots: any[], 
   );
 }
 
-// ─── Tab: Portfolio ──────────────────────────────────────────────
-
-function FinancialsTab({ positions }: { positions: any[] }) {
-  if (!positions || positions.length === 0) {
-    return <EmptyState message="No open positions found. Positions logged by the advisor engine will appear here." icon={PieIcon} />;
-  }
-
-  const fmt = fmt2;
-
-  // Positions are mixed USD/EUR — total per currency, never fake an FX conversion
-  const totals: Record<string, { val: number; pnl: number }> = {};
-  positions.forEach(p => {
-    const cur = p.currency || "USD";
-    if (!totals[cur]) totals[cur] = { val: 0, pnl: 0 };
-    totals[cur].val += parseFloat(p.position_value) || 0;
-    totals[cur].pnl += parseFloat(p.unrealized_pnl) || 0;
-  });
-  const mixed = Object.keys(totals).length > 1;
-
-  // Allocation donut — top 8 positions by value + Other (raw values, mixed currencies)
-  const ALLOC_COLORS = [C.equity, C.growth, C.wealth, C.crypto, C.warning, C.alert, "#0D9488", "#64748B", C.cash];
-  const sortedByVal = [...positions].sort((a, b) => (parseFloat(b.position_value) || 0) - (parseFloat(a.position_value) || 0));
-  const totalVal = sortedByVal.reduce((a, p) => a + (parseFloat(p.position_value) || 0), 0);
-  const topAlloc = sortedByVal.slice(0, 8);
-  const otherVal = sortedByVal.slice(8).reduce((a, p) => a + (parseFloat(p.position_value) || 0), 0);
-  const allocData = topAlloc.map(p => ({
-    name: p.symbol,
-    value: parseFloat(p.position_value) || 0,
-    currency: p.currency || "USD",
-  }));
-  if (otherVal > 0) allocData.push({ name: "Other", value: otherVal, currency: "USD" });
-
-  // Per-position P&L bars
-  const pnlData = [...positions]
-    .map(p => ({
-      symbol: p.symbol,
-      pnl: +(parseFloat(p.unrealized_pnl) || 0).toFixed(2),
-      currency: p.currency || "USD",
-    }))
-    .sort((a, b) => b.pnl - a.pnl);
-
-  return (
-    <div className="space-y-5">
-      {/* KPI Header */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-           <div className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-tertiary)" }}>Total Open Value</div>
-           {Object.entries(totals).map(([cur, t]) => (
-             <div key={cur} className="text-2xl font-black" style={{ fontFamily: "var(--font-mono)", color: C.equity }}>
-               {curSym(cur)}{fmt(t.val)} <span className="text-xs font-bold" style={{ color: "var(--text-tertiary)" }}>{cur}</span>
-             </div>
-           ))}
-        </div>
-        <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-           <div className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: "var(--text-tertiary)" }}>Unrealized P&L</div>
-           {Object.entries(totals).map(([cur, t]) => (
-             <div key={cur} className="text-2xl font-black" style={{ fontFamily: "var(--font-mono)", color: t.pnl >= 0 ? C.optimal : C.critical }}>
-               {t.pnl >= 0 ? "+" : "−"}{curSym(cur)}{fmt(Math.abs(t.pnl))} <span className="text-xs font-bold" style={{ color: "var(--text-tertiary)" }}>{cur}</span>
-             </div>
-           ))}
-        </div>
-      </div>
-      {mixed && (
-        <div className="text-[11px] -mt-2" style={{ color: "var(--text-tertiary)" }}>
-          Portfolio holds mixed currencies — totals are shown per currency, no FX conversion applied.
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Allocation donut */}
-        <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-          <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: "var(--text-tertiary)" }}>Allocation by Position Value</div>
-          <div className="text-[10px] mb-3" style={{ color: "var(--text-tertiary)" }}>Share of raw position value · mixed USD/EUR</div>
-          <div className="h-[200px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={allocData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={55}
-                  outerRadius={85}
-                  paddingAngle={4}
-                  dataKey="value"
-                  stroke="none"
-                >
-                  {allocData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={ALLOC_COLORS[index % ALLOC_COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip
-                  formatter={(value: number, name: string, props: any) => [`${curSym(props.payload.currency)}${fmt2(value)}`, name]}
-                  contentStyle={{ background: "var(--surface-secondary)", border: "1px solid var(--border-subtle)", borderRadius: "8px", fontSize: 12 }}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="space-y-2 mt-3 overflow-auto max-h-[160px]">
-            {allocData.map((item, idx) => (
-              <div key={item.name} className="flex justify-between items-center gap-2 text-xs">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: ALLOC_COLORS[idx % ALLOC_COLORS.length] }}></div>
-                  <span className="font-semibold truncate">{item.name}</span>
-                </div>
-                <span className="font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
-                  {totalVal > 0 ? `${((item.value / totalVal) * 100).toFixed(1)}%` : "—"}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Per-position P&L bars */}
-        <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-          <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: "var(--text-tertiary)" }}>Unrealized P&L by Position</div>
-          <div className="text-[10px] mb-3" style={{ color: "var(--text-tertiary)" }}>Each bar in the position's own currency (see table)</div>
-          <div style={{ height: Math.max(220, pnlData.length * 30) }} className="w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={pnlData} layout="vertical" margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
-                <XAxis type="number" stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} />
-                <YAxis type="category" dataKey="symbol" stroke="var(--text-tertiary)" fontSize={10} tickLine={false} axisLine={false} width={50} />
-                <Tooltip
-                  formatter={(value: number, name: string, props: any) => [`${curSym(props.payload.currency)}${fmt2(value)}`, "P&L"]}
-                  cursor={{ fill: "rgba(0,0,0,0.03)" }}
-                  contentStyle={{ background: "var(--surface-secondary)", border: "1px solid var(--border-subtle)", borderRadius: "8px", fontSize: 12 }}
-                />
-                <ReferenceLine x={0} stroke="var(--border-active)" />
-                <Bar dataKey="pnl" radius={[0, 3, 3, 0]} maxBarSize={16}>
-                  {pnlData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.pnl >= 0 ? C.optimal : C.alert} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
-
-      {/* Positions Table */}
-      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-        <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>Open Positions</div>
-        <div className="space-y-3">
-          {positions.map(p => {
-            const sym  = curSym(p.currency);
-            const qty  = parseFloat(p.quantity) || 0;
-            const cost = parseFloat(p.average_cost) || 0;
-            const val  = parseFloat(p.position_value) || 0;
-            const pnl  = parseFloat(p.unrealized_pnl) || 0;
-            return (
-              <div key={p.id ?? p.symbol} className="flex items-center justify-between p-4 rounded-xl" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-                <div>
-                  <div className="font-bold text-lg flex items-center gap-2">
-                    {p.symbol}
-                    {p.latest_signal_action && (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider" style={{ background: "rgba(91,66,232,0.1)", color: C.equity, border: "1px solid rgba(91,66,232,0.3)" }}>
-                        AI: {p.latest_signal_action}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-xs" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>{qty.toFixed(4)} shares @ {sym}{cost.toFixed(2)}</div>
-                </div>
-                <div className="text-right">
-                  <div className="font-bold" style={{ fontFamily: "var(--font-mono)" }}>{sym}{fmt(val)}</div>
-                  <div className="text-xs font-bold" style={{ fontFamily: "var(--font-mono)", color: pnl >= 0 ? C.optimal : C.critical }}>
-                     {pnl >= 0 ? "+" : "−"}{sym}{fmt(Math.abs(pnl))}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
+// ─── Tab: Cash Flow ──────────────────────────────────────────────
 function CashflowTab({ transactions, timeFilter, bankBalance, bankBalanceStored, bankBalanceAt, savingsTarget }: {
   transactions: any[], timeFilter: string,
   bankBalance: number | null, bankBalanceStored: number | null, bankBalanceAt: string | null,
@@ -872,97 +696,6 @@ function CashflowTab({ transactions, timeFilter, bankBalance, bankBalanceStored,
   );
 }
 
-// ─── Tab: Signal Intelligence ────────────────────────────────────
-
-function SignalIntelligenceTab() {
-  const [signals, setSignals] = useState<any[]>([]);
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    supabase.from('advisor_signals').select('*').order('generated_at', { ascending: false }).limit(50).then(res => {
-      if (res.data) setSignals(res.data);
-      setLoaded(true);
-    });
-  }, []);
-
-  if (loaded && signals.length === 0) {
-    return <EmptyState message="No trade signals yet. Signals generated by the advisor swarm will appear here." icon={Zap} />;
-  }
-
-  const actionStyle = (action: string) => {
-    const a = (action || "").toUpperCase();
-    if (a === "BUY" || a === "ADD") return { color: C.optimal, bg: "rgba(5,150,105,0.1)", border: "rgba(5,150,105,0.3)" };
-    if (a === "SELL" || a === "TRIM") return { color: C.alert, bg: "rgba(220,38,38,0.08)", border: "rgba(220,38,38,0.3)" };
-    return { color: C.equity, bg: "rgba(91,66,232,0.1)", border: "rgba(91,66,232,0.3)" };
-  };
-
-  return (
-    <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-      <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>
-        Advisor Signals · Latest {signals.length}
-      </div>
-      <div className="space-y-3">
-        {signals.map(s => {
-          const st = actionStyle(s.action);
-          const conf = s.confidence != null ? parseFloat(s.confidence) : null;
-          // Accept both 0–1 and 0–100 confidence scales
-          const confPct = conf == null ? null : conf <= 1 ? conf * 100 : conf;
-          return (
-            <div key={s.id} className="p-4 rounded-xl" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold" style={{ color: "var(--text-primary)" }}>{s.symbol}</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider"
-                    style={{ background: st.bg, color: st.color, border: `1px solid ${st.border}` }}>
-                    {s.action}
-                  </span>
-                  {s.signal_type && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider"
-                      style={{ background: "var(--surface-secondary)", color: "var(--text-tertiary)", border: "1px solid var(--border-subtle)" }}>
-                      {s.signal_type}
-                    </span>
-                  )}
-                  {s.executed && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider"
-                      style={{ background: "rgba(5,150,105,0.1)", color: C.optimal, border: "1px solid rgba(5,150,105,0.25)" }}>
-                      Executed
-                    </span>
-                  )}
-                </div>
-                <span className="text-[11px] font-mono" style={{ color: "var(--text-tertiary)" }}>
-                  {s.generated_at ? new Date(s.generated_at).toLocaleString() : ""}
-                </span>
-              </div>
-
-              {confPct != null && (
-                <div className="flex items-center gap-2 mt-2">
-                  <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--surface-secondary)" }}>
-                    <motion.div className="h-full rounded-full" style={{ background: st.color }}
-                      initial={{ width: 0 }} animate={{ width: `${Math.min(100, confPct)}%` }}
-                      transition={{ duration: 0.6, ease: [0, 0, 0.2, 1] }} />
-                  </div>
-                  <span className="text-[10px] font-bold font-mono shrink-0" style={{ color: st.color }}>{confPct.toFixed(0)}%</span>
-                </div>
-              )}
-
-              {s.reasoning && (
-                <div className="text-xs mt-2" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>{s.reasoning}</div>
-              )}
-
-              {(s.price_target != null || s.stop_loss != null) && (
-                <div className="flex gap-3 mt-2 text-[11px] font-mono" style={{ color: "var(--text-tertiary)" }}>
-                  {s.price_target != null && <span>Target ${parseFloat(s.price_target).toFixed(2)}</span>}
-                  {s.stop_loss != null && <span>Stop ${parseFloat(s.stop_loss).toFixed(2)}</span>}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 // ─── Main Page ───────────────────────────────────────────────────
 export default function WealthOS() {
   const [activeTab, setActiveTab] = useState("spending");
@@ -972,10 +705,6 @@ export default function WealthOS() {
   const [profile, setProfile] = useState<any>(null);
 
   useEffect(() => {
-    const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!SUPABASE_URL || !SUPABASE_KEY) return;
-
     supabase.from('advisor_positions_with_signals').select('*').eq('status', 'open').order('position_value', { ascending: false }).then(res => {
       if (res.data) setPositions(res.data);
     });
@@ -1020,9 +749,7 @@ export default function WealthOS() {
   const tabs = [
     { id: "spending",   label: "Capital Outflow", icon: ArrowRightLeft, color: C.wealth },
     { id: "networth",  label: "Net Worth",        icon: TrendingUp,     color: C.growth },
-    { id: "financials",label: "Financials",        icon: PieIcon,        color: C.equity },
     { id: "cashflow",  label: "Cash Flow",         icon: DollarSign,     color: C.crypto },
-    { id: "signals",   label: "Signal Intelligence",icon: Zap,           color: C.alert  },
   ];
 
   const tabVariants: any = {
@@ -1069,7 +796,21 @@ export default function WealthOS() {
           </div>
         </div>
 
+        {/* Engine insight banners (cash runway, weekly review) */}
+        <div className="mb-4">
+          <InsightBanners domains={["cash", "goals"]} />
+        </div>
 
+        {/* Portfolio & research detail moved to the dedicated Investments page */}
+        <a href="/investments"
+          className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl mb-4 text-xs font-bold transition-all"
+          style={{ background: "rgba(5,150,105,0.06)", color: C.wealth, border: "1px solid rgba(5,150,105,0.2)" }}>
+          <span className="flex items-center gap-2 min-w-0">
+            <PieIcon size={13} className="shrink-0" />
+            <span className="truncate">Portfolio positions, trade signals &amp; research candidates now live in Investments</span>
+          </span>
+          <span className="uppercase tracking-widest text-[10px] shrink-0">Open Investments →</span>
+        </a>
 
         {/* Tab Nav */}
         <div className="flex overflow-x-auto" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
@@ -1089,9 +830,7 @@ export default function WealthOS() {
           <motion.div key={activeTab} variants={tabVariants} initial="hidden" animate="visible" exit="exit">
             {activeTab === "spending"   && <SpendingTab transactions={filteredTransactions} allTransactions={transactions} timeFilter={timeFilter} />}
             {activeTab === "networth"   && <NetWorthTab snapshots={getFilteredData(snapshots, timeFilter, "record_date")} bankBalance={liveBalance} positions={positions} />}
-            {activeTab === "financials" && <FinancialsTab positions={positions} />}
             {activeTab === "cashflow"   && <CashflowTab transactions={filteredTransactions} timeFilter={timeFilter} bankBalance={liveBalance} bankBalanceStored={profile?.bank_balance ?? null} bankBalanceAt={profile?.bank_balance_updated_at ?? null} savingsTarget={savingsTarget} />}
-            {activeTab === "signals"    && <SignalIntelligenceTab />}
           </motion.div>
         </AnimatePresence>
       </div>

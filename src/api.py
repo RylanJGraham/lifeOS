@@ -45,19 +45,27 @@ async def startup_event():
     ngrok_domain = os.getenv("NGROK_DOMAIN")
     if bot_token and ngrok_domain:
         webhook_url = f"https://{ngrok_domain}/webhook"
-        try:
-            import httpx
-            async with httpx.AsyncClient() as client:
-                res = await client.get(f"https://api.telegram.org/bot{bot_token}/setWebhook?url={webhook_url}")
+        import asyncio
+        import httpx
+        # Retry with backoff: at boot the service can start before the network
+        # (DNS) is up, and a single failed attempt leaves the bot unreachable.
+        for attempt in range(1, 6):
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    res = await client.get(f"https://api.telegram.org/bot{bot_token}/setWebhook?url={webhook_url}")
                 if res.status_code == 200:
                     print(f"Telegram webhook successfully registered to: {webhook_url}")
                     SupabaseLogger.info("api", f"Telegram webhook registered to {webhook_url}")
+                    break
+                print(f"Failed to register Telegram webhook: {res.text}")
+                SupabaseLogger.error("api", f"Failed to register Telegram webhook: {res.text}")
+                break
+            except Exception as e:
+                print(f"Error registering Telegram webhook (attempt {attempt}/5): {e}")
+                if attempt < 5:
+                    await asyncio.sleep(10 * attempt)
                 else:
-                    print(f"Failed to register Telegram webhook: {res.text}")
-                    SupabaseLogger.error("api", f"Failed to register Telegram webhook: {res.text}")
-        except Exception as e:
-            print(f"Error registering Telegram webhook: {e}")
-            SupabaseLogger.error("api", f"Error registering Telegram webhook: {e}")
+                    SupabaseLogger.error("api", f"Error registering Telegram webhook after 5 attempts: {e}")
 
 @app.get("/status")
 async def status_check():
@@ -363,6 +371,44 @@ async def chat(req: ChatRequest, _=Depends(require_api_key)):
         return await run_in_threadpool(handle_chat, req.message, req.image)
     except Exception as e:
         SupabaseLogger.error("web-chat", f"Chat request failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class GoalsChatRequest(BaseModel):
+    message: str = ""
+    history: list[dict] = []
+
+@app.post("/api/goals/chat")
+async def goals_chat(req: GoalsChatRequest, _=Depends(require_api_key)):
+    """Chat with the goal strategist; may create/update/delete/check-in goals."""
+    if not (req.message or "").strip():
+        raise HTTPException(status_code=400, detail="Message is required.")
+    from fastapi.concurrency import run_in_threadpool
+    from goals_service import handle_goals_chat
+    try:
+        return await run_in_threadpool(handle_goals_chat, req.message, (req.history or [])[-20:])
+    except Exception as e:
+        SupabaseLogger.error("goals-chat", f"Goals chat request failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class PersonaChatRequest(BaseModel):
+    persona: str = ""
+    message: str = ""
+    history: list[dict] = []
+
+@app.post("/api/personas/chat")
+async def personas_chat(req: PersonaChatRequest, _=Depends(require_api_key)):
+    """Chat with a care-team specialist (doctor | nutritionist | pt);
+    may create goals (with check-in cadences) or log durable notes."""
+    if req.persona not in ("doctor", "nutritionist", "pt"):
+        raise HTTPException(status_code=400, detail="persona must be one of: doctor, nutritionist, pt")
+    if not (req.message or "").strip():
+        raise HTTPException(status_code=400, detail="Message is required.")
+    from fastapi.concurrency import run_in_threadpool
+    from persona_service import handle_persona_chat
+    try:
+        return await run_in_threadpool(handle_persona_chat, req.persona, req.message, (req.history or [])[-20:])
+    except Exception as e:
+        SupabaseLogger.error("persona-chat", f"Persona chat request failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/pipelines")

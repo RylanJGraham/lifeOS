@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   Activity, Wallet, Settings, LayoutGrid, Bell, MessageSquare, Server,
-  Menu, X, LogOut,
+  Menu, X, LogOut, TrendingUp, Target, Stethoscope,
 } from "lucide-react";
 import AuthGate from "../components/AuthGate";
 import { supabase } from "../../utils/supabaseClient";
@@ -14,6 +14,9 @@ const NAV_MODULES = [
   { href: "/", icon: LayoutGrid, label: "The Nexus", accent: "var(--accent-trends)" },
   { href: "/health", icon: Activity, label: "Health OS", accent: "var(--accent-cardiovascular)" },
   { href: "/finance", icon: Wallet, label: "Wealth OS", accent: "var(--accent-wealth)" },
+  { href: "/investments", icon: TrendingUp, label: "Investments", accent: "var(--accent-wealth)" },
+  { href: "/goals", icon: Target, label: "Goals", accent: "var(--accent-trends)" },
+  { href: "/specialist", icon: Stethoscope, label: "Specialist", accent: "var(--accent-kinematic)" },
   { href: "/chat", icon: MessageSquare, label: "Chat", accent: "var(--accent-sleep)" },
 ];
 

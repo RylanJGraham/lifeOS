@@ -11,7 +11,6 @@ interface DailyReport {
   title: string | null;
   status: string | null;
   report_type: string | null;
-  html_content: string | null;
   market_regime: string | null;
   vix_level: number | null;
   portfolio_value: number | null;
@@ -24,13 +23,16 @@ export default function DailyReportModal({ open, onClose }: { open: boolean; onC
   const [reports, setReports] = useState<DailyReport[]>([]);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // Full HTML is heavy — fetch it lazily per report, cached by report id
+  const [htmlById, setHtmlById] = useState<Record<string, string | null>>({});
+  const [htmlLoading, setHtmlLoading] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setLoaded(false);
     supabase
       .from("advisor_daily_reports")
-      .select("id, report_date, title, status, report_type, html_content, market_regime, vix_level, portfolio_value, generated_at")
+      .select("id, report_date, title, status, report_type, market_regime, vix_level, portfolio_value, generated_at")
       .order("report_date", { ascending: false })
       .limit(14)
       .then(res => {
@@ -41,6 +43,27 @@ export default function DailyReportModal({ open, onClose }: { open: boolean; onC
       });
   }, [open]);
 
+  const report = reports.find(r => r.report_date === selectedDate) || null;
+  const reportId = report?.id ?? null;
+  const htmlContent = reportId ? htmlById[reportId] : undefined;
+
+  useEffect(() => {
+    if (!open || !reportId || htmlContent !== undefined) return;
+    let cancelled = false;
+    setHtmlLoading(true);
+    supabase
+      .from("advisor_daily_reports")
+      .select("html_content")
+      .eq("id", reportId)
+      .single()
+      .then(res => {
+        if (cancelled) return;
+        setHtmlById(prev => ({ ...prev, [reportId]: (res.data?.html_content as string | null) ?? null }));
+        setHtmlLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [open, reportId, htmlContent]);
+
   const onKey = useCallback((e: KeyboardEvent) => {
     if (e.key === "Escape") onClose();
   }, [onClose]);
@@ -50,8 +73,6 @@ export default function DailyReportModal({ open, onClose }: { open: boolean; onC
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onKey]);
-
-  const report = reports.find(r => r.report_date === selectedDate) || null;
 
   return (
     <AnimatePresence>
@@ -123,12 +144,12 @@ export default function DailyReportModal({ open, onClose }: { open: boolean; onC
 
             {/* Body — bot-generated HTML in a fully sandboxed iframe */}
             <div className="flex-1 overflow-hidden" style={{ minHeight: "400px" }}>
-              {report?.html_content ? (
+              {htmlContent ? (
                 <iframe
-                  key={report.id}
-                  srcDoc={report.html_content}
+                  key={report!.id}
+                  srcDoc={htmlContent}
                   sandbox=""
-                  title={`Daily report ${report.report_date}`}
+                  title={`Daily report ${report!.report_date}`}
                   className="w-full h-full border-0"
                   style={{ minHeight: "60vh", background: "#fff" }}
                 />
@@ -136,11 +157,13 @@ export default function DailyReportModal({ open, onClose }: { open: boolean; onC
                 <div className="flex flex-col items-center justify-center h-full p-10 gap-3">
                   <Activity size={20} style={{ color: "var(--text-tertiary)" }} />
                   <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--text-secondary)" }}>
-                    {loaded ? "No report yet" : "Loading…"}
+                    {report && htmlLoading ? "Loading report…" : !loaded || (report && htmlContent === undefined) ? "Loading…" : "No report yet"}
                   </div>
-                  <div className="text-xs text-center max-w-xs" style={{ color: "var(--text-tertiary)", lineHeight: 1.6 }}>
-                    The advisor writes its daily HTML report to advisor_daily_reports after each 15:30 CET run.
-                  </div>
+                  {!report && (
+                    <div className="text-xs text-center max-w-xs" style={{ color: "var(--text-tertiary)", lineHeight: 1.6 }}>
+                      The advisor writes its daily HTML report to advisor_daily_reports after each 15:30 CET run.
+                    </div>
+                  )}
                 </div>
               )}
             </div>

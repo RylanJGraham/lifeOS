@@ -2,6 +2,7 @@ import os
 import httpx
 import logging
 import base64
+from datetime import datetime, timezone
 import fitz  # PyMuPDF
 from fastapi import APIRouter, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -116,6 +117,72 @@ def process_telegram_message(chat_id: int, message: dict):
         import asyncio
         asyncio.run(send_telegram_message(chat_id, f"Error executing AI graph: {str(e)}"))
 
+async def answer_callback_query(callback_query_id: str, text: str):
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            f"{TELEGRAM_API_URL}/answerCallbackQuery",
+            json={"callback_query_id": callback_query_id, "text": text},
+        )
+
+
+def process_goal_checkin_callback(chat_id: int, callback_query: dict):
+    """Records a Yes/No answer from a goal_checkin inline button (sent by
+    workers/goal_checkin.py) as a goal_checkins row and updates the streak."""
+    import asyncio
+    try:
+        _, goal_id, answer = callback_query["data"].split(":", 2)
+    except (ValueError, KeyError):
+        logger.error(f"Malformed goal_checkin callback: {callback_query.get('data')}")
+        return
+
+    try:
+        from supabase import create_client
+        url = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
+        sb = create_client(url, os.getenv("SUPABASE_SERVICE_KEY"))
+
+        res = sb.table("goals").select("*").eq("id", goal_id).limit(1).execute()
+        if not res.data:
+            asyncio.run(answer_callback_query(callback_query["id"], "Goal not found."))
+            return
+        goal = res.data[0]
+
+        stayed_on_track = answer == "yes"
+        current = float(goal.get("current_value") or 0)
+        new_value = current + 1 if stayed_on_track else 0
+        note = (
+            f"Check-in ({goal.get('checkin_cadence') or 'manual'}): "
+            f"stayed on track (streak {new_value:g})" if stayed_on_track
+            else f"Check-in ({goal.get('checkin_cadence') or 'manual'}): slipped — streak reset"
+        )
+
+        sb.table("goal_checkins").insert({
+            "goal_id": goal_id,
+            "user_id": goal.get("user_id"),
+            "note": note,
+            "value": new_value,
+        }).execute()
+
+        update_fields = {"current_value": new_value, "updated_at": datetime.now(timezone.utc).isoformat()}
+        target = goal.get("target_value")
+        achieved = stayed_on_track and target is not None and new_value >= float(target)
+        if achieved:
+            update_fields["status"] = "achieved"
+        sb.table("goals").update(update_fields).eq("id", goal_id).execute()
+
+        if achieved:
+            reply = f"🟢 Goal achieved: {goal.get('title')} — target of {float(target):g} {goal.get('unit') or ''} reached. Well done."
+        elif stayed_on_track:
+            reply = f"Logged ✅ {goal.get('title')}: streak now {new_value:g} {goal.get('unit') or 'days'}."
+        else:
+            reply = f"Logged. {goal.get('title')} streak reset — tomorrow is a new day."
+
+        asyncio.run(answer_callback_query(callback_query["id"], "Check-in logged."))
+        asyncio.run(send_telegram_message(chat_id, reply))
+    except Exception as e:
+        logger.error(f"Goal check-in callback error: {e}")
+        asyncio.run(answer_callback_query(callback_query["id"], "Failed to log check-in."))
+
+
 @router.post("/webhook")
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
@@ -123,6 +190,15 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     except Exception as e:
         logger.error(f"Failed to parse Telegram update: {e}")
         return JSONResponse(status_code=400, content={"status": "invalid JSON"})
+
+    if "callback_query" in update:
+        cq = update["callback_query"]
+        chat_id = cq["message"]["chat"]["id"]
+        if (cq.get("data") or "").startswith("goal_checkin:"):
+            background_tasks.add_task(process_goal_checkin_callback, chat_id, cq)
+        else:
+            await answer_callback_query(cq["id"], "Noted.")
+        return JSONResponse(content={"status": "ok"})
 
     if "message" in update:
         message = update["message"]

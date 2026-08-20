@@ -1,16 +1,18 @@
 "use client";
 
 import { motion } from "framer-motion";
+import Link from "next/link";
 import {
   Activity, TrendingUp, TrendingDown, Minus, Heart, Wallet, DollarSign,
   AlertTriangle, CheckCircle, ArrowUpRight, ArrowDownRight, Clock,
-  Moon, Dumbbell, UtensilsCrossed, PiggyBank,
+  Moon, Dumbbell, UtensilsCrossed, PiggyBank, Radar, Stethoscope, Apple, Target,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { supabase } from "../../utils/supabaseClient";
 import { THEME } from "../../utils/theme";
 import PulseRing, { PulseSegment } from "../components/visualizations/PulseRing";
 import AnomalyStream, { LogEntry } from "../components/visualizations/AnomalyStream";
+import { INSIGHT_DOMAIN_META } from "../components/InsightBanners";
 
 // ─── Colour constants ─────────────────────────────────────────────
 const C = {
@@ -392,6 +394,108 @@ function PortfolioQuadrant({ positions }: { positions: any[] }) {
   );
 }
 
+// Research Radar Quadrant — advisor_watchlist candidates under evaluation
+// The conviction_* / interest_state / tracking_since columns come from a pending
+// migration: every read below tolerates their absence.
+const INTEREST_STATE_STYLE: Record<string, { color: string; bg: string; border: string }> = {
+  scouting:  { color: "#475569", bg: "rgba(100,116,139,0.08)", border: "rgba(100,116,139,0.25)" },
+  warming:   { color: "#D97706", bg: "rgba(217,119,6,0.08)",   border: "rgba(217,119,6,0.3)" },
+  convinced: { color: "#059669", bg: "rgba(5,150,105,0.08)",   border: "rgba(5,150,105,0.3)" },
+  cooling:   { color: "#EA580C", bg: "rgba(234,88,12,0.08)",   border: "rgba(234,88,12,0.3)" },
+  dropped:   { color: "#94A3B8", bg: "rgba(148,163,184,0.08)", border: "rgba(148,163,184,0.3)" },
+};
+
+function ResearchRadarQuadrant({ candidates }: { candidates: any[] }) {
+  const hasData = candidates.length > 0;
+
+  return (
+    <div className="card-surface p-5 flex flex-col gap-4 h-full" style={{ borderRadius: "var(--radius-xl)" }}>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-widest" style={{ color: C.textTer }}>Research Radar</div>
+          <div className="text-[10px] font-mono mt-0.5" style={{ color: C.textTer }}>
+            {hasData ? `${candidates.length} candidate${candidates.length === 1 ? "" : "s"} under evaluation` : "advisor watchlist"}
+          </div>
+        </div>
+        <div className="w-8 h-8 rounded-xl flex items-center justify-center"
+          style={{ background: "rgba(91,66,232,0.08)", border: "1px solid rgba(91,66,232,0.2)" }}>
+          <Radar size={15} style={{ color: C.sleep }} />
+        </div>
+      </div>
+
+      {hasData ? (
+        <>
+          <div className="space-y-2">
+            {candidates.map(w => {
+              const stateKey = (w.interest_state || "scouting").toLowerCase();
+              const st = INTEREST_STATE_STYLE[stateKey] || INTEREST_STATE_STYLE.scouting;
+
+              // Conviction 0–100; fall back to last_signal_confidence (0–1 or 0–100 scale)
+              const scoreRaw = parseFloat(w.conviction_score);
+              const confRaw  = parseFloat(w.last_signal_confidence);
+              const conviction = Number.isFinite(scoreRaw) ? scoreRaw
+                : Number.isFinite(confRaw) ? (confRaw <= 1 ? confRaw * 100 : confRaw)
+                : null;
+
+              // conviction_history is jsonb [{date, score, note}] — may arrive as a string
+              let histScores: number[] = [];
+              try {
+                const hist = typeof w.conviction_history === "string" ? JSON.parse(w.conviction_history) : w.conviction_history;
+                if (Array.isArray(hist)) {
+                  histScores = hist.map((h: any) => Number(h?.score)).filter((v: number) => Number.isFinite(v));
+                }
+              } catch { /* malformed history — skip sparkline */ }
+
+              const weeks = w.tracking_since
+                ? Math.max(0, Math.floor((Date.now() - new Date(w.tracking_since).getTime()) / (7 * 86400000)))
+                : null;
+
+              return (
+                <div key={w.id ?? w.symbol} className="p-3 rounded-xl flex items-center gap-3"
+                  style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                      <span className="text-xs font-bold" style={{ color: C.text }}>{w.symbol}</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider"
+                        style={{ background: st.bg, color: st.color, border: `1px solid ${st.border}` }}>
+                        {w.interest_state || "scouting"}
+                      </span>
+                      {weeks != null && (
+                        <span className="text-[9px] font-mono" style={{ color: C.textTer }}>{weeks}w tracked</span>
+                      )}
+                    </div>
+                    {conviction != null && (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: C.border }}>
+                          <motion.div className="h-full rounded-full" style={{ background: st.color }}
+                            initial={{ width: 0 }} animate={{ width: `${Math.min(100, conviction)}%` }}
+                            transition={{ duration: 0.6, ease: [0, 0, 0.2, 1] }} />
+                        </div>
+                        <span className="text-[10px] font-bold font-mono shrink-0" style={{ color: st.color }}>
+                          {conviction.toFixed(0)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  {histScores.length >= 2 && <MiniSparkline data={histScores} color={st.color} />}
+                </div>
+              );
+            })}
+          </div>
+
+          <a href="/investments" className="text-[10px] font-bold mt-auto" style={{ color: C.sleep }}>
+            Open Investments →
+          </a>
+        </>
+      ) : (
+        <EmptyState icon={Radar} title="No candidates yet"
+          message="The scout hasn't surfaced candidates yet. Symbols under evaluation will appear here once the advisor starts scouting." />
+      )}
+    </div>
+  );
+}
+
 // Cash Flow Quadrant — transactions within the selected time range
 function CashFlowQuadrant({ transactions, rangeLabel, bankBalance }: { transactions: any[]; rangeLabel: string; bankBalance?: number | null }) {
   const hasData = transactions.length > 0;
@@ -562,15 +666,153 @@ function ActivityFeed({ logs }: { logs: LogEntry[] }) {
   );
 }
 
+// ─── Care Team strip — latest insight per specialist persona ─────
+const CARE_TEAM = [
+  { domain: "doctor",       name: "Dr. Ada", title: "Doctor",           icon: Stethoscope, color: "#E03535" },
+  { domain: "nutritionist", name: "Nora",    title: "Nutritionist",     icon: Apple,       color: "#00A878" },
+  { domain: "pt",           name: "Kane",    title: "Personal Trainer", icon: Dumbbell,    color: "#E07020" },
+];
+
+function relDay(iso: string): string {
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  return `${days}d ago`;
+}
+
+function CareTeamStrip({ insights }: { insights: any[] }) {
+  const cards = CARE_TEAM.map(p => ({
+    ...p,
+    latest: insights.find(i => i.domain === p.domain) || null, // insights arrive newest-first
+  })).filter(c => c.latest);
+  if (cards.length === 0) return null;
+
+  return (
+    <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-[10px] font-bold uppercase tracking-widest flex items-center gap-2" style={{ color: C.textTer }}>
+          <Stethoscope size={12} /> Care Team
+        </div>
+        <Link href="/specialist" className="text-[10px] font-bold" style={{ color: "var(--accent-sleep)" }}>
+          Open Specialist →
+        </Link>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {cards.map((c, i) => (
+          <motion.div key={c.domain}
+            initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.06 }}
+            className="p-3.5 rounded-xl"
+            style={{ background: `${c.color}06`, border: `1px solid ${c.color}20`, borderLeft: `3px solid ${c.color}` }}>
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-1.5">
+                <c.icon size={12} style={{ color: c.color }} />
+                <span className="text-[11px] font-bold" style={{ color: C.text }}>{c.name}</span>
+                <span className="text-[9px] font-semibold uppercase tracking-widest" style={{ color: C.textTer }}>{c.title}</span>
+              </div>
+              <span className="text-[9px] font-mono" style={{ color: C.textTer }}>{relDay(c.latest.generated_at)}</span>
+            </div>
+            <div className="text-[11px] leading-relaxed line-clamp-3" style={{ color: C.textSec }}>
+              {c.latest.insight_text}
+            </div>
+            {c.latest.action_item && (
+              <div className="text-[10px] font-bold mt-1.5" style={{ color: c.color }}>
+                → {c.latest.action_item}
+              </div>
+            )}
+          </motion.div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Action Items — the hero panel: what needs the user NOW ──────
+// Sources: ai_insights action_items from every engine (personas, readiness,
+// pacing, goals, weekly review), and unanswered goal check-in questions.
+const ACTION_DOMAIN_META = INSIGHT_DOMAIN_META;
+
+function ActionItemsPanel({ insights, pendingCheckins }: { insights: any[]; pendingCheckins: string[] }) {
+  const items = insights.filter(i => i.action_item && !["doctor", "nutritionist", "pt"].includes(i.domain)).slice(0, 6);
+  const total = items.length + pendingCheckins.length;
+
+  return (
+    <div className="card-surface p-5 flex flex-col gap-3 h-full" style={{ borderRadius: "var(--radius-xl)" }}>
+      <div className="flex items-center justify-between">
+        <div className="text-[10px] font-bold uppercase tracking-widest flex items-center gap-2" style={{ color: C.textTer }}>
+          <CheckCircle size={12} /> Action Items
+        </div>
+        <div className="text-[10px] font-bold px-2 py-0.5 rounded-full"
+          style={{
+            background: total > 0 ? "rgba(224,112,32,0.1)" : "rgba(5,150,105,0.1)",
+            color: total > 0 ? "#E07020" : C.optimal,
+            border: `1px solid ${total > 0 ? "rgba(224,112,32,0.25)" : "rgba(5,150,105,0.25)"}`,
+          }}>
+          {total > 0 ? `${total} pending` : "all clear"}
+        </div>
+      </div>
+
+      <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 420 }}>
+        {total === 0 ? (
+          <EmptyState icon={CheckCircle} title="Nothing pending"
+            message="New action items appear here after the evening analysis runs, when a goal hits its target, or when a check-in needs your answer." />
+        ) : (
+          <>
+            {pendingCheckins.map((title, i) => (
+              <motion.div key={`pc-${i}`}
+                initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.05 }}
+                className="p-3 rounded-xl"
+                style={{ background: "rgba(14,165,233,0.06)", border: "1px solid rgba(14,165,233,0.2)", borderLeft: "3px solid #0EA5E9" }}>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Target size={11} style={{ color: "#0EA5E9" }} />
+                  <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: "#0EA5E9" }}>Check-in waiting</span>
+                </div>
+                <div className="text-xs font-bold" style={{ color: C.text }}>{title}</div>
+                <div className="text-[11px] mt-0.5" style={{ color: C.textSec }}>Answer the Yes/No question on Telegram to log today.</div>
+              </motion.div>
+            ))}
+            {items.map((ins, i) => {
+              const meta = ACTION_DOMAIN_META[ins.domain] || ACTION_DOMAIN_META.goals;
+              const IIcon = meta.icon;
+              return (
+                <motion.div key={ins.id}
+                  initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: (pendingCheckins.length + i) * 0.05 }}
+                  className="p-3 rounded-xl"
+                  style={{ background: `${meta.color}06`, border: `1px solid ${meta.color}20`, borderLeft: `3px solid ${meta.color}` }}>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-1.5">
+                      <IIcon size={11} style={{ color: meta.color }} />
+                      <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: meta.color }}>{meta.name}</span>
+                    </div>
+                    <span className="text-[9px] font-mono" style={{ color: C.textTer }}>{relDay(ins.generated_at)}</span>
+                  </div>
+                  <div className="text-[11px] leading-relaxed line-clamp-2" style={{ color: C.textSec }}>{ins.insight_text}</div>
+                  <div className="flex items-start justify-between gap-2 mt-1.5">
+                    <div className="text-[11px] font-bold" style={{ color: meta.color }}>→ {ins.action_item}</div>
+                    <Link href={meta.href} className="text-[10px] font-bold shrink-0" style={{ color: C.textTer }}>open →</Link>
+                  </div>
+                </motion.div>
+              );
+            })}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Page ───────────────────────────────────────────────────
 export default function TheNexus() {
   const [logs,         setLogs]        = useState<LogEntry[]>([]);
   const [healthRows,   setHealthRows]  = useState<any[]>([]);
   const [positions,    setPositions]   = useState<any[]>([]);
+  const [watchlist,    setWatchlist]   = useState<any[]>([]);
   const [transactions, setTxs]         = useState<any[]>([]);
   const [profile,      setProfile]     = useState<any>(null);
   const [meals,        setMeals]       = useState<any[] | null>(null);
   const [workoutRows,  setWorkoutRows] = useState<any[] | null>(null);
+  const [insights,     setInsights]    = useState<any[]>([]);
+  const [pendingCheckins, setPendingCheckins] = useState<string[]>([]);
   const [timeFilter,   setTimeFilter]  = useState("month");
 
   useEffect(() => {
@@ -581,7 +823,7 @@ export default function TheNexus() {
 
     async function fetchAll() {
       try {
-        const [logsRes, metricsRes, posRes, txRes, profileRes, mealsRes, workoutsRes] = await Promise.all([
+        const [logsRes, metricsRes, posRes, txRes, profileRes, mealsRes, workoutsRes, watchRes, insightsRes] = await Promise.all([
           supabase.from("system_logs").select("*").order("timestamp", { ascending: false }).limit(20),
           supabase.from("health_metrics").select("*").gte("recorded_at", monthAgoIso).order("recorded_at", { ascending: true }).limit(90),
           supabase.from("advisor_positions").select("*").eq("status", "open").order("position_value", { ascending: false }),
@@ -589,6 +831,10 @@ export default function TheNexus() {
           supabase.from("user_profiles").select("bank_balance, bank_balance_updated_at, base_salary, protein_target_g").limit(1),
           supabase.from("meals").select("meal_time, protein, calories").gte("meal_time", weekAgoIso).order("meal_time", { ascending: true }),
           supabase.from("workouts").select("workout_date, activity_type, duration_minutes").gte("workout_date", weekAgoIso),
+          // conviction_score is a pending migration — select everything and sort client-side
+          supabase.from("advisor_watchlist").select("*").order("updated_at", { ascending: false }).limit(6),
+          supabase.from("ai_insights").select("id, domain, insight_text, action_item, generated_at")
+            .in("domain", ["doctor", "nutritionist", "pt", "goals", "readiness", "pacing", "bodycomp", "cash", "habits", "correlations"]).order("generated_at", { ascending: false }).limit(30),
         ]);
         if (!logsRes.error    && logsRes.data)            setLogs(logsRes.data as LogEntry[]);
         if (!metricsRes.error && metricsRes.data)         setHealthRows(metricsRes.data);
@@ -597,6 +843,40 @@ export default function TheNexus() {
         if (!profileRes.error && profileRes.data?.length) setProfile(profileRes.data[0]);
         if (!mealsRes.error)                              setMeals(mealsRes.data ?? []);
         if (!workoutsRes.error)                           setWorkoutRows(workoutsRes.data ?? []);
+        if (!insightsRes.error && insightsRes.data)       setInsights(insightsRes.data);
+
+        // Pending goal check-ins: an "auto:" question logged today with no
+        // answer after it means the Telegram question is waiting on the user.
+        const { data: cadGoals } = await supabase
+          .from("goals").select("id, title").eq("status", "active").not("checkin_cadence", "is", null);
+        if (cadGoals?.length) {
+          const startOfToday = new Date();
+          startOfToday.setHours(0, 0, 0, 0);
+          const { data: cins } = await supabase
+            .from("goal_checkins").select("goal_id, note, created_at")
+            .in("goal_id", cadGoals.map(g => g.id))
+            .gte("created_at", startOfToday.toISOString())
+            .order("created_at", { ascending: false });
+          const latestByGoal: Record<string, any> = {};
+          (cins || []).forEach(c => { if (!latestByGoal[c.goal_id]) latestByGoal[c.goal_id] = c; });
+          setPendingCheckins(
+            cadGoals
+              .filter(g => (latestByGoal[g.id]?.note || "").startsWith("auto:"))
+              .map(g => g.title)
+          );
+        } else {
+          setPendingCheckins([]);
+        }
+        if (!watchRes.error && watchRes.data) {
+          const ranked = [...watchRes.data].sort((a, b) => {
+            const sa = parseFloat(a.conviction_score), sb = parseFloat(b.conviction_score);
+            if (Number.isFinite(sa) && Number.isFinite(sb)) return sb - sa;
+            if (Number.isFinite(sa)) return -1;
+            if (Number.isFinite(sb)) return 1;
+            return 0; // no conviction column yet — keep updated_at desc from the query
+          });
+          setWatchlist(ranked);
+        }
       } catch (e) {
         console.error("Nexus fetch error:", e);
       }
@@ -681,7 +961,7 @@ export default function TheNexus() {
         </div>
       </motion.div>
 
-      {/* ROW 1: Life Pulse + Anomaly Stream */}
+      {/* ROW 1: Life Pulse + Action Items (the hero: status + what to do) */}
       <motion.div variants={item} className="grid grid-cols-12 gap-6 items-stretch">
         <div className="col-span-12 md:col-span-5 xl:col-span-4 card-surface p-6" style={{ borderRadius: "var(--radius-xl)" }}>
           <div className="flex items-center justify-between mb-4">
@@ -714,19 +994,32 @@ export default function TheNexus() {
           </div>
         </div>
         <div className="col-span-12 md:col-span-7 xl:col-span-8">
-          <AnomalyStream logs={logs} />
+          <ActionItemsPanel insights={insights} pendingCheckins={pendingCheckins} />
         </div>
       </motion.div>
 
-      {/* ROW 2: Health + Portfolio Quadrants */}
-      <motion.div variants={item} className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
-        <HealthQuadrant rows={healthRows} sessions={sessionCount} />
-        <PortfolioQuadrant positions={positions} />
+      {/* ROW 1b: Care Team — latest specialist insights */}
+      {insights.length > 0 && (
+        <motion.div variants={item}>
+          <CareTeamStrip insights={insights} />
+        </motion.div>
+      )}
+
+      {/* ROW 2: Health + Portfolio + Research Radar Quadrants */}
+      <motion.div variants={item} className="grid grid-cols-12 gap-6 items-stretch">
+        <div className="col-span-12 lg:col-span-4"><HealthQuadrant rows={healthRows} sessions={sessionCount} /></div>
+        <div className="col-span-12 lg:col-span-4"><PortfolioQuadrant positions={positions} /></div>
+        <div className="col-span-12 lg:col-span-4"><ResearchRadarQuadrant candidates={watchlist} /></div>
       </motion.div>
 
-      {/* ROW 3: Cash Flow + Activity Feed */}
-      <motion.div variants={item} className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
+      {/* ROW 3: Cash Flow */}
+      <motion.div variants={item}>
         <CashFlowQuadrant transactions={filteredTxs} rangeLabel={RANGE_LABEL[timeFilter]} bankBalance={liveBalance} />
+      </motion.div>
+
+      {/* ROW 4 (bottom): system logs — useful but not the headline */}
+      <motion.div variants={item} className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
+        <AnomalyStream logs={logs} />
         <ActivityFeed logs={logs} />
       </motion.div>
 

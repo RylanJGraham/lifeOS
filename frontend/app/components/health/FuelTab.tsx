@@ -96,6 +96,36 @@ function useNutritionTargets(): NutritionTargets {
   return targets;
 }
 
+interface ProfileInfo {
+  age: number | null;
+  sex: string | null;
+  goal: string | null;
+  activityLevel: string | null;
+}
+
+function useProfileInfo(): ProfileInfo {
+  const [profile, setProfile] = useState<ProfileInfo>({ age: null, sex: null, goal: null, activityLevel: null });
+  useEffect(() => {
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) return;
+    (async () => {
+      const { data, error } = await supabase
+        .from("user_profiles")
+        .select("age, sex, goal, activity_level")
+        .limit(1);
+      if (!error && data?.[0]) {
+        const p = data[0];
+        setProfile({
+          age:           p.age ?? null,
+          sex:           p.sex ?? null,
+          goal:          p.goal ?? null,
+          activityLevel: p.activity_level ?? null,
+        });
+      }
+    })();
+  }, []);
+  return profile;
+}
+
 function StatusBadge({ status }: { status: "optimal" | "warning" | "critical" | "low" }) {
   const map = {
     optimal: { label: "Optimal", bg: "rgba(5,150,105,0.12)", color: C.optimal, border: "rgba(5,150,105,0.3)" },
@@ -678,15 +708,22 @@ const MICRO_STATUS_COLOR: Record<MicroStatus, string> = {
   low: C.critical, ok: C.warning, covered: C.optimal, over: C.critical,
 };
 
-function buildMicroRow(key: string, avg: number): MicroRow {
+function buildMicroRow(key: string, avg: number, profile?: ProfileInfo): MicroRow {
   const meta = NUTRIENT_META[key] || {
     name: key.replace(/_dv_pct$/, "").replace(/_/g, " ").replace(/\b\w/g, ch => ch.toUpperCase()),
     group: MICRO_GROUP_VIT, unit: "%DV" as const, goal: 100, kind: "goal" as const,
   };
+  // Sex-specific reference intakes (adults 19-50) for the raw-unit nutrients.
+  // The %DV values themselves are computed by the backend against the
+  // adult-male table, so only these absolute goals are adjusted here.
+  let goal = meta.goal;
+  const female = profile?.sex?.toLowerCase() === "female";
+  if (key === "fiber") goal = profile?.sex ? (female ? 25 : 38) : 30;
+  if (key === "potassium_mg") goal = profile?.sex ? (female ? 2600 : 3400) : 3500;
   const status: MicroStatus = meta.kind === "limit"
-    ? (avg > meta.goal ? "over" : "covered")
+    ? (avg > goal ? "over" : "covered")
     : (avg >= 90 ? "covered" : avg >= 50 ? "ok" : "low");
-  const barPct = Math.min(150, (avg / meta.goal) * 100);
+  const barPct = Math.min(150, (avg / goal) * 100);
   const valueLabel = meta.unit === "%DV"
     ? `${Math.round(avg)}% DV`
     : meta.unit === "mg"
@@ -695,7 +732,19 @@ function buildMicroRow(key: string, avg: number): MicroRow {
   return { key, name: meta.name, group: meta.group, avg, barPct, valueLabel, status };
 }
 
+// High-impact nutrients for an active adult (training raises demand for all of
+// these). Shown as a priority strip above the full micronutrient list.
+const PRIORITY_NUTRIENTS: { key: string; why: string; foods: string }[] = [
+  { key: "vitamin_d_dv_pct", why: "Hormone production, bone density, immunity — indoor lifestyles run chronically low.", foods: "oily fish, eggs, fortified dairy; supplement in winter" },
+  { key: "magnesium_dv_pct", why: "Sleep quality, muscle relaxation and recovery.", foods: "nuts, dark chocolate, leafy greens" },
+  { key: "zinc_dv_pct",      why: "Testosterone, immunity and protein synthesis.", foods: "beef, shellfish, pumpkin seeds" },
+  { key: "omega_3_dv_pct",   why: "Inflammation control, joint and brain health under high training volume.", foods: "salmon, sardines, walnuts" },
+  { key: "calcium_dv_pct",   why: "Bone strength under barbell load.", foods: "dairy, sardines, tofu" },
+  { key: "iron_dv_pct",      why: "Oxygen transport — a deficit shows up as gym fatigue first.", foods: "red meat, lentils, spinach" },
+];
+
 function MicroPanel({ dbMeals, timeFilter, dayLabel }: { dbMeals: any[]; timeFilter: string; dayLabel?: string }) {
+  const profile = useProfileInfo();
   const rows = useMemo<MicroRow[]>(() => {
     // Sum each nutrient per local day, then average over logged days only —
     // days without logged food don't dilute the average.
@@ -715,9 +764,9 @@ function MicroPanel({ dbMeals, timeFilter, dayLabel }: { dbMeals: any[]; timeFil
     // Attention sort: low/over first, then ok, then covered; alphabetical within
     const rank: Record<MicroStatus, number> = { low: 0, over: 0, ok: 1, covered: 2 };
     return Object.entries(avg)
-      .map(([k, v]) => buildMicroRow(k, v))
+      .map(([k, v]) => buildMicroRow(k, v, profile))
       .sort((a, b) => rank[a.status] - rank[b.status] || a.name.localeCompare(b.name));
-  }, [dbMeals]);
+  }, [dbMeals, profile]);
 
   const covered = rows.filter(r => r.status === "covered").length;
   const low     = rows.filter(r => r.status === "low").length;
@@ -764,6 +813,50 @@ function MicroPanel({ dbMeals, timeFilter, dayLabel }: { dbMeals: any[]; timeFil
         </div>
       ) : (
         <>
+          {(() => {
+            const ageSex = [profile.age, profile.sex ? profile.sex[0].toUpperCase() : null].filter(Boolean).join("");
+            const subtitle = [
+              ageSex ? `High-impact for an active ${ageSex}` : "High-impact nutrients for an active adult",
+              profile.goal ? `goal: ${profile.goal}` : null,
+              profile.activityLevel ? profile.activityLevel : null,
+            ].filter(Boolean).join(" · ");
+            return (
+              <div className="mb-5">
+                <div className="text-[10px] font-bold uppercase tracking-widest mb-0.5" style={{ color: C.textTer }}>
+                  Priority for you
+                </div>
+                <div className="text-[11px] mb-3" style={{ color: C.textSec }}>{subtitle}</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {PRIORITY_NUTRIENTS.map((p, i) => {
+                    const row = rows.find(r => r.key === p.key);
+                    const col = row ? MICRO_STATUS_COLOR[row.status] : C.textTer;
+                    return (
+                      <motion.div key={p.key}
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.05 }}
+                        className="p-3 rounded-xl"
+                        style={{ background: "var(--surface-tertiary)", border: `1px solid ${col}30` }}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-[11px] font-bold" style={{ color: C.textSec }}>{NUTRIENT_META[p.key].name}</div>
+                          <div className="text-[11px] font-black font-mono" style={{ color: col }}>
+                            {row ? row.valueLabel : "no data"}
+                          </div>
+                        </div>
+                        <div className="text-[10px]" style={{ color: C.textTer, lineHeight: 1.5 }}>{p.why}</div>
+                        {(!row || row.status === "low") && (
+                          <div className="text-[10px] mt-1.5 font-bold" style={{ color: C.warning, lineHeight: 1.5 }}>
+                            Eat: {p.foods}
+                          </div>
+                        )}
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
           {MICRO_GROUP_ORDER.map(group => {
             const groupRows = rows.filter(r => r.group === group);
             if (groupRows.length === 0) return null;
@@ -806,254 +899,6 @@ function MicroPanel({ dbMeals, timeFilter, dayLabel }: { dbMeals: any[]; timeFil
             Estimates from logged meals — supplements with label values included. Days without logged food aren't counted.
           </div>
         </>
-      )}
-    </div>
-  );
-}
-
-// ─── Saved Items (known_items) ───────────────────────────────────
-// Source: known_items — supplements/habits the chat agent auto-learns.
-// The agent matches by name/alias and uses these exact macros on future logs.
-function relTime(iso?: string | null): string {
-  if (!iso) return "never";
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
-
-function MacroChip({ label, val, color }: { label: string; val: number | null; color: string }) {
-  return (
-    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded"
-      style={{ background: `${color}12`, color, border: `1px solid ${color}25`, fontFamily: "var(--font-mono)" }}>
-      {label} {val ?? "–"}
-    </span>
-  );
-}
-
-const EMPTY_ITEM_FORM = { name: "", aliases: "", calories: "", protein: "", carbs: "", fat: "" };
-
-function SavedItemsPanel() {
-  const [items, setItems] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ ...EMPTY_ITEM_FORM });
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ calories: "", protein: "", carbs: "", fat: "" });
-
-  const fetchItems = async () => {
-    const { data, error } = await supabase
-      .from("known_items")
-      .select("*")
-      .order("use_count", { ascending: false })
-      .order("created_at", { ascending: false });
-    if (!error && data) setItems(data);
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) { setLoading(false); return; }
-    fetchItems();
-  }, []);
-
-  const getUserId = async () => {
-    const { data: profile } = await supabase.from("user_profiles").select("user_id").limit(1);
-    return profile?.[0]?.user_id || "00000000-0000-0000-0000-000000000000";
-  };
-
-  const numOrNull = (v: string) => v.trim() === "" ? null : Math.round(Number(v));
-
-  const addItem = async () => {
-    if (!form.name.trim()) return;
-    const userId = await getUserId();
-    const { error } = await supabase.from("known_items").insert({
-      user_id: userId,
-      name: form.name.trim(),
-      aliases: form.aliases.split(",").map(a => a.trim()).filter(Boolean),
-      calories: numOrNull(form.calories),
-      protein: numOrNull(form.protein),
-      carbs: numOrNull(form.carbs),
-      fat: numOrNull(form.fat),
-    });
-    if (error) { alert("Failed to save item: " + error.message); return; }
-    setForm({ ...EMPTY_ITEM_FORM });
-    setAdding(false);
-    fetchItems();
-  };
-
-  const startEdit = (item: any) => {
-    setEditingId(item.id);
-    setEditForm({
-      calories: item.calories ?? "",
-      protein: item.protein ?? "",
-      carbs: item.carbs ?? "",
-      fat: item.fat ?? "",
-    });
-  };
-
-  const saveEdit = async (id: string) => {
-    const { error } = await supabase.from("known_items").update({
-      calories: numOrNull(editForm.calories),
-      protein: numOrNull(editForm.protein),
-      carbs: numOrNull(editForm.carbs),
-      fat: numOrNull(editForm.fat),
-    }).eq("id", id);
-    if (error) { alert("Failed to update item: " + error.message); return; }
-    setEditingId(null);
-    fetchItems();
-  };
-
-  const removeItem = async (id: string) => {
-    await supabase.from("known_items").delete().eq("id", id);
-    fetchItems();
-  };
-
-  const inputCls = "p-2 rounded-lg text-xs font-mono outline-none";
-  const inputStyle = { background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)", color: C.text };
-
-  return (
-    <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-      <div className="flex items-center justify-between mb-1">
-        <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>
-          Saved Items · Habits
-        </div>
-        {!adding && (
-          <button onClick={() => setAdding(true)}
-            className="flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-lg transition-all hover:opacity-80"
-            style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)", color: C.textSec }}>
-            <Plus size={11} /> Add
-          </button>
-        )}
-      </div>
-      <div className="text-[11px] mb-4" style={{ color: C.textSec }}>
-        Log these in Chat by name — the agent uses these exact macros.
-      </div>
-
-      {/* Add form */}
-      <AnimatePresence>
-        {adding && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.25 }}
-            className="overflow-hidden"
-          >
-            <div className="p-3 rounded-xl mb-4 space-y-2" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-              <div className="flex gap-2 flex-wrap">
-                <input placeholder="Name (e.g. Fish Oil)" value={form.name}
-                  onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                  className={`flex-1 min-w-[160px] ${inputCls}`} style={inputStyle} />
-                <input placeholder="Aliases, comma separated" value={form.aliases}
-                  onChange={e => setForm(f => ({ ...f, aliases: e.target.value }))}
-                  className={`flex-1 min-w-[160px] ${inputCls}`} style={inputStyle} />
-              </div>
-              <div className="flex gap-2 flex-wrap items-center">
-                {(["calories", "protein", "carbs", "fat"] as const).map(k => (
-                  <input key={k} type="number" placeholder={k === "calories" ? "kcal" : `${k} (g)`} value={form[k]}
-                    onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))}
-                    className={`w-20 ${inputCls}`} style={inputStyle} />
-                ))}
-                <div className="flex-1" />
-                <button onClick={() => { setAdding(false); setForm({ ...EMPTY_ITEM_FORM }); }}
-                  className="text-xs font-bold px-3 py-1.5" style={{ color: C.textTer }}>Cancel</button>
-                <button onClick={addItem}
-                  className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-lg transition-all hover:opacity-80"
-                  style={{ background: C.optimal, color: "#fff" }}>
-                  <Check size={12} /> Save
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* List / empty state */}
-      {loading ? (
-        <div className="text-center text-xs py-6" style={{ color: C.textTer }}>Loading saved items…</div>
-      ) : items.length === 0 ? (
-        <div className="flex flex-col items-center justify-center p-8 text-center rounded-xl"
-          style={{ background: "var(--surface-tertiary)", border: "1px dashed var(--border-subtle)" }}>
-          <div className="w-10 h-10 rounded-full flex items-center justify-center mb-3"
-            style={{ background: "var(--surface-quaternary)", border: "1px solid var(--border-subtle)" }}>
-            <Target size={16} style={{ color: C.textTer }} />
-          </div>
-          <div className="text-xs font-bold mb-1" style={{ color: C.textSec }}>No saved items yet</div>
-          <div className="text-[11px] max-w-sm" style={{ color: C.textTer, lineHeight: 1.6 }}>
-            Items you log repeatedly in Chat (/chat) — supplements, shakes, habits — are learned automatically, or add them manually above.
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {items.map((item, i) => (
-            <motion.div key={item.id}
-              initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.04 }}
-              className="p-3 rounded-xl"
-              style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-bold" style={{ color: C.text }}>{item.name}</span>
-                    <MacroChip label="kcal" val={item.calories} color={C.calories} />
-                    <MacroChip label="P" val={item.protein} color={C.protein} />
-                    <MacroChip label="C" val={item.carbs} color={C.carbs} />
-                    <MacroChip label="F" val={item.fat} color={C.fat} />
-                  </div>
-                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                    {(item.aliases || []).map((a: string) => (
-                      <span key={a} className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
-                        style={{ background: "var(--surface-quaternary)", color: C.textTer, border: "1px solid var(--border-subtle)" }}>
-                        {a}
-                      </span>
-                    ))}
-                    <span className="text-[10px] font-mono" style={{ color: C.textTer }}>
-                      used {item.use_count ?? 0}x · last {relTime(item.last_used_at)}
-                    </span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <button onClick={() => editingId === item.id ? setEditingId(null) : startEdit(item)}
-                    className="p-1.5 rounded-lg transition-colors hover:bg-black/5" style={{ color: C.textTer }}>
-                    <Pencil size={13} />
-                  </button>
-                  <button onClick={() => removeItem(item.id)}
-                    className="p-1.5 rounded-lg transition-colors hover:bg-black/5" style={{ color: C.critical }}>
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              </div>
-
-              {/* Inline macro edit */}
-              <AnimatePresence>
-                {editingId === item.id && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }}
-                    className="overflow-hidden"
-                  >
-                    <div className="flex gap-2 flex-wrap items-center mt-2 pt-2" style={{ borderTop: "1px solid var(--border-subtle)" }}>
-                      {(["calories", "protein", "carbs", "fat"] as const).map(k => (
-                        <input key={k} type="number" placeholder={k === "calories" ? "kcal" : `${k} (g)`} value={editForm[k]}
-                          onChange={e => setEditForm(f => ({ ...f, [k]: e.target.value }))}
-                          className={`w-20 ${inputCls}`} style={inputStyle} />
-                      ))}
-                      <button onClick={() => saveEdit(item.id)}
-                        className="flex items-center gap-1 text-[11px] font-bold px-2.5 py-1.5 rounded-lg transition-all hover:opacity-80"
-                        style={{ background: C.optimal, color: "#fff" }}>
-                        <Check size={11} /> Save
-                      </button>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </motion.div>
-          ))}
-        </div>
       )}
     </div>
   );
@@ -1560,8 +1405,6 @@ export default function FuelTab({
 
         {/* Clock-ordered meal timeline */}
         <DayTimeline meals={dayMeals} />
-
-        <SavedItemsPanel />
       </div>
     );
   }
@@ -1593,9 +1436,6 @@ export default function FuelTab({
 
       {/* Zone 4 — Micronutrients */}
       <MicroPanel dbMeals={dbMeals} timeFilter={timeFilter} />
-
-      {/* Saved Items (known_items) */}
-      <SavedItemsPanel />
 
       {/* Zone 5 + 6 — Meal Gallery & Actions */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

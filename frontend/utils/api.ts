@@ -53,6 +53,35 @@ export async function sendChat(message: string, image?: string): Promise<{ reply
   return res.json();
 }
 
+export async function sendGoalsChat(
+  message: string,
+  history: { role: string; content: string }[],
+): Promise<{ reply: string; goals_changed: boolean }> {
+  const res = await fetch(`${API_URL}/api/goals/chat`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ message, history }),
+  });
+  if (!res.ok) throw await parseError(res, "Goals chat request failed");
+  return res.json();
+}
+
+export type PersonaKey = "doctor" | "nutritionist" | "pt";
+
+export async function sendPersonaChat(
+  persona: PersonaKey,
+  message: string,
+  history: { role: string; content: string }[],
+): Promise<{ reply: string; changed: boolean }> {
+  const res = await fetch(`${API_URL}/api/personas/chat`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ persona, message, history }),
+  });
+  if (!res.ok) throw await parseError(res, "Specialist chat request failed");
+  return res.json();
+}
+
 export async function getPipelines(): Promise<Pipeline[]> {
   const res = await fetch(`${API_URL}/api/pipelines`, { headers: authHeaders() });
   if (!res.ok) throw await parseError(res, "Failed to fetch pipelines");

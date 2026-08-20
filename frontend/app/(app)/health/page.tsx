@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, Fragment } from "react";
 import { useRouter } from "next/navigation";
 import { TemplatesTab } from "./TemplatesTab";
 import FuelTab from "../../components/health/FuelTab";
+import InsightBanners from "../../components/InsightBanners";
 import { supabase } from "../../../utils/supabaseClient";
 import { THEME } from "../../../utils/theme";
 import { motion, AnimatePresence } from "framer-motion";
@@ -231,6 +232,12 @@ function CardioTab({ metricsHistory, timeFilter }: { metricsHistory: any[]; time
     return total > 0 ? { date: fmtDay(r.recorded_at), zones, total } : null;
   }).filter(Boolean) as Array<{ date: string; zones: { key: string; min: number }[]; total: number }>;
 
+  // Hide effectively-dead charts: the HR range chart needs min/max HR data
+  // covering at least 40% of the range, zones need at least one day with data.
+  const rangeDays = RANGE_DAYS[timeFilter] ?? 30;
+  const showHrRange = hrRangeData.length >= 2 && hrRangeData.length / rangeDays >= 0.4;
+  const showZones = zoneDays.length > 0;
+
   return (
     <div className="space-y-5">
       {/* Readiness KPIs — latest day in range, delta vs previous day */}
@@ -301,7 +308,8 @@ function CardioTab({ metricsHistory, timeFilter }: { metricsHistory: any[]; time
         )}
       </div>
 
-      {/* Daily HR range — min→max band, avg marker, resting & sleeping HR lines */}
+      {/* Daily HR range — only rendered when min/max HR covers >=40% of the range */}
+      {showHrRange && (
       <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
         <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>
           Daily Heart Rate Range · {rangeLabel(timeFilter)}
@@ -329,12 +337,12 @@ function CardioTab({ metricsHistory, timeFilter }: { metricsHistory: any[]; time
               <span className="flex items-center gap-1.5"><span className="inline-block w-4 h-0.5 rounded" style={{ background: C.sleep }} /> Sleeping</span>
             </div>
           </>
-        ) : (
-          <NeedMoreNote message={`Need at least 2 days with min/max HR in the ${rangeLabel(timeFilter)} — ${hrRangeData.length} available.`} />
-        )}
+        ) : null}
       </div>
+      )}
 
-      {/* HR zones per day — stacked zone1..5 minutes from the jsonb column */}
+      {/* HR zones per day — only rendered when at least one day has zone minutes */}
+      {showZones && (
       <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
         <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>
           HR Zones per Day · {rangeLabel(timeFilter)}
@@ -366,10 +374,9 @@ function CardioTab({ metricsHistory, timeFilter }: { metricsHistory: any[]; time
               ))}
             </div>
           </div>
-        ) : (
-          <NeedMoreNote message="No HR zone minutes recorded in this range yet — zones appear when intraday HR data is extracted from screenshots." />
-        )}
+        ) : null}
       </div>
+      )}
     </div>
   );
 }
@@ -1863,6 +1870,11 @@ export default function HealthOS() {
 
         {/* System Banner */}
         <SystemBanner metricsCount={metricsHistory.length} workoutsCount={dbWorkouts.length} mealsCount={dbMeals.length} timeFilter={timeFilter} />
+
+        {/* Engine insight banners (readiness, pacing, personas, body-comp, patterns) */}
+        <div className="mb-4">
+          <InsightBanners domains={["doctor", "nutritionist", "pt", "readiness", "pacing", "bodycomp", "correlations"]} />
+        </div>
 
         {/* Tab Nav */}
         <div className="flex overflow-x-auto" style={{ borderBottom: "1px solid var(--border-subtle)" }}>

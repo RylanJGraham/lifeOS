@@ -84,28 +84,145 @@ def web_search(query: str) -> str:
         logger.error(f"Yahoo search failed: {e}")
         return f"Yahoo search failed: {e}"
 
+# 100% Daily Value reference for an adult male (19-50). Used by the nutrition
+# extraction prompts to convert mg/mcg amounts into %DV. Keep in sync with the
+# copy inside the image-nutrition prompt (plain string, can't interpolate).
+MICRO_DV_GUIDE = """Use this Reference Conversion Guide for 100% Daily Value (adult male 19-50):
+* Vitamin A: 900 mcg RAE = 100% DV
+* Vitamin C: 90 mg = 100% DV
+* Vitamin D: 15 mcg (600 IU) = 100% DV
+* Vitamin E: 15 mg = 100% DV
+* Vitamin K: 120 mcg = 100% DV
+* Vitamin B6: 1.3 mg = 100% DV
+* Vitamin B12: 2.4 mcg = 100% DV
+* Biotin: 30 mcg = 100% DV
+* Folate (folic acid): 400 mcg DFE = 100% DV
+* Calcium: 1000 mg = 100% DV
+* Iron: 8 mg = 100% DV (so 8 mg = 100)
+* Magnesium: 400 mg = 100% DV (so 80 mg = 20, NOT 80!)
+* Zinc: 11 mg = 100% DV (so 11 mg = 100)
+* Selenium: 55 mcg = 100% DV
+* Iodine: 150 mcg = 100% DV
+* Copper: 0.9 mg = 100% DV
+* Manganese: 2.3 mg = 100% DV
+* Phosphorus: 700 mg = 100% DV
+* Omega-3 (EPA+DHA): 1000 mg = 100% DV
+* Potassium: 3400 mg = 100% DV (but potassium_mg outputs raw mg, not a %)
+* Sodium: 2300 mg = upper LIMIT, not a goal (sodium_mg outputs raw mg, not a %)"""
+
+# Micronutrients worth extracting from OpenFoodFacts nutriments (key, label).
+# Values come with a sibling "<key>_unit" field (mg/µg/g) that we pass through
+# so the LLM can convert to %DV.
+OFF_MICRO_FIELDS = [
+    ("vitamin-d", "vitamin D"), ("vitamin-b12", "vitamin B12"),
+    ("vitamin-c", "vitamin C"), ("vitamin-a", "vitamin A"),
+    ("vitamin-e", "vitamin E"), ("vitamin-b6", "vitamin B6"),
+    ("iron", "iron"), ("magnesium", "magnesium"), ("zinc", "zinc"),
+    ("calcium", "calcium"), ("potassium", "potassium"),
+    ("selenium", "selenium"), ("iodine", "iodine"),
+]
+
+def search_openfoodfacts(query: str, limit: int = 3) -> str:
+    """Query the OpenFoodFacts v2 search API (no key needed) and return a
+    compact text block of structured nutriments for the top matches.
+    Returns "" when nothing usable is found (caller falls back to web search).
+
+    OFF rate limits (10 search req/min/IP) and returns 503 when their global
+    crawl limiter trips — so retry once with a short backoff before giving up.
+    """
+    import time
+    import httpx
+    url = "https://world.openfoodfacts.org/api/v2/search"
+    params = {
+        "search_terms": query,
+        "fields": "product_name,brands,serving_size,nutriments",
+        "page_size": limit,
+        "json": 1,
+    }
+    # OFF asks for AppName/Version (contact) so they don't mistake us for a bot
+    contact = os.getenv("OFF_CONTACT_EMAIL", "personal use, no bulk traffic")
+    headers = {"User-Agent": f"LifeOS/1.0 ({contact})"}
+    logger.info(f"Querying OpenFoodFacts for: '{query}'")
+    resp = None
+    for attempt in range(2):
+        try:
+            resp = httpx.get(url, params=params, headers=headers, timeout=8.0)
+            if resp.status_code == 200:
+                break
+            logger.warning(f"OpenFoodFacts returned status {resp.status_code}")
+        except Exception as e:
+            logger.error(f"OpenFoodFacts query failed: {e}")
+        if attempt == 0:
+            time.sleep(3)
+    if resp is None or resp.status_code != 200:
+        return ""
+    try:
+        products = resp.json().get("products") or []
+        blocks = []
+        for p in products:
+            n = p.get("nutriments") or {}
+            kcal = n.get("energy-kcal_100g")
+            if kcal is None:
+                continue  # no nutrition data — useless match
+            name = p.get("product_name") or "Unknown"
+            brand = p.get("brands") or ""
+            serving = p.get("serving_size") or "unknown"
+            def g(key):
+                v = n.get(f"{key}_100g")
+                return f"{v:g}" if isinstance(v, (int, float)) else "?"
+            block = (
+                f"- {name} ({brand}), serving size {serving}. Per 100g: "
+                f"{kcal:g} kcal, P {g('proteins')}g, C {g('carbohydrates')}g, "
+                f"F {g('fat')}g, fiber {g('fiber')}g, sugars {g('sugars')}g, "
+                f"sodium {g('sodium')}g."
+            )
+            sk = n.get("energy-kcal_serving")
+            if isinstance(sk, (int, float)):
+                block += f" Per serving: {sk:g} kcal."
+            micros = []
+            for key, label in OFF_MICRO_FIELDS:
+                v = n.get(f"{key}_100g")
+                if isinstance(v, (int, float)) and v > 0:
+                    unit = n.get(f"{key}_unit") or "mg"
+                    micros.append(f"{label} {v:g}{unit}")
+            if micros:
+                block += " Micros per 100g: " + ", ".join(micros) + "."
+            blocks.append(block)
+        if blocks:
+            logger.info(f"OpenFoodFacts: {len(blocks)} product(s) with nutrition data.")
+            return "OpenFoodFacts database matches (structured, authoritative for packaged foods — scale per-100g values to the portion eaten):\n" + "\n".join(blocks)
+        logger.info("OpenFoodFacts: no products with nutrition data.")
+        return ""
+    except Exception as e:
+        logger.error(f"OpenFoodFacts query failed: {e}")
+        return ""
+
 def check_supplement_overrides(text: str, m: dict) -> dict:
     t_lower = text.lower()
     if "supradyn" in t_lower:
         m["sufficient_data"] = True
-        m["meal_name"] = "Supradyn Multivitamin"
-        m["calories"] = 0
-        m["protein"] = 0
-        m["carbs"] = 0
-        m["fats"] = 0
-        m["fiber"] = 0
-        m["sugar"] = 0
-        m["micronutrients"] = {
-            "vitamin_d_dv_pct": 100,
-            "omega_3_dv_pct": 0,
-            "magnesium_dv_pct": 21,  # 80mg Magnesium is ~21% of 380mg daily value
-            "zinc_dv_pct": 100,      # 10mg Zinc is 100% DV
-            "b12_dv_pct": 100,       # 2.5mcg B12 is 100% DV
-            "iron_dv_pct": 100,      # 14mg Iron is 100% DV
-            "sodium_mg": 0,
-            "potassium_mg": 0
+        override = {
+            "meal_name": "Supradyn Multivitamin",
+            "calories": 0, "protein": 0, "carbs": 0, "fats": 0,
+            "fiber": 0, "sugar": 0,
+            "micronutrients": {
+                "vitamin_d_dv_pct": 100,
+                "omega_3_dv_pct": 0,
+                "magnesium_dv_pct": 21,  # 80mg Magnesium is ~21% of 380mg daily value
+                "zinc_dv_pct": 100,      # 10mg Zinc is 100% DV
+                "b12_dv_pct": 100,       # 2.5mcg B12 is 100% DV
+                "iron_dv_pct": 100,      # 14mg Iron is 100% DV
+                "sodium_mg": 0,
+                "potassium_mg": 0
+            },
+            "ai_analysis": "Supradyn multivitamin providing 100% DV of essential vitamins, 10mg Zinc, 14mg Iron, and 80mg Magnesium to support daily energy and micronutrient requirements."
         }
-        m["ai_analysis"] = "Supradyn multivitamin providing 100% DV of essential vitamins, 10mg Zinc, 14mg Iron, and 80mg Magnesium to support daily energy and micronutrient requirements."
+        # The extraction result carries items in m["items"] — patch those,
+        # not the top level, so the insert loop actually sees the override.
+        if isinstance(m.get("items"), list) and m["items"]:
+            m["items"][0].update(override)
+        else:
+            m.update(override)
     return m
 
 def _resolve_day_reference(ref: str):
@@ -132,8 +249,118 @@ def _resolve_day_reference(ref: str):
             try:
                 day = datetime.fromisoformat(ref[:10]).date()
             except (ValueError, TypeError):
-                return None
+                pass
+        if day is None:
+            # Month-name dates: "august 10", "10th august", "the tenth of august".
+            tokens = [t.strip(".,") for t in ref.replace(",", " ").split()]
+            month = next((_MONTH_NAMES[t] for t in tokens if t in _MONTH_NAMES), None)
+            if month:
+                daynum = None
+                for t in tokens:
+                    if t in _ORDINAL_WORDS:
+                        daynum = _ORDINAL_WORDS[t]
+                        break
+                    t2 = re.sub(r"(st|nd|rd|th)$", "", t)
+                    if t2.isdigit() and 1 <= int(t2) <= 31:
+                        daynum = int(t2)
+                        break
+                if daynum:
+                    try:
+                        candidate = datetime(now.year, month, daynum).date()
+                        # "december 5" said in January almost surely means last year
+                        if candidate > now.date() + timedelta(days=1):
+                            candidate = datetime(now.year - 1, month, daynum).date()
+                        day = candidate
+                    except ValueError:
+                        pass
+        if day is None:
+            return None
     return datetime(day.year, day.month, day.day, now.hour, now.minute, tzinfo=now.tzinfo).isoformat()
+
+
+_MONTH_NAMES = {m: i for i, m in enumerate(
+    ["january", "february", "march", "april", "may", "june", "july",
+     "august", "september", "october", "november", "december"], 1)}
+_MONTH_NAMES.update({m[:3]: i for m, i in list(_MONTH_NAMES.items())})
+
+_ORDINAL_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6,
+    "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11,
+    "twelfth": 12, "thirteenth": 13, "fourteenth": 14, "fifteenth": 15,
+    "sixteenth": 16, "seventeenth": 17, "eighteenth": 18, "nineteenth": 19,
+    "twentieth": 20, "twenty-first": 21, "twenty-second": 22, "twenty-third": 23,
+    "twenty-fourth": 24, "twenty-fifth": 25, "twenty-sixth": 26,
+    "twenty-seventh": 27, "twenty-eighth": 28, "twenty-ninth": 29,
+    "thirtieth": 30, "thirty-first": 31,
+}
+
+
+def _fuzzy_match_meal(rows: list, name: str):
+    """Token-overlap match of a removal target against a day's meal rows.
+    Confident only on a unique best match with real overlap; substring matches
+    always count as confident. Mirrors goals_service._match_goal."""
+    needle = name.strip().lower()
+    if not needle:
+        return None
+    for r in rows:
+        if (r.get("description") or "").strip().lower() == needle:
+            return r
+    tokens = set(re.findall(r"[a-z0-9]+", needle))
+    best, best_score, tied = None, 0, False
+    for r in rows:
+        desc = (r.get("description") or "").lower()
+        if needle in desc or desc in needle:
+            return r
+        r_tokens = set(re.findall(r"[a-z0-9]+", desc))
+        score = len(tokens & r_tokens)
+        if score > best_score:
+            best, best_score, tied = r, score, False
+        elif score == best_score and score > 0:
+            tied = True
+    if best and best_score >= max(1, (len(tokens) + 1) // 2) and not tied:
+        return best
+    return None
+
+
+def _process_meal_removals(supabase, m: dict) -> list:
+    """Delete previously logged meals the user asked to remove or correct.
+    Day references are resolved in Python (never by the LLM). Returns a list of
+    human-readable confirmations like 'Macaroni Salad (2026-08-10)'."""
+    removed = []
+    for rem in (m.get("removals") or []):
+        if not isinstance(rem, dict):
+            continue
+        name = (rem.get("meal_name") or "").strip()
+        days = rem.get("meal_days") or []
+        if isinstance(days, str):
+            days = [days]
+        if not name or not days:
+            continue
+        for d in days:
+            t = _resolve_day_reference(str(d))
+            if not t:
+                continue
+            day = t[:10]
+            try:
+                rows = (
+                    supabase.table("meals").select("id, description")
+                    .gte("meal_time", f"{day}T00:00:00")
+                    .lt("meal_time", f"{day}T23:59:59.999999").execute()
+                ).data or []
+            except Exception as e:
+                logger.warning(f"Meal removal: failed to fetch meals for {day}: {e}")
+                continue
+            match = _fuzzy_match_meal(rows, name)
+            if match:
+                try:
+                    supabase.table("meals").delete().eq("id", match["id"]).execute()
+                    removed.append(f"{match['description']} ({day})")
+                    logger.info(f"Removed meal '{match['description']}' on {day}")
+                except Exception as e:
+                    logger.error(f"Meal removal delete failed: {e}")
+            else:
+                logger.info(f"Meal removal: no confident match for '{name}' on {day}")
+    return removed
 
 
 MUSCLE_GROUPS = ["Chest", "Back", "Front Delts", "Rear Delts", "Biceps", "Triceps",
@@ -267,6 +494,8 @@ def text_intent_node(state: GraphState):
     Is it a financial transaction (everyday spending/income)? -> 'finance'
     Is it an investment trade (buying, selling, adding, or trimming stock/crypto positions)? -> 'trade'
     Is it a food/meal log (eating/drinking)? -> 'nutrition'
+    Is it a correction or removal of previously logged food (e.g. "remove the toast from monday", "for august 10th, instead of the salad it was tacos")? -> 'nutrition'
+    Is it a body-weight log (e.g. "weighed 68.5 this morning", "weight: 68.2kg")? -> 'weight'
     Is it a workout log (logging a completed exercise routine, gym session, or workout template)? -> 'workout'
     Or is it just general conversation? -> 'general'
 
@@ -484,8 +713,17 @@ def text_intent_node(state: GraphState):
                 search_query = llm_fast.invoke([HumanMessage(content=search_query_prompt)]).content.strip().replace('"', '').replace("'", "")
 
                 if search_query.lower() != "no_search":
-                    logger.info(f"Nutrition query '{text}' requires web verification. Query: '{search_query}'")
-                    search_context = web_search(search_query)
+                    logger.info(f"Nutrition query '{text}' requires verification. Query: '{search_query}'")
+                    # OpenFoodFacts gives structured nutriments for packaged/branded
+                    # foods; web search covers restaurant/homemade items OFF lacks.
+                    off_context = search_openfoodfacts(search_query)
+                    web_context = web_search(search_query)
+                    parts = []
+                    if off_context:
+                        parts.append(off_context)
+                    if web_context and not web_context.startswith(("No search results", "Yahoo search failed")):
+                        parts.append(f"Web search snippets:\n{web_context}")
+                    search_context = "\n\n".join(parts)
                 else:
                     logger.info("Nutrition query is standard food or vague. Skipping web search.")
 
@@ -512,7 +750,7 @@ def text_intent_node(state: GraphState):
             Analyze the user's meal/supplement log text: "{text}".
             Current system time: {current_time}.
             
-            Web Search Verification Data (use this to override/fill exact nutritional values for brands/supplements like Supradyn, Fage, etc.):
+            Food database & web verification data (use this to override/fill exact nutritional values for brands/supplements like Supradyn, Fage, etc.; OpenFoodFacts per-100g values must be scaled to the portion eaten):
             ---
             {search_context if search_context else "No search context requested."}
             ---
@@ -526,25 +764,21 @@ def text_intent_node(state: GraphState):
             - Specific foods and supplements like "apple", "banana", "chicken and rice", "egg sandwich", "multivitamin", "omega-3 capsule", "vitamin D capsule", "whey protein shake with whole milk", "a slice of pizza" have sufficient data.
             - Nutritional supplements (like a multivitamin) are fully valid nutrition inputs. They may have 0 or negligible calories/macros, but their micronutrients (e.g. vitamin_d_dv_pct, b12_dv_pct, zinc_dv_pct, iron_dv_pct, magnesium_dv_pct, potassium_mg, sodium_mg, etc.) should be estimated based on typical dosage/values, and their calories/macros set to 0. If web search verification data is present and contains specific amounts (e.g., 80mg magnesium, 10mg zinc), use those exact proportions.
             
-            - Micronutrients must be calculated and output EXCLUSIVELY as percentages of Daily Value (% DV, e.g. 0-120+) based on standard European VRN/RDA or US DV. DO NOT put absolute milligram (mg) or microgram (mcg) values in the percentage columns!
-              Use this Reference Conversion Guide for 100% Daily Value (DV):
-              * Vitamin D: 5 mcg (200 IU) = 100% DV. (So 5 mcg = 100).
-              * Iron: 14 mg = 100% DV. (So 14 mg = 100).
-              * Zinc: 10 mg = 100% DV. (So 10 mg = 100).
-              * Vitamin B12: 2.5 mcg = 100% DV. (So 3 mcg = 120).
-              * Magnesium: 375 mg or 400 mg = 100% DV. (So 80 mg Magnesium = 20 or 21, NOT 80!).
-              * Omega-3: 1000 mg = 100% DV.
-              
-              CRITICAL: Double check your output! If search results say "14mg Iron", then "iron_dv_pct" is 100, NOT 14. If search results say "10mg Zinc", then "zinc_dv_pct" is 100, NOT 10. If search results say "80mg Magnesium", then "magnesium_dv_pct" is 21, NOT 80.
+            - Micronutrients must be calculated and output EXCLUSIVELY as percentages of Daily Value (% DV, e.g. 0-120+). DO NOT put absolute milligram (mg) or microgram (mcg) values in the percentage columns! (sodium_mg and potassium_mg are the only exceptions — raw mg.)
+              {MICRO_DV_GUIDE}
+              CRITICAL: Double check your output using the table above! If data says "10mg Zinc", then "zinc_dv_pct" is 91 (10/11), NOT 10. If it says "80mg Magnesium", then "magnesium_dv_pct" is 20, NOT 80. If it says "14mg Iron", then "iron_dv_pct" is 175, NOT 14.
+            - Estimate %DV for every nutrient the food plausibly provides (dairy -> calcium; red meat -> iron/zinc/b12; fish -> omega_3/vitamin D; fruit -> vitamin C; nuts/seeds -> magnesium/vitamin E; whole grains -> manganese/phosphorus; eggs -> biotin/selenium). Use null only when the food contains essentially none.
             - Vague descriptions like "lunch", "snack", "dinner", "eating something", or "food" do NOT have sufficient data.
             
             If there is sufficient data:
+            - ALWAYS output numeric estimates for calories/protein/carbs/fats/fiber/sugar — from the database/web data when available, otherwise from standard nutritional knowledge for a typical portion. A rough estimate is far more useful than a null; nulls are forbidden for these fields.
             - The user may log MULTIPLE foods across MULTIPLE days in one message. Return ONE item per distinct food/dish.
               * Same food repeated over several days ("toast for the past tues-thurs") -> ONE item with several entries in its "meal_days".
               * Different foods on different days ("tuesday a burger, wednesday tacos") -> SEPARATE items, each with its own "meal_days" and macros. NEVER copy one day's food onto another day.
             - For each item, report days EXACTLY as the user said them (no date math):
               * "meal_days": raw day references, e.g. ["today"], ["yesterday"], ["tuesday"], or per-day for a range: ["tuesday", "wednesday", "thursday"].
               * "meal_clock": the clock time "HH:MM" if mentioned for that item (e.g. "at 1pm" -> "13:00"), otherwise null. A time stated for all items applies to each.
+            - CORRECTIONS: if the user asks to remove, replace, or correct previously logged food (e.g. "remove the toast from august 10", "for the tenth of august, instead of X it was Y", "I didn't eat Z on monday"), put the items to delete under "removals" with the day reference EXACTLY as the user said it, and put any replacement foods in "items" with that SAME day reference. An item being removed must NOT also appear in "items". A correction is still sufficient_data even when there is nothing new to log.
             
             Return ONLY a valid JSON object matching the following structure (no other text or wrapper code):
             {{
@@ -555,24 +789,40 @@ def text_intent_node(state: GraphState):
                   "meal_name": "Brief descriptive name of the meal or supplement",
                   "meal_days": ["raw day reference strings as the user said them"],
                   "meal_clock": "HH:MM_or_null",
-                  "calories": integer_or_null,
-                  "protein": integer_or_null,
-                  "carbs": integer_or_null,
-                  "fats": integer_or_null,
-                  "fiber": integer_grams_or_null,
-                  "sugar": integer_grams_or_null,
+                  "calories": integer (best estimate for the portion eaten — NEVER null),
+                  "protein": integer grams (estimate — NEVER null),
+                  "carbs": integer grams (estimate — NEVER null),
+                  "fats": integer grams (estimate — NEVER null),
+                  "fiber": integer grams (estimate — NEVER null, 0 only if truly none),
+                  "sugar": integer grams (estimate — NEVER null, 0 only if truly none),
                   "micronutrients": {{
+                    "vitamin_a_dv_pct": integer_percentage_or_null,
+                    "vitamin_c_dv_pct": integer_percentage_or_null,
                     "vitamin_d_dv_pct": integer_percentage_or_null,
-                    "omega_3_dv_pct": integer_percentage_or_null,
+                    "vitamin_e_dv_pct": integer_percentage_or_null,
+                    "vitamin_k_dv_pct": integer_percentage_or_null,
+                    "b6_dv_pct": integer_percentage_or_null,
+                    "b12_dv_pct": integer_percentage_or_null,
+                    "biotin_dv_pct": integer_percentage_or_null,
+                    "folic_acid_dv_pct": integer_percentage_or_null,
                     "magnesium_dv_pct": integer_percentage_or_null,
                     "zinc_dv_pct": integer_percentage_or_null,
-                    "b12_dv_pct": integer_percentage_or_null,
                     "iron_dv_pct": integer_percentage_or_null,
+                    "calcium_dv_pct": integer_percentage_or_null,
+                    "selenium_dv_pct": integer_percentage_or_null,
+                    "iodine_dv_pct": integer_percentage_or_null,
+                    "copper_dv_pct": integer_percentage_or_null,
+                    "manganese_dv_pct": integer_percentage_or_null,
+                    "phosphorus_dv_pct": integer_percentage_or_null,
+                    "omega_3_dv_pct": integer_percentage_or_null,
                     "sodium_mg": integer_milligrams_or_null,
                     "potassium_mg": integer_milligrams_or_null
                   }},
-                  "ai_analysis": "A brief 1-sentence nutritional insight about this item (or null)"
+                  "ai_analysis": "A brief 1-sentence nutritional insight about this item"
                 }}
+              ],
+              "removals": [
+                {{"meal_name": "previously logged item to delete", "meal_days": ["raw day reference as the user said it"]}}
               ]
             }}
             """
@@ -582,6 +832,9 @@ def text_intent_node(state: GraphState):
                 m = json.loads(match.group(0))
                 # Apply static override as a safety fallback if search failed/empty
                 m = check_supplement_overrides(text, m)
+                # Corrections first: delete what the user asked to remove (works
+                # even when there are no new items to log).
+                removed_summaries = _process_meal_removals(supabase, m) if supabase else []
                 if m.get("sufficient_data"):
                     items = m.get("items") or []
                     if not items and m.get("meal_name"):
@@ -614,7 +867,7 @@ def text_intent_node(state: GraphState):
                                 **known_micros,
                                 "fiber": it.get("fiber") or known_micros.get("fiber", 0),
                                 "sugar": it.get("sugar") or known_micros.get("sugar", 0),
-                                "ai_analysis": it.get("ai_analysis", ""),
+                                "ai_analysis": it.get("ai_analysis") or "",
                                 **{k: v for k, v in (it.get("micronutrients") or {}).items() if v is not None},
                                 **known_micros,  # canonical values win over LLM
                             }
@@ -646,10 +899,10 @@ def text_intent_node(state: GraphState):
                             for meal_time in times:
                                 supabase.table("meals").insert({
                                     "description": it.get("meal_name"),
-                                    "calories": it.get("calories", 0),
-                                    "protein": it.get("protein", 0),
-                                    "carbs": it.get("carbs", 0),
-                                    "fat": it.get("fats", 0),
+                                    "calories": it.get("calories") or 0,
+                                    "protein": it.get("protein") or 0,
+                                    "carbs": it.get("carbs") or 0,
+                                    "fat": it.get("fats") or 0,
                                     "meal_time": meal_time,
                                     "micronutrients": micro_payload,
                                     "user_id": user_id
@@ -669,10 +922,10 @@ def text_intent_node(state: GraphState):
                                     supabase.table("known_items").insert({
                                         "user_id": user_id,
                                         "name": it_name,
-                                        "calories": it.get("calories", 0),
-                                        "protein": it.get("protein", 0),
-                                        "carbs": it.get("carbs", 0),
-                                        "fat": it.get("fats", 0),
+                                        "calories": it.get("calories") or 0,
+                                        "protein": it.get("protein") or 0,
+                                        "carbs": it.get("carbs") or 0,
+                                        "fat": it.get("fats") or 0,
                                         "micronutrients": micro_payload,
                                         "use_count": 1,
                                         "last_used_at": current_time
@@ -685,17 +938,62 @@ def text_intent_node(state: GraphState):
 
                     search_info = f" (verified via search for '{search_query}')" if search_context else ""
                     known_info = " ✓ saved item" if known_match else ""
+                    removed_info = ("Removed " + ", ".join(removed_summaries) + ".\n") if removed_summaries else ""
                     if len(logged_summaries) > 1:
-                        state["response"] = f"Logged {len(logged_summaries)} items{search_info}:\n" + "\n".join(f"• {s}" for s in logged_summaries)
+                        state["response"] = removed_info + f"Logged {len(logged_summaries)} items{search_info}:\n" + "\n".join(f"• {s}" for s in logged_summaries)
                     elif logged_summaries:
-                        state["response"] = f"Logged meal: {logged_summaries[0]}{search_info}{known_info}. Insight: {items[0].get('ai_analysis') if items else ''}"
+                        state["response"] = removed_info + f"Logged meal: {logged_summaries[0]}{search_info}{known_info}. Insight: {items[0].get('ai_analysis') if items else ''}"
+                    elif removed_summaries:
+                        state["response"] = removed_info.strip()
                     else:
                         state["response"] = "Understood, but found no food items to log."
                 else:
-                    state["response"] = m.get("clarification_question") or "Could you please specify what food or drink items you had for this meal?"
+                    if removed_summaries:
+                        state["response"] = "Removed " + ", ".join(removed_summaries) + "."
+                    else:
+                        state["response"] = m.get("clarification_question") or "Could you please specify what food or drink items you had for this meal?"
             else:
                 state["response"] = "Detected nutrition, but failed to parse details."
                 
+        elif "weight" in intent:
+            # Body-weight log: "weighed 68.5 this morning" -> memories domain
+            # 'weight' (the weekly body-comp review reads these) + profile sync.
+            mkg = re.search(r"(\d{2,3}(?:[.,]\d{1,2})?)\s*(?:kg|kilo)?", text.lower())
+            kg = None
+            if mkg:
+                try:
+                    candidate = float(mkg.group(1).replace(",", "."))
+                    if 35 <= candidate <= 250:
+                        kg = candidate
+                except ValueError:
+                    kg = None
+            if kg is None:
+                state["response"] = "I heard a weight log but couldn't find the number — try e.g. '68.5kg'."
+            elif not supabase:
+                state["response"] = "Database unavailable — weight not saved."
+            else:
+                try:
+                    user_id = "00000000-0000-0000-0000-000000000000"
+                    try:
+                        res_profile = supabase.table("user_profiles").select("user_id").limit(1).execute()
+                        if res_profile.data and len(res_profile.data) > 0:
+                            user_id = res_profile.data[0]["user_id"]
+                    except Exception:
+                        pass
+                    supabase.table("memories").insert({
+                        "user_id": user_id,
+                        "domain": "weight",
+                        "content": text,
+                        "metadata": {"kg": kg},
+                    }).execute()
+                    supabase.table("user_profiles").update({
+                        "current_weight_kg": kg,
+                    }).eq("user_id", user_id).execute()
+                    state["response"] = f"Logged weight: {kg:g} kg. Profile updated — the weekly body-comp review will track the trend."
+                except Exception as e:
+                    logger.error(f"Weight log failed: {e}")
+                    state["response"] = f"Failed to save weight: {str(e)}"
+
         elif "workout" in intent:
             current_time = datetime.now().astimezone().isoformat()
             
@@ -1049,15 +1347,30 @@ def nutrition_node(state: GraphState):
 Also provide a brief 1-2 sentence nutritional insight or athletic context about this meal (e.g. 'Excellent lean protein for recovery').
 
 Micronutrients must be calculated and output EXCLUSIVELY as percentages of Daily Value (% DV, e.g. 0-120+) based on standard European VRN/RDA or US DV. DO NOT put absolute milligram (mg) or microgram (mcg) values in the percentage columns!
-Use this Reference Conversion Guide for 100% Daily Value (DV):
-* Vitamin D: 5 mcg (200 IU) = 100% DV. (So 5 mcg = 100).
-* Iron: 14 mg = 100% DV. (So 14 mg = 100).
-* Zinc: 10 mg = 100% DV. (So 10 mg = 100).
-* Vitamin B12: 2.5 mcg = 100% DV. (So 3 mcg = 120).
-* Magnesium: 375 mg or 400 mg = 100% DV. (So 80 mg Magnesium = 20 or 21, NOT 80!).
-* Omega-3: 1000 mg = 100% DV.
+Use this Reference Conversion Guide for 100% Daily Value (adult male 19-50; mirror of MICRO_DV_GUIDE):
+* Vitamin A: 900 mcg RAE = 100% DV
+* Vitamin C: 90 mg = 100% DV
+* Vitamin D: 15 mcg (600 IU) = 100% DV
+* Vitamin E: 15 mg = 100% DV
+* Vitamin K: 120 mcg = 100% DV
+* Vitamin B6: 1.3 mg = 100% DV
+* Vitamin B12: 2.4 mcg = 100% DV
+* Biotin: 30 mcg = 100% DV
+* Folate (folic acid): 400 mcg DFE = 100% DV
+* Calcium: 1000 mg = 100% DV
+* Iron: 8 mg = 100% DV
+* Magnesium: 400 mg = 100% DV (so 80 mg = 20, NOT 80!)
+* Zinc: 11 mg = 100% DV
+* Selenium: 55 mcg = 100% DV
+* Iodine: 150 mcg = 100% DV
+* Copper: 0.9 mg = 100% DV
+* Manganese: 2.3 mg = 100% DV
+* Phosphorus: 700 mg = 100% DV
+* Omega-3 (EPA+DHA): 1000 mg = 100% DV
+* Potassium: 3400 mg = 100% DV (but potassium_mg outputs raw mg, not a %)
+* Sodium: 2300 mg = upper LIMIT, not a goal (sodium_mg outputs raw mg, not a %)
 
-CRITICAL: Double check your output! If packaging/facts say "14mg Iron", then "iron_dv_pct" is 100, NOT 14. If packaging/facts say "10mg Zinc", then "zinc_dv_pct" is 100, NOT 10. If packaging/facts say "80mg Magnesium", then "magnesium_dv_pct" is 21, NOT 80.
+CRITICAL: Double check your output! If packaging/facts say "14mg Iron", then "iron_dv_pct" is 175, NOT 14. If packaging/facts say "11mg Zinc", then "zinc_dv_pct" is 100, NOT 11. If packaging/facts say "80mg Magnesium", then "magnesium_dv_pct" is 20, NOT 80.
 
 Return ONLY a valid JSON object matching the following structure (no other text or code blocks):
 {
@@ -1129,18 +1442,18 @@ Return ONLY a valid JSON object matching the following structure (no other text 
                     pass
 
                 micro_payload = {
-                    "fiber": meal.get("fiber", 0),
-                    "sugar": meal.get("sugar", 0),
-                    "ai_analysis": meal.get("ai_analysis", ""),
-                    **meal.get("micronutrients", {})
+                    "fiber": meal.get("fiber") or 0,
+                    "sugar": meal.get("sugar") or 0,
+                    "ai_analysis": meal.get("ai_analysis") or "",
+                    **{k: v for k, v in (meal.get("micronutrients") or {}).items() if v is not None}
                 }
 
                 supabase.table("meals").insert({
-                    "description": meal.get("meal_name", "Meal"),
-                    "calories": meal.get("calories", 0),
-                    "protein": meal.get("protein", 0),
-                    "carbs": meal.get("carbs", 0),
-                    "fat": meal.get("fats", 0),
+                    "description": meal.get("meal_name") or "Meal",
+                    "calories": meal.get("calories") or 0,
+                    "protein": meal.get("protein") or 0,
+                    "carbs": meal.get("carbs") or 0,
+                    "fat": meal.get("fats") or 0,
                     "micronutrients": micro_payload,
                     "user_id": user_id
                 }).execute()

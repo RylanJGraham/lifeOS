@@ -44,7 +44,52 @@ ngrok config add-authtoken <your-auth-token>
 
 # Start tunnel with your free static domain
 # Example: ngrok http --domain=your-static-domain.ngrok-free.app 8000
-# Note: For production, we will configure this as a Windows service using NSSM or similar.
+#
+# For always-on operation, ngrok runs as a Windows service (see section 5 below).
+```
+
+## 5. Always-On Services (NSSM)
+
+The backend (ngrok tunnel, FastAPI, Next.js frontend) runs as Windows services via [NSSM](https://nssm.cc), so everything starts automatically at boot and restarts on failure.
+
+Install NSSM first:
+
+```powershell
+winget install nssm
+# or: choco install nssm
+# or: download the zip from https://nssm.cc and put nssm.exe on your PATH
+```
+
+Then run the installer **elevated** (PowerShell as Administrator) from anywhere:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_services.ps1
+```
+
+This registers three auto-start services:
+
+- `LifeOS-Ngrok` — ngrok tunnel using `NGROK_DOMAIN` from `.env`
+- `LifeOS-API` — `uvicorn api:app` on `127.0.0.1:8000` (depends on `LifeOS-Ngrok`, since the API self-registers the Telegram webhook at boot)
+- `LifeOS-Frontend` — `npm start` in `frontend/` (requires `npm run build` to have been run first)
+
+It also registers the `LifeOS-Watchdog` scheduled task, which runs every 5 minutes as SYSTEM and restarts `LifeOS-API` if `http://localhost:8000/status` fails or `LifeOS-Ngrok` if it is not running.
+
+Logs are written to `logs\` in the repo root: `ngrok.*.log`, `api.*.log`, `frontend.*.log`, and `watchdog.log`.
+
+Check status:
+
+```powershell
+nssm status LifeOS-API
+curl http://localhost:8000/status
+```
+
+Uninstall:
+
+```powershell
+nssm remove LifeOS-Ngrok confirm
+nssm remove LifeOS-API confirm
+nssm remove LifeOS-Frontend confirm
+Unregister-ScheduledTask -TaskName "LifeOS-Watchdog" -Confirm:$false
 ```
 
 ## 4. Install Life-OS Service
