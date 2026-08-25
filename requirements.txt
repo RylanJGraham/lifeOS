@@ -1,5 +1,11 @@
 # Regenerated from the known-good local venv (pip freeze) so Windows and Linux
 # install the exact same dependency set. Notes:
+# - INSTALL WITH: pip install --no-deps -r requirements.txt
+#   The freeze already pins every transitive dependency; plain resolution fails
+#   because realtime (supabase sub-package, unused by our code) wants
+#   websockets<13 while langsmith wants websockets>=15. The conflict is metadata
+#   only — both features (realtime websockets, langsmith websocket tracing) are
+#   unused, and this exact set is proven to work in production.
 # - pywin32 is Windows-only (platform marker) — used by scripts/, not the backend.
 # - redis was removed (no code imports it).
 # - the editable mi_fitness_sync install was removed (dead Xiaomi integration;

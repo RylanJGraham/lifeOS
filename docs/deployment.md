@@ -124,6 +124,7 @@ and restarts the API.
 | Webhook pointing at old URL | restart the service — it re-registers on startup |
 | Cron pipeline not running | `/opt/lifeos/logs/cron.log`; `crontab -u lifeos -l`; check timezone with `timedatectl` |
 | TLS errors | `journalctl -u caddy -n 100`; confirm DNS resolves to the droplet |
+| `pip install` fails with a websockets/realtime/langsmith conflict | Expected — always install with `pip install --no-deps -r requirements.txt` (see header of `requirements.txt`) |
 | Dashboard can't reach API | check `NEXT_PUBLIC_API_URL` on Vercel and the `x-api-key` header |
 
 ## Notes

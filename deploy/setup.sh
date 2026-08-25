@@ -57,7 +57,7 @@ if [ ! -d "$APP_DIR/venv" ]; then
     sudo -u "$APP_USER" python3 -m venv "$APP_DIR/venv"
 fi
 sudo -u "$APP_USER" "$APP_DIR/venv/bin/pip" install --upgrade pip
-sudo -u "$APP_USER" "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+sudo -u "$APP_USER" "$APP_DIR/venv/bin/pip" install --no-deps -r "$APP_DIR/requirements.txt"
 
 echo "==> Installing systemd unit"
 cp "$APP_DIR/deploy/lifeos-api.service" /etc/systemd/system/lifeos-api.service

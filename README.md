@@ -89,7 +89,7 @@ git clone <repo-url>
 cd lifeOS
 python -m venv venv
 .\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install --no-deps -r requirements.txt   # --no-deps is required, see header of requirements.txt
 ```
 
 ### 3. Install frontend dependencies
