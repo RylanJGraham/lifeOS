@@ -384,9 +384,9 @@ export default function SystemObservabilityHub() {
           </div>
           <div className="space-y-3">
             {[
-              { label: "Ollama (LLM)",        status: apiStatus?.services?.ollama },
+              { label: "OpenRouter (LLM)",    status: apiStatus?.services?.openrouter },
               { label: "Supabase (Vector DB)", status: apiStatus?.services?.supabase },
-              { label: "Ngrok (Webhook)",      status: apiStatus?.services?.ngrok },
+              { label: "Webhook (HTTPS)",      status: apiStatus?.services?.ngrok },
             ].map(s => (
               <div key={s.label} className="flex justify-between items-center">
                 <span className="text-sm" style={{ color: "var(--text-secondary)" }}>{s.label}</span>

@@ -4,7 +4,31 @@
 
 ---
 
-## Latest change: Wire all scheduled tasks through pipeline_service and clean up unconnected paths
+## Latest change: VPS production deployment (DigitalOcean + Caddy + cron, frontend on Vercel)
+
+What's New:
+- **Linux-compatible dependencies**: `requirements.txt` regenerated from the known-good local venv — it now actually contains `langchain-openai`, `langchain-ollama`, and `PyMuPDF` (imported but previously missing), drops unused `redis` and the editable `mi_fitness_sync` install (dead integration), and gates `pywin32` behind a `sys_platform == "win32"` marker so `pip install` works on Linux.
+- **Ollama no longer required**: `src/workers/daily_analyzer.py` (the last hard dependency) now uses OpenRouter `gpt-4o-mini`. `src/nodes/general.py` already fell back to OpenRouter. The `/status` endpoint now reports `openrouter` instead of `ollama`; the `/system` dashboard tile is renamed accordingly.
+- **`PUBLIC_DOMAIN` env var**: the Telegram webhook registration and `/telegram/webhook-info` use `PUBLIC_DOMAIN` with `NGROK_DOMAIN` as fallback, so ngrok is only needed for local dev.
+- **New `deploy/` directory**: `lifeos-api.service` (systemd), `lifeos.cron` (all 15 schedules mirrored from `scripts/windows_tasks.ps1`), `Caddyfile` (auto-HTTPS reverse proxy), `setup.sh` (idempotent droplet provisioning), `update.sh` (git pull + restart deploys).
+- **Docs**: new `docs/deployment.md` runbook (droplet creation, DuckDNS, secrets, verification, rollback); README + AGENTS.md updated.
+
+Why: move the backend and scheduled workers off the Windows machine onto a $6 DigitalOcean droplet, with the dashboard on Vercel.
+
+Files/modules touched:
+- `requirements.txt`, `src/workers/daily_analyzer.py`, `src/api.py`, `src/pipeline_service.py`, `.env.example`.
+- `frontend/utils/api.ts`, `frontend/app/(app)/system/page.tsx` (status tile rename).
+- New: `deploy/` (5 files), `docs/deployment.md`.
+- Docs: `README.md`, `AGENTS.md`, `docs/CHANGES.md`.
+
+Breaking changes / manual setup:
+- The `/status` response now returns `services.openrouter` instead of `services.ollama` (frontend updated to match).
+- Production cutover requires following `docs/deployment.md`: provision the droplet, copy `.env` (with `PUBLIC_DOMAIN` set), then **disable the local `LifeOS-*` Windows tasks and local API** so workers don't run twice and the webhook isn't stolen back.
+- No schema changes; no migrations to apply.
+
+---
+
+## Previous change: Wire all scheduled tasks through pipeline_service and clean up unconnected paths
 
 What's New:
 - **Scheduled tasks are now fully connected**: `scripts/windows_tasks.ps1` routes every Windows Scheduled Task through `python src/pipeline_service.py run <id>` instead of calling worker scripts directly. This guarantees every run writes to `pipeline_runs` and `worker_heartbeats`, so the **Tasks & Chat** panel always reflects real status.

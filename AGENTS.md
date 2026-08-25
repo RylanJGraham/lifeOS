@@ -4,7 +4,7 @@ This file is for AI agents (and humans) working on the LifeOS repository. Read i
 
 ## Project overview
 
-LifeOS is a personal operating system with a Next.js dashboard, a Python FastAPI backend, Supabase persistence, and scheduled Windows tasks. It tracks health, finance, investments, and goals, and uses LangGraph for chat/Telegram processing.
+LifeOS is a personal operating system with a Next.js dashboard, a Python FastAPI backend, Supabase persistence, and scheduled workers. In production the backend runs on a Linux VPS (systemd + cron, see `deploy/` and `docs/deployment.md`); Windows scheduled tasks are the local-dev scheduler. It tracks health, finance, investments, and goals, and uses LangGraph for chat/Telegram processing.
 
 Key external dependencies:
 
@@ -20,9 +20,10 @@ Key external dependencies:
 |---|---|
 | Frontend | Next.js 14, React, Tailwind CSS, Recharts, Framer Motion |
 | Backend | FastAPI, Python 3.11+ |
-| Agent | LangGraph + LangChain (Ollama / OpenRouter) |
+| Agent | LangGraph + LangChain (OpenRouter; optional local Ollama fallback in dev) |
 | DB | Supabase / PostgreSQL |
 | Local runtime | Windows PowerShell + Python venv |
+| Production runtime | Linux VPS (systemd + cron + Caddy), dashboard on Vercel |
 
 ## Repository conventions
 
@@ -34,7 +35,8 @@ Key external dependencies:
 - `src/workers/` — scheduled scripts and data sync pipelines.
 - `docs/` — architecture, migrations, and reference docs.
 - `docs/supabase-migrations/` — numbered SQL migrations.
-- `scripts/` — PowerShell installers and schedulers.
+- `scripts/` — PowerShell installers and schedulers (Windows local dev).
+- `deploy/` — VPS production: systemd unit, crontab (`lifeos.cron`), Caddyfile, `setup.sh`, `update.sh`.
 
 ### Naming
 
@@ -100,7 +102,7 @@ If you cannot write a clear "What's New" summary, the change is not ready to pus
 | API endpoint or request/response shape | Update `docs/api-reference.md` |
 | Finance/investment advisor flow, positions, trades, orders, or risk | Update `docs/daily-finance-flow.md` and `docs/jarvis-v3-supabase-positions-sync.md` if relevant |
 | Telegram/web chat command or intent routing | Update `docs/research-bot-command.md` or add a new feature doc in `docs/` |
-| New worker, pipeline, or scheduled task | Update `README.md`, `AGENTS.md` scheduled-task list, and `scripts/windows_tasks.ps1` comments |
+| New worker, pipeline, or scheduled task | Update `README.md`, `AGENTS.md` scheduled-task list, `scripts/windows_tasks.ps1` comments, and `deploy/lifeos.cron` |
 | New dashboard page, tab, or component contract | Update `docs/ARCHITECTURE.md` frontend section and add a component note |
 | Breaking change (anything that would break another AI, the frontend, Jarvis, or a scheduled task) | Document it in `docs/ARCHITECTURE.md` under **Breaking Changes & Guardrails** with migration steps |
 
@@ -124,7 +126,7 @@ If you cannot write a clear "What's New" summary, the change is not ready to pus
 
 1. Workers should be runnable as scripts (`python src/workers/<name>.py`).
 2. If a worker should be triggerable from the dashboard, register it in `src/pipeline_service.py`.
-3. Add a Windows scheduled task in `scripts/windows_tasks.ps1` if it should run on a schedule.
+3. Add a Windows scheduled task in `scripts/windows_tasks.ps1` and a cron line in `deploy/lifeos.cron` if it should run on a schedule.
 4. Use `logger` for output, not `print`.
 
 ### Chat/agent changes
@@ -167,7 +169,7 @@ If you cannot write a clear "What's New" summary, the change is not ready to pus
 1. Create `src/workers/my_worker.py`.
 2. Add a runner function to `src/pipeline_service.py`.
 3. Add a pipeline entry to `PIPELINES`.
-4. Add a scheduled task in `scripts/windows_tasks.ps1`.
+4. Add a scheduled task in `scripts/windows_tasks.ps1` and a cron line in `deploy/lifeos.cron`.
 5. Document it in `README.md`.
 
 ### Add a new dashboard tab

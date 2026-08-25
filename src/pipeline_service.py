@@ -189,7 +189,7 @@ PIPELINES = {
     },
     "daily-analysis": {
         "name": "Daily AI Analysis",
-        "description": "Generate health/wealth insights with the local Ollama model.",
+        "description": "Generate health/wealth insights with the OpenRouter cloud model.",
         "schedule": "Daily at 6:00 AM",
         "runner": _run_daily_analysis,
     },

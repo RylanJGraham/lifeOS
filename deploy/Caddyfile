@@ -1,0 +1,8 @@
+# Caddy reverse proxy for the LifeOS backend.
+# setup.sh replaces LIFEOS_DOMAIN with your real domain (e.g. DuckDNS subdomain)
+# and installs this to /etc/caddy/Caddyfile. Caddy provisions and renews the
+# Let's Encrypt certificate automatically.
+
+LIFEOS_DOMAIN {
+	reverse_proxy 127.0.0.1:8000
+}

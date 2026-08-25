@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
 try:
@@ -43,7 +43,18 @@ def run_daily_analysis():
         - Base Salary: ${p.get('base_salary', 0)}
         """
 
-    llm = ChatOllama(model="llama3.1:8b", temperature=0.2)
+    # Cloud LLM via OpenRouter (the backend no longer depends on a local Ollama
+    # instance, so this worker runs identically on the VPS).
+    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+    if not openrouter_api_key:
+        logger.error("OPENROUTER_API_KEY missing; cannot run daily analysis.")
+        return
+    llm = ChatOpenAI(
+        model="openai/gpt-4o-mini",
+        api_key=openrouter_api_key,
+        base_url="https://openrouter.ai/api/v1",
+        temperature=0.2,
+    )
 
     def _already_ran_today(domain: str) -> bool:
         try:

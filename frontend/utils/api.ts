@@ -20,7 +20,7 @@ export interface Pipeline {
 export interface BackendStatus {
   status: string;
   services: {
-    ollama: string;
+    openrouter: string;
     supabase: string;
     ngrok: string;
   };

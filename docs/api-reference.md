@@ -93,7 +93,7 @@ Returns the current Telegram webhook URL, status, pending update count, and last
   {
     "status": "success",
     "data": {
-      "webhook_url": "https://example.ngrok-free.app/webhook",
+      "webhook_url": "https://lifeos-you.duckdns.org/webhook",
       "status": "ok",
       "pending_update_count": 0,
       "last_update_at": "2026-08-23T18:00:00+00:00",
@@ -187,7 +187,7 @@ Health check endpoint.
   {
     "status": "online",
     "services": {
-      "ollama": "ok",
+      "openrouter": "ok",
       "supabase": "ok",
       "ngrok": "ok"
     },

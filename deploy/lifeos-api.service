@@ -1,0 +1,17 @@
+[Unit]
+Description=LifeOS FastAPI Backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lifeos
+Group=lifeos
+WorkingDirectory=/opt/lifeos/src
+EnvironmentFile=/opt/lifeos/.env
+ExecStart=/opt/lifeos/venv/bin/uvicorn api:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,6 @@
 # LifeOS
 
-LifeOS is a personal operating system that aggregates health, finance, and goal data into a single AI-augmented dashboard. It is split into a Python backend/FastAPI service, a Next.js frontend, Supabase for persistence, and a set of scheduled workers that run on the local machine.
+LifeOS is a personal operating system that aggregates health, finance, and goal data into a single AI-augmented dashboard. It is split into a Python backend/FastAPI service, a Next.js frontend, Supabase for persistence, and a set of scheduled workers. In production, the backend and workers run on a Linux VPS (see `docs/deployment.md`); Windows is the local-dev runtime.
 
 ## What it does
 
@@ -9,7 +9,7 @@ LifeOS is a personal operating system that aggregates health, finance, and goal 
 - **Investments**: portfolio tracking, advisor signals, watchlist, orders, risk guardrails, P&L, IBKR sync, price-freshness badges, Finnhub fallback.
 - **Goals**: habit tracking, check-ins, streaks, milestones, weekly targets, rest days.
 - **Chat**: Telegram bot and web chat that route messages through a LangGraph agent with persistent thread memory.
-- **AI**: local Ollama + OpenRouter models for insights, classification, and recommendations.
+- **AI**: OpenRouter cloud models for insights, classification, and recommendations (optional local Ollama fallback for general chat in dev).
 - **Observability**: pipeline run history, worker heartbeats, system logs, and one-click pipeline controls.
 
 ## High-level architecture
@@ -35,8 +35,8 @@ External systems:
 
 - **Supabase**: database, auth, storage, realtime.
 - **Telegram**: chat input/output.
-- **OpenRouter**: cloud LLM for routing, extraction, and reasoning.
-- **Ollama**: local LLM for offline insights.
+- **OpenRouter**: cloud LLM for routing, extraction, and reasoning (used for everything in production).
+- **Ollama**: optional local LLM; only `general` chat tries it, with OpenRouter fallback.
 - **IBKR**: broker read-only Flex Query sync for positions, trades, options, and dividends.
 - **Jarvis Advisor v3**: external cron advisor that reads/writes Supabase.
 - **Dead/legacy integrations**: Strava API, Xiaomi/Mi Fitness OAuth, Google Fit.
@@ -54,7 +54,8 @@ External systems:
 │   ├── pipeline_service.py# Pipeline runner
 │   ├── workers/           # Scheduled workers (health, finance, IBKR, etc.)
 │   └── utils/             # Shared helpers
-├── scripts/               # PowerShell installers and task schedulers
+├── scripts/               # PowerShell installers and task schedulers (Windows local dev)
+├── deploy/                # VPS production: systemd unit, crontab, Caddyfile, setup/update scripts
 ├── docs/                  # Architecture, migrations, API reference
 │   ├── supabase-migrations/
 │   ├── api-reference.md
@@ -194,6 +195,13 @@ ngrok http 8000
 
 Then set `NGROK_DOMAIN` in `.env` and restart the backend. The backend auto-registers the Telegram webhook on startup.
 
+## Production deployment (VPS + Vercel)
+
+The backend and all scheduled workers run on a DigitalOcean droplet (Ubuntu 24.04,
+systemd + cron, Caddy HTTPS, no ngrok/Ollama); the dashboard deploys to Vercel.
+Full runbook: [`docs/deployment.md`](docs/deployment.md). Deploy new code with
+`ssh root@<droplet-ip> "bash /opt/lifeos/deploy/update.sh"`.
+
 ## Investment / finance setup
 
 See detailed docs:
@@ -241,7 +249,7 @@ You can also trigger a pipeline from the `/system` page in the dashboard.
 ## Adding new features
 
 1. If you touch the database, add a numbered migration in `docs/supabase-migrations/`.
-2. If you add a new worker, register it in `src/pipeline_service.py` and `scripts/windows_tasks.ps1` if it should run on a schedule.
+2. If you add a new worker, register it in `src/pipeline_service.py` and add its schedule to both `scripts/windows_tasks.ps1` (local dev) and `deploy/lifeos.cron` (production).
 3. If you add new frontend pages/components, run `npm run build` in `frontend/` before committing.
 4. If you change the Telegram/web chat behavior, test `src/graph.py` with `python -m py_compile src/graph.py`.
 

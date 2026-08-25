@@ -43,9 +43,9 @@ async def startup_event():
     SupabaseLogger.info("api", "Life-OS Backend API started successfully.")
     
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    ngrok_domain = os.getenv("NGROK_DOMAIN")
-    if bot_token and ngrok_domain:
-        webhook_url = f"https://{ngrok_domain}/webhook"
+    public_domain = os.getenv("PUBLIC_DOMAIN") or os.getenv("NGROK_DOMAIN")
+    if bot_token and public_domain:
+        webhook_url = f"https://{public_domain}/webhook"
         import asyncio
         import httpx
         # Retry with backoff: at boot the service can start before the network
@@ -71,17 +71,9 @@ async def startup_event():
 @app.get("/status")
 async def status_check():
     """Health check endpoint to verify service connectivity."""
-    # Check Ollama
-    ollama_status = "error"
-    try:
-        import httpx
-        with httpx.Client(timeout=2.0) as client:
-            resp = client.get(os.getenv("OLLAMA_HOST", "http://localhost:11434") + "/api/tags")
-            if resp.status_code == 200:
-                ollama_status = "ok"
-    except Exception:
-        pass
-        
+    # Check OpenRouter (cloud LLM — the backend no longer requires local Ollama)
+    openrouter_status = "ok" if os.getenv("OPENROUTER_API_KEY") else "error"
+
     # Check Supabase
     supabase_status = "error"
     try:
@@ -102,7 +94,7 @@ async def status_check():
     return {
         "status": "online",
         "services": {
-            "ollama": ollama_status,
+            "openrouter": openrouter_status,
             "supabase": supabase_status,
             "ngrok": "ok"
         }
@@ -686,12 +678,12 @@ async def telegram_webhook_info(_=Depends(require_api_key)):
     """Return the current Telegram webhook status from Telegram's API and
     persist a snapshot in Supabase for the /system dashboard."""
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    ngrok_domain = os.getenv("NGROK_DOMAIN")
+    public_domain = os.getenv("PUBLIC_DOMAIN") or os.getenv("NGROK_DOMAIN")
     if not bot_token:
         raise HTTPException(status_code=503, detail="TELEGRAM_BOT_TOKEN not configured")
 
     import httpx
-    webhook_url = f"https://{ngrok_domain}/webhook" if ngrok_domain else "not set"
+    webhook_url = f"https://{public_domain}/webhook" if public_domain else "not set"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.get(f"https://api.telegram.org/bot{bot_token}/getWebhookInfo")
