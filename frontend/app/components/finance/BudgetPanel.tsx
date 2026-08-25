@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Plus, Trash2, PiggyBank, Send, Sparkles, MessageSquare, Save } from "lucide-react";
+import { Plus, Trash2, PiggyBank, Send, Sparkles, MessageSquare } from "lucide-react";
 import { supabase } from "../../../utils/supabaseClient";
 import { sendBudgetCoachChat } from "../../../utils/api";
 import { C, fmt2, EmptyState } from "./shared";
@@ -90,23 +90,6 @@ export default function BudgetPanel({ transactions }: BudgetPanelProps) {
   const deleteBudget = async (id: string) => {
     await supabase.from("budgets").delete().eq("id", id);
     setBudgets((prev) => prev.filter((b) => b.id !== id));
-  };
-
-  const saveProfile = async () => {
-    if (!profile?.user_id) return;
-    const payload: any = {};
-    const sal = parseFloat(salary);
-    const rnt = parseFloat(rent);
-    if (Number.isFinite(sal) && sal >= 0) payload.base_salary = sal;
-    if (Number.isFinite(rnt) && rnt >= 0) payload.monthly_rent = rnt;
-    if (Object.keys(payload).length === 0) return;
-    const { error } = await supabase
-      .from("user_profiles")
-      .update(payload)
-      .eq("user_id", profile.user_id);
-    if (!error) {
-      setProfile((prev: any) => ({ ...prev, ...payload }));
-    }
   };
 
   const sendMessage = async (text: string) => {
@@ -213,48 +196,6 @@ export default function BudgetPanel({ transactions }: BudgetPanelProps) {
             style={{ background: C.equity, color: "#fff" }}
           >
             <Send size={14} /> Send
-          </button>
-        </div>
-      </div>
-
-      {/* Income & rent settings */}
-      <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
-        <div className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: "var(--text-tertiary)" }}>
-          Income & Fixed Costs
-        </div>
-        <div className="flex flex-col sm:flex-row gap-3">
-          <div className="flex-1">
-            <label className="block text-[10px] uppercase tracking-widest font-bold mb-1" style={{ color: "var(--text-tertiary)" }}>
-              Annual salary
-            </label>
-            <input
-              type="number"
-              value={salary}
-              onChange={(e) => setSalary(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl text-sm bg-transparent border"
-              style={{ borderColor: "var(--border-subtle)", color: "var(--text-primary)" }}
-              placeholder="e.g. 32000"
-            />
-          </div>
-          <div className="flex-1">
-            <label className="block text-[10px] uppercase tracking-widest font-bold mb-1" style={{ color: "var(--text-tertiary)" }}>
-              Monthly rent / mortgage
-            </label>
-            <input
-              type="number"
-              value={rent}
-              onChange={(e) => setRent(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl text-sm bg-transparent border"
-              style={{ borderColor: "var(--border-subtle)", color: "var(--text-primary)" }}
-              placeholder="e.g. 800"
-            />
-          </div>
-          <button
-            onClick={saveProfile}
-            className="flex items-center justify-center gap-1 px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all"
-            style={{ background: C.wealth, color: "#fff" }}
-          >
-            <Save size={14} /> Save
           </button>
         </div>
       </div>

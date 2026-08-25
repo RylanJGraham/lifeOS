@@ -56,6 +56,13 @@ All secrets live in `.env`. The template is `.env.example`. Never commit `.env`.
 
 ## How to make changes
 
+### AI agent notice: docs and "What's New" are mandatory
+
+Every code change that touches data models, public interfaces, scheduled behavior, or user-facing features must leave a trail:
+1. Update the relevant docs listed in the table below before you say the task is done.
+2. Be ready to write a concise **"What's New:"** summary covering what changed, why, which files/modules/tables were touched, and any breaking changes or manual setup steps.
+3. If the user says **"push changes"**, **"commit"**, or **"prepare a PR"**, stop and verify `docs/CHANGES.md`, `docs/ARCHITECTURE.md`, `docs/api-reference.md`, and `docs/supabase-schema.sql` are current before proceeding. Do not push undocumented work.
+
 ### Documentation is not optional
 
 **Every code change that touches data models, public interfaces, scheduled behavior, or user-facing features must be accompanied by a docs update.** If you cannot update the relevant docs in the same commit, do not finish the task.

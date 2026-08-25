@@ -60,6 +60,26 @@ Talks to the goal strategist (`src/goals_service.py`). It can create/update/dele
   }
   ```
 
+### `POST /api/budget-coach`
+
+Talks to the budget coach (`src/budget_service.py`). It reads the user's profile, recent transactions, budget envelopes, and active goals to give spending advice. It does **not** modify the database.
+
+- **Payload**:
+  ```json
+  {
+    "message": "What am I spending most on?",
+    "history": []
+  }
+  ```
+- `history` is optional; last 20 sanitized messages are sent as context.
+- **Returns**:
+  ```json
+  {
+    "reply": "..."
+  }
+  ```
+- **Errors**: `400` empty message, `500` if the LLM client is not configured or the service errors.
+
 ---
 
 ## Observability

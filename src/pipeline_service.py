@@ -70,6 +70,9 @@ def _write_heartbeat(worker_id: str, status: str, next_expected_at: datetime | N
     if not sb:
         return
     now = datetime.utcnow()
+    schedule = None
+    if worker_id in PIPELINES:
+        schedule = PIPELINES[worker_id].get("schedule")
     payload = {
         "worker_id": worker_id,
         "user_id": DEFAULT_USER_ID,
@@ -77,7 +80,7 @@ def _write_heartbeat(worker_id: str, status: str, next_expected_at: datetime | N
         "last_run_at": now.isoformat(),
         "next_expected_at": next_expected_at.isoformat() if next_expected_at else None,
         "error": error,
-        "metadata": {"source": "pipeline_service"},
+        "metadata": {"source": "pipeline_service", "schedule": schedule},
         "updated_at": now.isoformat(),
     }
     try:
@@ -90,22 +93,6 @@ def _write_heartbeat(worker_id: str, status: str, next_expected_at: datetime | N
             sb.table("worker_heartbeats").insert(payload).execute()
     except Exception as e:
         logger.warning(f"Failed to write heartbeat for {worker_id}: {e}")
-
-
-def _run_strava():
-    from workers.sync_strava import sync_strava_activities
-    sync_strava_activities()
-
-
-def _run_xiaomi_sleep():
-    from workers.sync_xiaomi import ensure_repo_exists, run_sync
-    ensure_repo_exists()
-    run_sync()
-
-
-def _run_mifitness_workouts():
-    from workers.sync_mifitness import sync_mifitness_activities
-    sync_mifitness_activities(days=30)
 
 
 def _run_health_sync():
@@ -140,6 +127,16 @@ def _run_ibkr_flex_sync():
 def _run_evening_audit():
     from workers.evening_audit import main as run_evening_audit
     run_evening_audit()
+
+
+def _run_goal_checkin_daily():
+    from workers.goal_checkin import run as run_goal_checkin
+    run_goal_checkin("daily")
+
+
+def _run_goal_checkin_weekly():
+    from workers.goal_checkin import run as run_goal_checkin
+    run_goal_checkin("weekly")
 
 
 def _run_fuel_pacing():
@@ -187,72 +184,98 @@ PIPELINES = {
     "health-sync": {
         "name": "Health Sync",
         "description": "Nightly aggregate of health metrics, meals, and workouts; writes a health summary to ai_insights.",
+        "schedule": "Daily at 11:30 PM",
         "runner": _run_health_sync,
     },
     "daily-analysis": {
         "name": "Daily AI Analysis",
         "description": "Generate health/wealth insights with the local Ollama model.",
+        "schedule": "Daily at 6:00 AM",
         "runner": _run_daily_analysis,
     },
     "investment-notifier": {
         "name": "Investment Notifier",
         "description": "Scan transactions for new investments and send a Telegram alert.",
+        "schedule": "Daily at 9:00 AM",
         "runner": _run_investment_notifier,
     },
     "morning-briefing": {
         "name": "Morning Briefing",
         "description": "Generate and send the daily briefing to Telegram.",
+        "schedule": "Daily at 7:00 AM",
         "runner": _run_morning_briefing,
     },
     "ibkr-flex-sync": {
         "name": "IBKR Flex Sync",
         "description": "Pull positions and trades from Interactive Brokers Flex Query into Supabase.",
+        "schedule": "Mon–Fri at 3:00 PM",
         "runner": _run_ibkr_flex_sync,
     },
     "evening-audit": {
         "name": "Evening Audit",
         "description": "Nightly nudge for missing meals/health/workout data.",
+        "schedule": "Daily at 9:30 PM",
         "runner": _run_evening_audit,
     },
     "fuel-pacing": {
         "name": "Fuel Pacing",
         "description": "Midday protein/calorie pacing check and dinner suggestion.",
+        "schedule": "Daily at 3:00 PM",
         "runner": _run_fuel_pacing,
     },
     "persona-insights": {
         "name": "Persona Insights",
         "description": "Doctor + nutritionist + PT daily insight evaluation.",
+        "schedule": "Daily at 9:15 PM",
         "runner": _run_persona_insights,
     },
     "weekly-review": {
         "name": "Weekly Review",
         "description": "Sunday digest: body comp, cash runway, habit momentum, correlations.",
+        "schedule": "Sunday at 10:00 AM",
         "runner": _run_weekly_review,
     },
     "symptom-analysis": {
         "name": "Symptom Analysis",
         "description": "Weekly statistical symptom correlation analysis.",
+        "schedule": "Monday at 6:00 AM",
         "runner": _run_symptom_analysis,
     },
     "transaction-anomalies": {
         "name": "Transaction Anomalies",
         "description": "Scan recent transactions for duplicate charges, subscription price changes, and unusual amounts.",
+        "schedule": "Sunday at 10:30 AM",
         "runner": _run_transaction_anomalies,
     },
     "price-refresh": {
         "name": "Price Refresh",
         "description": "Refresh stale advisor position prices via Finnhub fallback.",
+        "schedule": "Daily at 10:00 AM",
         "runner": _run_price_refresh,
     },
     "open-banking-sync": {
         "name": "EU Open Banking Sync",
         "description": "Scaffold for GoCardless/Salt Edge/Plaid EU transaction pulls (requires credentials).",
+        "schedule": "Sunday at 10:45 AM",
         "runner": _run_open_banking_sync,
     },
     "pdf-statement-sync": {
         "name": "PDF Statement Sync",
         "description": "Parse bank/CC PDFs from STATEMENT_DIRECTORY and insert transactions.",
+        "schedule": "Daily at 8:00 AM",
         "runner": _run_pdf_statement_sync,
+    },
+    "goal-checkin-daily": {
+        "name": "Goal Check-in (Daily)",
+        "description": "Send daily habit goal check-in questions via Telegram.",
+        "schedule": "Daily at 8:00 PM",
+        "runner": _run_goal_checkin_daily,
+    },
+    "goal-checkin-weekly": {
+        "name": "Goal Check-in (Weekly)",
+        "description": "Send weekly financial goal progress / green-light updates via Telegram.",
+        "schedule": "Sunday at 10:00 AM",
+        "runner": _run_goal_checkin_weekly,
     },
 }
 
@@ -271,6 +294,7 @@ def list_pipelines() -> list:
             "id": pid,
             "name": p["name"],
             "description": p["description"],
+            "schedule": p.get("schedule"),
             **snapshot[pid],
         }
         for pid, p in PIPELINES.items()

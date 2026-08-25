@@ -5,7 +5,7 @@ Joins health_metrics, meals, and workouts by date for the last 30/60 days,
 runs the SymptomCorrelator to find statistically significant correlations,
 and writes a daily health summary to ai_insights.
 
-Schedule: LifeOS-HealthSync (currently also runs sync_mifitness.py before this).
+Schedule: LifeOS-HealthSync via pipeline_service.py run health-sync.
 """
 import os
 import sys
@@ -73,7 +73,7 @@ def run_health_sync():
 
         health_rows = (
             supabase.table("health_metrics")
-            .select("recorded_at, hrv, sleep_duration_minutes, resting_heart_rate, sleeping_heart_rate, weight_kg, vo2_max, steps")
+            .select("recorded_at, hrv, sleep_duration_minutes, resting_heart_rate, sleeping_heart_rate, body_weight_kg, vo2_max, steps")
             .eq("user_id", user_id)
             .gte("recorded_at", f"{start}T00:00:00")
             .lte("recorded_at", f"{end}T23:59:59")

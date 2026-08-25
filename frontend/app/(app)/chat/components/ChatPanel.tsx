@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { SendHorizonal, Trash2, Sparkles, Server, ImagePlus, X } from "lucide-react";
 import { sendChat, getPipelines, runPipeline, Pipeline } from "../../../../utils/api";
 import PipelinesPanel from "./PipelinesPanel";
+import ScheduledTasksPanel from "./ScheduledTasksPanel";
 
 // ─── Types & constants ───────────────────────────────────────────
 interface ChatMessage {
@@ -246,7 +247,7 @@ export default function ChatPanel() {
               }}
             >
               <Server size={13} />
-              Pipelines
+              Tasks
             </button>
             <button
               onClick={clearHistory}
@@ -267,9 +268,10 @@ export default function ChatPanel() {
         {/* Mobile pipelines drawer */}
         {showPipelines && (
           <div
-            className="lg:hidden p-3"
-            style={{ borderBottom: "1px solid var(--border-subtle)", maxHeight: 300, overflowY: "auto" }}
+            className="lg:hidden p-3 space-y-3"
+            style={{ borderBottom: "1px solid var(--border-subtle)", maxHeight: 420, overflowY: "auto" }}
           >
+            <ScheduledTasksPanel />
             <PipelinesPanel
               pipelines={pipelines}
               offline={backendOffline}
@@ -570,8 +572,9 @@ export default function ChatPanel() {
         </div>
       </div>
 
-      {/* ─── Pipelines side panel (desktop) ─── */}
+      {/* ─── Tasks & Pipelines side panel (desktop) ─── */}
       <div className="hidden lg:block" style={{ width: 320, flexShrink: 0 }}>
+        <ScheduledTasksPanel />
         <PipelinesPanel
           pipelines={pipelines}
           offline={backendOffline}

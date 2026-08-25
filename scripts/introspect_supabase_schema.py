@@ -21,6 +21,8 @@ data = resp.json()
 def pg_type(prop):
     t = prop.get("type", "text")
     fmt = prop.get("format", "")
+    if "jsonb" in fmt:
+        return "JSONB"
     if t == "string":
         if "timestamp with time zone" in fmt:
             return "TIMESTAMP WITH TIME ZONE"

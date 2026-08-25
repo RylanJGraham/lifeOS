@@ -126,6 +126,11 @@ export default function PipelinesPanel({
                 </div>
                 <StatusBadge p={p} />
               </div>
+              {p.schedule && (
+                <div className="text-[10px] font-semibold mb-1" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>
+                  {p.schedule}
+                </div>
+              )}
               {p.description && (
                 <div className="text-[11px] leading-relaxed mb-2.5" style={{ color: "var(--text-secondary)" }}>
                   {p.description}

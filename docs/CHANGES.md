@@ -4,6 +4,56 @@
 
 ---
 
+## Latest change: Wire all scheduled tasks through pipeline_service and clean up unconnected paths
+
+What's New:
+- **Scheduled tasks are now fully connected**: `scripts/windows_tasks.ps1` routes every Windows Scheduled Task through `python src/pipeline_service.py run <id>` instead of calling worker scripts directly. This guarantees every run writes to `pipeline_runs` and `worker_heartbeats`, so the **Tasks & Chat** panel always reflects real status.
+- **Pipeline registry cleanup**: removed dead `_run_strava`, `_run_xiaomi_sleep`, and `_run_mifitness_workouts` runners from `src/pipeline_service.py`; added `goal-checkin-daily` and `goal-checkin-weekly` pipelines so the goal check-in tasks go through the same path.
+- **Pipeline metadata**: each `PIPELINES` entry now carries a `schedule` string; `pipeline_service` writes it into `worker_heartbeats.metadata` and exposes it via `GET /api/pipelines` so the UI can show when each job is supposed to run.
+- **Bug fix**: `src/workers/sync_health.py` selected a non-existent `weight_kg` column; it now uses `body_weight_kg`.
+- **Docs**: updated `docs/ARCHITECTURE.md` scheduled-tasks section and `docs/CHANGES.md`. `AGENTS.md` already contains the push-discipline reminder.
+
+Why: eliminate “dark” scheduled tasks that ran without observable status, remove dead integration code, and make the heartbeat panel truthful.
+
+Files/modules touched:
+- `src/pipeline_service.py` (dead runners removed, goal-checkin pipelines, schedule metadata, heartbeat wiring).
+- `scripts/windows_tasks.ps1` (rewritten to use `pipeline_service.py run`).
+- `src/workers/sync_health.py` (fixed weight column).
+- `frontend/utils/api.ts` and `frontend/app/(app)/chat/components/PipelinesPanel.tsx` (display schedule).
+- `docs/ARCHITECTURE.md`, `docs/CHANGES.md`.
+
+Breaking changes / manual setup:
+- Re-run `scripts/windows_tasks.ps1` from an elevated PowerShell prompt so the old direct-script tasks are replaced with the new `pipeline_service` tasks.
+- The `daily-analysis` (06:00) and `investment-notifier` (09:00) pipelines are now scheduled alongside the other daily tasks.
+
+---
+
+## Latest change: Dashboard bug fixes, budget coach, Body tab, and Tasks & Chat rename
+
+What's New:
+- **Investments bug fix**: duplicate `advisor_positions` rows (manual zero-UUID vs broker rows) are now deduplicated in the UI; `frontend/app/components/investments/shared.tsx::dedupePositions` keeps the broker/Jarvis row and merges manual notes. `advisor_positions_with_signals` view now falls back to `COALESCE(p.sector, p.tags->>1, 'Unknown')` so sector concentration is no longer 90% Unknown. `src/workers/price_refresh.py` resolves the real user_id and recalculates `position_value`/`unrealized_pnl` after price updates.
+- **Health UI bug fixes**: `FuelTab` fiber average now sums fiber from logged meals instead of returning a hardcoded value; a `CaffeinePanel` timeline has been added; the `FavoritesBar` hook-order crash ("Rendered fewer hooks than expected") is fixed.
+- **Goals bug fix**: portfolio-% goals (e.g., "Increase portfolio by 15%") now use `metric_basis.baseline_value` to compute real progress; `src/workers/goal_checkin.py` defaults missing financial metrics to `bank_balance`.
+- **Budget coach**: new `POST /api/budget-coach` endpoint (`src/budget_service.py`) and chat UI in `BudgetPanel.tsx`. The coach reasons over salary, rent, bank balance, recent spending, budgets, and active goals. Rent falls back to recent `Housing & Utilities` / `Enso` transactions when `user_profiles.monthly_rent` is unset.
+- **Body tab**: new `BodyTab` on `/health` shows height, current/target weight, BMI, weight trend chart, and a check-in list. Weight check-ins are stored in `health_metrics.body_weight_kg`; the UI can log a new check-in directly.
+- **Tasks & Chat**: `/chat` is renamed "Tasks & Chat" in navigation. A new `ScheduledTasksPanel` shows `worker_heartbeats` (last run, next expected, status/errors) and pipelines stay runnable from the side panel.
+- **Schema cleanup**: migration `023-bugs-coach-and-position-cleanup.sql` adds `monthly_rent` to `user_profiles`, `metric_basis` JSONB to `goals`, recreates the position signals view, and removes zero-UUID duplicate positions.
+
+Why: fix visible data bugs that were making the dashboard confusing, give the user a lightweight budget advisor that is separate from goals, and make body-weight tracking a first-class health metric.
+
+Files/modules touched:
+- Backend: `src/budget_service.py`, `src/workers/price_refresh.py`, `src/workers/goal_checkin.py`, `src/workers/ibkr_flex_sync.py`.
+- Frontend: `frontend/app/components/finance/BudgetPanel.tsx`, `frontend/app/components/investments/shared.tsx`, `frontend/app/components/investments/useInvestmentsData.ts`, `frontend/app/components/investments/types.ts`, `frontend/app/(app)/finance/page.tsx`, `frontend/app/components/health/FuelTab.tsx`, `frontend/app/components/health/BodyTab.tsx`, `frontend/app/(app)/health/page.tsx`, `frontend/app/(app)/chat/components/ChatPanel.tsx`, `frontend/app/(app)/chat/components/ScheduledTasksPanel.tsx`, `frontend/app/(app)/layout.tsx`, `frontend/app/components/goals/GoalCard.tsx`, `frontend/app/components/goals/useGoalsData.ts`, `frontend/app/(app)/goals/page.tsx`.
+- Schema: `docs/supabase-migrations/023-bugs-coach-and-position-cleanup.sql`.
+- Docs: `docs/CHANGES.md`, `docs/api-reference.md`, `AGENTS.md`.
+
+Breaking changes / manual setup:
+- Apply migration `023` in the Supabase SQL Editor. It has already been run against the production project.
+- Regenerate `docs/supabase-schema.sql` with `python scripts/introspect_supabase_schema.py` after applying `023`.
+- `SERPER_API_KEY` must remain in `.env`; the budget coach relies on the same OpenRouter/Serper stack as the rest of the agent.
+
+---
+
 ## Latest change: Remaining overhaul batch — finance componentization, nutrition UI, agent refactor, docs discipline
 
 What's New:

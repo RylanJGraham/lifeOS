@@ -152,7 +152,7 @@ This updates `docs/supabase-schema.sql` from the live database. Do this after ev
 **Frontend**
 
 - `frontend/app/(app)/health/page.tsx` orchestrates data fetching and tab switching.
-- Tab content is componentized into `frontend/app/components/health/`: `ReadinessPanel` (cardio/HRV), `SleepPanel` (sleep architecture + schedule), `NutritionPanel` (trends/metric explorer), `WorkoutsPanel` (volume + muscle map + sessions), and `FuelTab` (nutrition detail).
+- Tab content is componentized into `frontend/app/components/health/`: `ReadinessPanel` (cardio/HRV), `SleepPanel` (sleep architecture + schedule), `BodyTab` (weight check-ins, BMI, trend), `NutritionPanel` (trends/metric explorer), `WorkoutsPanel` (volume + muscle map + sessions), and `FuelTab` (nutrition detail).
 - Shared helpers and the `DayLens` control live in `frontend/app/components/health/shared.tsx`.
 - Meals in `FuelTab` expose a "Save as frequent item" button that upserts into `known_items`.
 
@@ -286,6 +286,7 @@ The `RiskPanel` in the dashboard reads this policy and warns on concentration, c
 - `route_input` classifies messages into intents: nutrition, workout, health, trade, finance, goal, general.
 - `src/nodes/text_intent.py` dispatches to dedicated handler modules that read/write Supabase.
 - Trade handler now asks one clarifying question when symbol, quantity, or price is missing instead of dropping the message.
+- `/chat` is labelled "Tasks & Chat" and combines conversation with observability: `ScheduledTasksPanel` reads `worker_heartbeats` to show last run, next expected run, and errors; `PipelinesPanel` lets the user trigger pipelines manually.
 - `src/chat_threads.py` loads and persists recent conversation turns in `chat_threads` so Telegram and web sessions keep context.
 - `src/chat_service.py` is the web chat wrapper around `graph.py`; it now accepts `session_id` and passes `thread_source`/`thread_external_id` into the graph state.
 - Telegram messages hit `POST /webhook` and are routed the same way, using the Telegram `chat_id` as the thread key.
@@ -300,7 +301,8 @@ Live endpoints are documented in `docs/api-reference.md`. Key contracts:
 |---|---|
 | `POST /webhook` | Telegram updates |
 | `POST /api/chat` | Web chat through LangGraph |
-| `POST /api/chat/goals` | Goal strategist |
+| `POST /api/goals/chat` | Goal strategist |
+| `POST /api/budget-coach` | Budget coach (read-only spending advice) |
 | `GET /api/pipelines` | List pipelines |
 | `POST /api/pipelines/{id}/run` | Trigger a pipeline |
 | `GET /status` | Health check |
@@ -313,11 +315,15 @@ Frontend routes are also part of the public contract. Do not rename or remove ro
 
 Configured by `scripts/windows_tasks.ps1`. All times are local Windows time (Central European for this deployment).
 
+Every scheduled task now invokes `python src/pipeline_service.py run <pipeline-id>`. This keeps each worker runnable as a standalone script, but ensures every run is recorded in `pipeline_runs` and `worker_heartbeats` so the **Tasks & Chat** panel shows real status and the `/system` page shows history.
+
 | Task | Schedule | Purpose |
 |---|---|---|
+| `LifeOS-DailyAnalysis` | Daily 06:00 | Generate health/wealth insights with local Ollama |
+| `LifeOS-MorningBriefing` | Daily 07:00 | Telegram morning briefing |
+| `LifeOS-InvestmentNotifier` | Daily 09:00 | Scan transactions for new investments and alert |
 | `LifeOS-IBKRFlexSync` | Mon–Fri 15:00 | Pull IBKR positions/trades before Jarvis run |
 | `LifeOS-PriceRefresh` | Daily 10:00 | Refresh stale position prices via Finnhub |
-| `LifeOS-MorningBriefing` | Daily 07:00 | Telegram morning briefing |
 | `LifeOS-HealthSync` | Daily 23:30 | Runs nightly health aggregate and writes summary to `ai_insights` |
 | `LifeOS-GoalCheckinDaily` | Daily 20:00 | Daily habit check-in questions |
 | `LifeOS-GoalCheckinWeekly` | Sunday 10:00 | Weekly goal review |

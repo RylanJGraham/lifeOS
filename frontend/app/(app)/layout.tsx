@@ -17,7 +17,7 @@ const NAV_MODULES = [
   { href: "/investments", icon: TrendingUp, label: "Investments", accent: "var(--accent-wealth)" },
   { href: "/goals", icon: Target, label: "Goals", accent: "var(--accent-trends)" },
   { href: "/specialist", icon: Stethoscope, label: "Specialist", accent: "var(--accent-kinematic)" },
-  { href: "/chat", icon: MessageSquare, label: "Chat", accent: "var(--accent-sleep)" },
+  { href: "/chat", icon: MessageSquare, label: "Tasks & Chat", accent: "var(--accent-sleep)" },
 ];
 
 export default function AppShell({

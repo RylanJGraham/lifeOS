@@ -10,6 +10,7 @@ export interface Pipeline {
   id: string;
   name: string;
   description: string;
+  schedule: string | null;
   status: string;
   last_started_at: string | null;
   last_finished_at: string | null;

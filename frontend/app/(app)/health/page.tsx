@@ -8,13 +8,14 @@ import ReadinessPanel from "../../components/health/ReadinessPanel";
 import SleepPanel from "../../components/health/SleepPanel";
 import NutritionPanel from "../../components/health/NutritionPanel";
 import WorkoutsPanel from "../../components/health/WorkoutsPanel";
+import BodyTab from "../../components/health/BodyTab";
 import InsightBanners from "../../components/InsightBanners";
 import { supabase } from "../../../utils/supabaseClient";
 import { THEME } from "../../../utils/theme";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Heart, Moon, Dumbbell, Activity, Brain, ChevronUp, ChevronDown,
-  X, Send, FileText, Search, Target, Flame, TrendingUp, AlertTriangle,
+  X, Send, FileText, Search, Target, Flame, TrendingUp, AlertTriangle, Scale,
 } from "lucide-react";
 import { C, getCutoff, toDayKey, dayKeyOf, fmtDayLong, rangeLabel, StatusDot, DayLens } from "../../components/health/shared";
 
@@ -264,6 +265,7 @@ export default function HealthOS() {
     { id: "cardio", label: "Cardiovascular", icon: Heart, color: C.cv },
     { id: "sleep", label: "Sleep", icon: Moon, color: C.sleep },
     { id: "fuel", label: "Fuel", icon: Flame, color: C.nutrition },
+    { id: "body", label: "Body", icon: Scale, color: C.cv },
     { id: "kinematic", label: "Kinematic", icon: Dumbbell, color: C.kinematic },
     { id: "trends", label: "Trends", icon: TrendingUp, color: C.trends },
     { id: "templates", label: "Templates", icon: Target, color: C.textPrimary },
@@ -348,6 +350,7 @@ export default function HealthOS() {
                 selectedDay={selectedDay} onDayChange={setSelectedDay} />
             )}
             {activeTab === "trends" && <NutritionPanel metricsHistory={metricsHistory} dbMeals={dbMeals} timeFilter={timeFilter} />}
+            {activeTab === "body" && <BodyTab metricsHistory={metricsHistory} timeFilter={timeFilter} />}
             {activeTab === "templates" && <TemplatesTab />}
           </motion.div>
         </AnimatePresence>

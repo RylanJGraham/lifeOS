@@ -44,6 +44,40 @@ def _profile_context(supabase, user_id: str) -> dict:
     return {}
 
 
+_HOUSING_HINTS = ("housing", "rent", "mortgage", "enso")
+
+
+def _monthly_rent_estimate(supabase, user_id: str) -> float | None:
+    """Infer monthly rent from recent housing/Enso debits when monthly_rent is unset."""
+    since = (datetime.now() - timedelta(days=90)).date().isoformat()
+    try:
+        res = (
+            supabase.table("transactions")
+            .select("amount, category, merchant_name")
+            .eq("user_id", user_id)
+            .gte("transaction_date", since)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception as e:
+        logger.warning(f"Failed to fetch rent estimate transactions: {e}")
+        return None
+
+    total = 0.0
+    for r in rows:
+        amt = float(r.get("amount") or 0)
+        if amt >= 0:
+            continue
+        cat = (r.get("category") or "").lower()
+        merchant = (r.get("merchant_name") or "").lower()
+        if any(h in cat for h in _HOUSING_HINTS) or any(h in merchant for h in _HOUSING_HINTS):
+            total += abs(amt)
+    if total <= 0:
+        return None
+    months = max(1, round((datetime.now().date() - datetime.fromisoformat(since).date()).days / 30))
+    return round(total / months, 2)
+
+
 def _spending_by_period(supabase, user_id: str, days: int) -> list:
     since = (datetime.now() - timedelta(days=days)).date().isoformat()
     try:
@@ -97,6 +131,8 @@ def _build_context(supabase, user_id: str) -> str:
     prof = _profile_context(supabase, user_id)
     salary = prof.get("base_salary")
     rent = prof.get("monthly_rent")
+    if rent is None:
+        rent = _monthly_rent_estimate(supabase, user_id)
     bank = prof.get("bank_balance")
     savings_rate = prof.get("target_savings_rate")
     currency = prof.get("currency") or "EUR"
