@@ -11,7 +11,13 @@ from utils.logger import SupabaseLogger
 _graph_lock = threading.Lock()
 
 
-def handle_chat(message: str, image_b64: str | None = None) -> dict:
+def handle_chat(
+    message: str,
+    image_b64: str | None = None,
+    user_id: str | None = None,
+    source: str = "web",
+    external_id: str | None = None,
+) -> dict:
     """Send a text message (or image) through the agent graph and return its reply."""
     from graph import app_graph  # lazy: heavy imports (langchain, supabase)
 
@@ -20,10 +26,15 @@ def handle_chat(message: str, image_b64: str | None = None) -> dict:
     if not message and not image_b64:
         raise ValueError("Message or image is required.")
 
+    payload: dict = {
+        "user_id": user_id,
+        "thread_source": source,
+        "thread_external_id": external_id or user_id,
+    }
     if image_b64:
-        payload = {"input_type": "image", "content": image_b64, "caption": message or None}
+        payload.update({"input_type": "image", "content": image_b64, "caption": message or None})
     else:
-        payload = {"input_type": "text", "content": message}
+        payload.update({"input_type": "text", "content": message})
 
     with _graph_lock:
         result = app_graph.invoke(payload)

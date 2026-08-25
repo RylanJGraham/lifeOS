@@ -32,7 +32,7 @@ function PageSkeleton() {
 
 export default function GoalsPage() {
   const {
-    goals, checkins, liveBankBalance, latestPortfolioValue, netWorth,
+    goals, checkins, liveBankBalance, latestPortfolioValue, portfolioHistory, netWorth,
     loading, error, refetch,
   } = useGoalsData();
   const [showAchieved, setShowAchieved] = useState(false);
@@ -127,6 +127,7 @@ export default function GoalsPage() {
                         goal={g}
                         checkins={checkinsFor(g.id)}
                         liveValues={liveValues}
+                        portfolioHistory={portfolioHistory}
                         onChanged={refetch}
                       />
                     ))}
@@ -152,6 +153,7 @@ export default function GoalsPage() {
                             goal={g}
                             checkins={checkinsFor(g.id)}
                             liveValues={liveValues}
+                            portfolioHistory={portfolioHistory}
                             onChanged={refetch}
                           />
                         ))}

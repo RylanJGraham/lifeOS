@@ -101,6 +101,56 @@ export function EmptyState({ message, icon: Icon = Activity }: { message: string
   );
 }
 
+import type { Position } from "./types";
+
+/** Merge duplicate position rows (e.g. broker + Jarvis user_id mismatch) into a
+ *  single row per symbol. Preference order: broker > manual > jarvis. The
+ *  surviving row keeps the broker/manually logged basis and merges the most
+ *  recent price, any sector/tags from Jarvis, and the latest signal fields. */
+export function dedupePositions(positions: Position[]): Position[] {
+  const groups = new Map<string, Position[]>();
+  for (const p of positions) {
+    const key = (p.symbol || "").toUpperCase();
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(p);
+  }
+
+  const sourceRank = (s: string | null | undefined) => {
+    const rank: Record<string, number> = { broker: 0, manual: 1, jarvis: 2 };
+    return rank[(s || "").toLowerCase()] ?? 99;
+  };
+
+  return Array.from(groups.values()).map((rows) => {
+    rows.sort((a, b) => {
+      const ra = sourceRank(a.source);
+      const rb = sourceRank(b.source);
+      if (ra !== rb) return ra - rb;
+      const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+      const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+      return tb - ta;
+    });
+    const [base, ...rest] = rows;
+    const merged = { ...base };
+    for (const r of rest) {
+      if (!merged.sector && r.sector) merged.sector = r.sector;
+      if (!merged.tags && r.tags) merged.tags = r.tags;
+      if (r.updated_at && new Date(r.updated_at) > new Date(merged.updated_at || 0)) {
+        if (r.current_price != null) merged.current_price = r.current_price;
+        if (r.position_value != null) merged.position_value = r.position_value;
+        if (r.unrealized_pnl != null) merged.unrealized_pnl = r.unrealized_pnl;
+        if (r.unrealized_pnl_pct != null) merged.unrealized_pnl_pct = r.unrealized_pnl_pct;
+        merged.updated_at = r.updated_at;
+      }
+      if (!merged.latest_signal_action && r.latest_signal_action) {
+        merged.latest_signal_action = r.latest_signal_action;
+        merged.latest_signal_confidence = r.latest_signal_confidence;
+        merged.latest_signal_price_target = r.latest_signal_price_target;
+      }
+    }
+    return merged;
+  });
+}
+
 export function SectionCard({ title, sub, children, action }: {
   title: string;
   sub?: string;

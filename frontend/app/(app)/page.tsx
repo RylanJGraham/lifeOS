@@ -683,7 +683,7 @@ function relDay(iso: string): string {
 function CareTeamStrip({ insights }: { insights: any[] }) {
   const cards = CARE_TEAM.map(p => ({
     ...p,
-    latest: insights.find(i => i.domain === p.domain) || null, // insights arrive newest-first
+    latest: insights.find(i => i.domain === p.domain && !i.resolved_at) || null, // insights arrive newest-first
   })).filter(c => c.latest);
   if (cards.length === 0) return null;
 
@@ -732,7 +732,17 @@ function CareTeamStrip({ insights }: { insights: any[] }) {
 const ACTION_DOMAIN_META = INSIGHT_DOMAIN_META;
 
 function ActionItemsPanel({ insights, pendingCheckins }: { insights: any[]; pendingCheckins: string[] }) {
-  const items = insights.filter(i => i.action_item && !["doctor", "nutritionist", "pt"].includes(i.domain)).slice(0, 6);
+  // Show only unresolved action items, keeping the latest pending insight per domain.
+  const CARE_DOMAINS = new Set(["doctor", "nutritionist", "pt"]);
+  const seen = new Set<string>();
+  const items = insights
+    .filter(i => i.action_item && !i.resolved_at && !CARE_DOMAINS.has(i.domain))
+    .filter(i => {
+      if (seen.has(i.domain)) return false;
+      seen.add(i.domain);
+      return true;
+    })
+    .slice(0, 6);
   const total = items.length + pendingCheckins.length;
 
   return (
@@ -801,6 +811,59 @@ function ActionItemsPanel({ insights, pendingCheckins }: { insights: any[]; pend
   );
 }
 
+// ─── Onboarding Banner ──────────────────────────────────────────
+function OnboardingBanner({ profile }: { profile: any }) {
+  const [dismissed, setDismissed] = useState(false);
+
+  const items = [
+    { label: "Set bank balance & salary", done: profile?.bank_balance != null && profile?.base_salary != null, href: "/settings" },
+    { label: "Set nutrition targets", done: profile?.protein_target_g != null, href: "/settings" },
+    { label: "Configure Telegram bot", done: false, href: "/system" },
+    { label: "Connect IBKR Flex Query", done: false, href: "/system" },
+  ];
+
+  const remaining = items.filter(i => !i.done).length;
+  if (dismissed || remaining === 0) return null;
+
+  return (
+    <motion.div
+      variants={item}
+      className="p-4 rounded-xl"
+      style={{ background: "rgba(91,66,232,0.06)", border: "1px solid rgba(91,66,232,0.25)" }}
+    >
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <div className="text-sm font-bold mb-1" style={{ color: C.sleep }}>Welcome to LifeOS — {remaining} setup step{remaining === 1 ? "" : "s"} left</div>
+          <div className="flex flex-wrap gap-2 mt-2">
+            {items.map(i => (
+              <Link
+                key={i.label}
+                href={i.href}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider"
+                style={{
+                  background: i.done ? "rgba(5,150,105,0.1)" : "var(--surface-secondary)",
+                  color: i.done ? C.optimal : "var(--text-secondary)",
+                  border: `1px solid ${i.done ? "rgba(5,150,105,0.25)" : "var(--border-subtle)"}`,
+                }}
+              >
+                {i.done ? <CheckCircle size={11} /> : <Target size={11} />}
+                {i.label}
+              </Link>
+            ))}
+          </div>
+        </div>
+        <button
+          onClick={() => setDismissed(true)}
+          className="text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded-lg"
+          style={{ color: "var(--text-tertiary)", background: "var(--surface-secondary)" }}
+        >
+          Dismiss
+        </button>
+      </div>
+    </motion.div>
+  );
+}
+
 // ─── Main Page ───────────────────────────────────────────────────
 export default function TheNexus() {
   const [logs,         setLogs]        = useState<LogEntry[]>([]);
@@ -833,8 +896,8 @@ export default function TheNexus() {
           supabase.from("workouts").select("workout_date, activity_type, duration_minutes").gte("workout_date", weekAgoIso),
           // conviction_score is a pending migration — select everything and sort client-side
           supabase.from("advisor_watchlist").select("*").order("updated_at", { ascending: false }).limit(6),
-          supabase.from("ai_insights").select("id, domain, insight_text, action_item, generated_at")
-            .in("domain", ["doctor", "nutritionist", "pt", "goals", "readiness", "pacing", "bodycomp", "cash", "habits", "correlations"]).order("generated_at", { ascending: false }).limit(30),
+          supabase.from("ai_insights").select("id, domain, insight_text, action_item, generated_at, resolved_at")
+            .in("domain", ["doctor", "nutritionist", "pt", "goals", "readiness", "pacing", "bodycomp", "cash", "habits", "correlations", "evening_audit"]).order("generated_at", { ascending: false }).limit(100),
         ]);
         if (!logsRes.error    && logsRes.data)            setLogs(logsRes.data as LogEntry[]);
         if (!metricsRes.error && metricsRes.data)         setHealthRows(metricsRes.data);
@@ -885,13 +948,22 @@ export default function TheNexus() {
 
     // Create the channel synchronously: Strict Mode mounts effects twice, and
     // a channel created inside the async fn leaks past the first cleanup.
-    const channel = supabase.channel("nexus_logs")
+    const logsChannel = supabase.channel("nexus_logs")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "system_logs" }, p => {
         setLogs(prev => [p.new as LogEntry, ...prev].slice(0, 50));
       })
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    const insightsChannel = supabase.channel("nexus_insights")
+      .on("postgres_changes", { event: "*", schema: "public", table: "ai_insights" }, () => {
+        fetchAll();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(logsChannel);
+      supabase.removeChannel(insightsChannel);
+    };
   }, [timeFilter]);
 
   // Range filter applied client-side; full transaction set is kept for the balance estimate
@@ -925,6 +997,8 @@ export default function TheNexus() {
 
   return (
     <motion.div variants={container} initial="hidden" animate="show" className="space-y-6 pb-10">
+
+      <OnboardingBanner profile={profile} />
 
       {/* Page header */}
       <motion.div variants={item} className="flex items-center justify-between flex-wrap gap-3">

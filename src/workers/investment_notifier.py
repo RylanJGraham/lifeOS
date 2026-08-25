@@ -1,9 +1,13 @@
 import os
 import re
 import time
+import sys
 import logging
 import requests
 from supabase import create_client
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils.retry import with_retry
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("investment_notifier")
@@ -56,19 +60,74 @@ def infer_ticker(tx: dict) -> str | None:
     return None
 
 
+@with_retry(max_retries=2, base_delay=2.0, exceptions=(Exception,))
+def _send_telegram_once(text: str) -> requests.Response:
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+    r = requests.post(url, json=payload, timeout=8.0)
+    r.raise_for_status()
+    return r
+
+
 def send_telegram(text: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.warning("Telegram not configured; skipping send")
         return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
     try:
-        r = requests.post(url, json=payload, timeout=8.0)
-        r.raise_for_status()
+        _send_telegram_once(text)
         return True
     except Exception as e:
         logger.error(f"Failed to send Telegram message: {e}")
         return False
+
+
+def _fetch_candidates():
+    if not sb:
+        logger.error("Supabase client not initialized")
+        return []
+    try:
+        res = sb.table("transactions").select("id, transaction_date, merchant_name, amount, category, notes, is_investment, ticker, notified").eq("notified", False).limit(200).order("created_at", {"ascending": False}).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"Error fetching transactions: {e}")
+        return []
+
+
+def _process_tx(tx: dict) -> bool:
+    """Notify for a single transaction and mark it notified. Returns True if sent."""
+    if not looks_like_investment(tx):
+        return False
+    tkr = tx.get("ticker") or infer_ticker(tx) or ""
+    txt = (
+        f"📈 Investment detected:\n"
+        f"Date: {tx.get('transaction_date')}\n"
+        f"Merchant: {tx.get('merchant_name')}\n"
+        f"Amount: ${abs(float(tx.get('amount') or 0)):,}\n"
+    )
+    if tkr:
+        txt += f"Ticker: {tkr}\n"
+    txt += "\nActions: Reply in Telegram to confirm or review in the dashboard."
+
+    sent = send_telegram(txt)
+    if sent:
+        try:
+            sb.table("transactions").update({"notified": True}).eq("id", tx.get("id")).execute()
+            logger.info(f"Notified and marked tx {tx.get('id')}")
+        except Exception as e:
+            logger.error(f"Failed to mark transaction notified: {e}")
+    return sent
+
+
+def run_once():
+    """One-shot notifier run. Safe for Task Scheduler / pipeline."""
+    candidates = _fetch_candidates()
+    logger.info(f"Investment notifier: scanning {len(candidates)} un-notified transactions")
+    sent = 0
+    for tx in candidates:
+        if _process_tx(tx):
+            sent += 1
+    logger.info(f"Investment notifier: sent {sent} notifications")
+    return sent
 
 
 def poll_and_notify(poll_interval: int = 30):
@@ -77,59 +136,13 @@ def poll_and_notify(poll_interval: int = 30):
         return
     logger.info("Starting investment notifier loop")
     while True:
-        try:
-            res = sb.table("transactions").select("id, transaction_date, merchant_name, amount, category, notes, is_investment, ticker, notified").eq("notified", False).limit(200).order("created_at", {"ascending": False}).execute()
-            rows = res.data or []
-            logger.debug(f"Fetched {len(rows)} candidate transactions")
-            to_notify = []
-            for tx in rows:
-                if looks_like_investment(tx):
-                    tx_ticker = tx.get("ticker") or infer_ticker(tx) or ""
-                    to_notify.append((tx, tx_ticker))
-
-            for tx, tkr in to_notify:
-                txt = (
-                    f"📈 Investment detected:\n"
-                    f"Date: {tx.get('transaction_date')}\n"
-                    f"Merchant: {tx.get('merchant_name')}\n"
-                    f"Amount: ${abs(float(tx.get('amount') or 0)):,}\n"
-                )
-                if tkr:
-                    txt += f"Ticker: {tkr}\n"
-                txt += "\nActions: Reply in Telegram to confirm or review in the dashboard."
-
-                sent = send_telegram(txt)
-                if sent:
-                    try:
-                        sb.table("transactions").update({"notified": True}).eq("id", tx.get("id")).execute()
-                        logger.info(f"Notified and marked tx {tx.get('id')}")
-                    except Exception as e:
-                        logger.error(f"Failed to mark transaction notified: {e}")
-        except Exception as e:
-            logger.error(f"Error polling transactions: {e}")
-
+        run_once()
         time.sleep(poll_interval)
 
 
 if __name__ == "__main__":
-    # Run once (for cron) or long-running loop
     mode = os.getenv("NOTIFIER_MODE", "loop")
     if mode == "once":
-        # single run
-        try:
-            res = sb.table("transactions").select("id, transaction_date, merchant_name, amount, category, notes, is_investment, ticker, notified").eq("notified", False).limit(200).order("created_at", {"ascending": False}).execute()
-            rows = res.data or []
-            to_notify = []
-            for tx in rows:
-                if looks_like_investment(tx):
-                    tkr = tx.get("ticker") or infer_ticker(tx) or ""
-                    txt = (
-                        f"📈 Investment detected:\nDate: {tx.get('transaction_date')}\nMerchant: {tx.get('merchant_name')}\nAmount: ${abs(float(tx.get('amount') or 0)):,}\n"
-                    )
-                    if tkr:
-                        txt += f"Ticker: {tkr}\n"
-                    send_telegram(txt)
-        except Exception as e:
-            logger.error(f"One-shot run failed: {e}")
+        run_once()
     else:
         poll_and_notify()

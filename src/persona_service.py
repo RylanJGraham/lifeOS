@@ -129,33 +129,48 @@ def _notes_block(supabase, domain: str, label: str) -> str:
 def _doctor_context(supabase, user_id: str) -> str:
     lines = []
     try:
-        since = (datetime.now() - timedelta(days=14)).isoformat()
-        res = (
+        since = (datetime.now() - timedelta(days=14)).date().isoformat()
+        hm_rows = (
             supabase.table("health_metrics")
-            .select("recorded_at, hrv, resting_heart_rate, sleep_duration_minutes, sleep_deep_minutes, sleep_rem_minutes, symptom_name, symptom_severity, notes")
-            .gte("recorded_at", since).order("recorded_at", desc=True).limit(30).execute()
-        )
-        rows = res.data or []
-        if rows:
+            .select("recorded_at, sleep_duration_minutes, sleep_deep_minutes, sleep_rem_minutes, resting_heart_rate, hrv, symptom_name, symptom_severity, notes")
+            .gte("recorded_at", since).order("recorded_at", desc=True).limit(60).execute()
+        ).data or []
+
+        if hm_rows:
             lines.append("Health metrics, last 14 days (newest first):")
-            for r in rows:
-                parts = [f"  - [{str(r.get('recorded_at'))[:10]}]"]
+            by_day = {}
+            symptom_rows = []
+            for r in hm_rows:
+                day = str(r.get("recorded_at"))[:10]
+                by_day.setdefault(day, {})
                 if r.get("sleep_duration_minutes"):
-                    h = r["sleep_duration_minutes"] / 60
-                    parts.append(f"sleep {h:.1f}h (deep {r.get('sleep_deep_minutes') or '?'}m, REM {r.get('sleep_rem_minutes') or '?'}m)")
-                if r.get("resting_heart_rate"):
-                    parts.append(f"RHR {r['resting_heart_rate']}bpm")
-                if r.get("hrv"):
-                    parts.append(f"HRV {r['hrv']}ms")
+                    by_day[day]["sleep"] = r
+                if r.get("resting_heart_rate") or r.get("hrv"):
+                    by_day[day]["cv"] = r
                 if r.get("symptom_name"):
-                    parts.append(f"SYMPTOM: {r['symptom_name']} (severity {r.get('symptom_severity')}/10)")
-                if r.get("notes"):
-                    parts.append(f"note: {r['notes'][:100]}")
+                    symptom_rows.append((day, r))
+            for day, r in symptom_rows:
+                by_day.setdefault(day, {}).setdefault("symptoms", []).append(r)
+
+            for day in sorted(by_day.keys(), reverse=True):
+                parts = [f"  - [{day}]"]
+                s = by_day[day].get("sleep")
+                if s and s.get("sleep_duration_minutes"):
+                    h = s["sleep_duration_minutes"] / 60
+                    parts.append(f"sleep {h:.1f}h (deep {s.get('sleep_deep_minutes') or '?'}m, REM {s.get('sleep_rem_minutes') or '?'}m)")
+                cv = by_day[day].get("cv")
+                if cv and cv.get("resting_heart_rate"):
+                    parts.append(f"RHR {cv['resting_heart_rate']}bpm")
+                if cv and cv.get("hrv"):
+                    parts.append(f"HRV {cv['hrv']}ms")
+                for sym in by_day[day].get("symptoms", []):
+                    if sym.get("symptom_name"):
+                        parts.append(f"SYMPTOM: {sym['symptom_name']} (severity {sym.get('symptom_severity')}/10)")
                 lines.append(" ".join(parts))
         else:
             lines.append("Health metrics: (no data in the last 14 days)")
     except Exception as e:
-        logger.warning(f"Doctor context: health_metrics failed: {e}")
+        logger.warning(f"Doctor context: health metrics failed: {e}")
         lines.append("Health metrics: unavailable")
     lines.append(_notes_block(supabase, "medical", "Medical notes on record"))
     return "\n".join(lines)

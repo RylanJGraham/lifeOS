@@ -183,11 +183,68 @@ def _sanitize_history(history: list) -> list:
     return msgs
 
 
-def _extract_action(reply: str):
-    """Pull the fenced goal_action block out of the reply. Returns (action_dict, cleaned_reply)."""
+GOAL_ACTION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "goal_action",
+        "description": "Execute a validated create/update/delete/checkin action on the user's goals. Only call this after the user has explicitly confirmed the operation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": ["create", "update", "delete", "checkin"],
+                    "description": "The operation to perform",
+                },
+                "goal_title": {
+                    "type": "string",
+                    "description": "Exact or fuzzy-matched title of the goal",
+                },
+                "fields": {
+                    "type": "object",
+                    "description": "Payload for the operation",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "category": {"type": "string", "enum": ["financial", "habit", "personal"]},
+                        "status": {"type": "string", "enum": ["active", "achieved", "abandoned"]},
+                        "description": {"type": "string"},
+                        "target_value": {"type": "number"},
+                        "current_value": {"type": "number"},
+                        "unit": {"type": "string"},
+                        "currency": {"type": "string"},
+                        "deadline": {"type": "string", "description": "ISO date or relative phrase"},
+                        "linked_metric": {"type": "string", "enum": ["net_worth", "bank_balance", "portfolio_value"]},
+                        "checkin_cadence": {"type": "string", "enum": ["daily", "weekly"]},
+                        "plan": {"type": "array", "items": {"type": "object"}},
+                        "note": {"type": "string"},
+                        "value": {"type": "number"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["operation", "goal_title"],
+        },
+    },
+}
+
+
+def _extract_action(reply: str, tool_calls: list | None = None):
+    """Extract a goal_action from an explicit tool call or a fenced block.
+    Returns (action_dict, cleaned_reply)."""
+    if tool_calls:
+        for tc in tool_calls:
+            fn = tc.get("function") or tc.get("name") and tc
+            if fn and fn.get("name") == "goal_action":
+                try:
+                    args = fn.get("arguments")
+                    if isinstance(args, str):
+                        args = json.loads(args)
+                    return args, reply
+                except Exception as e:
+                    logger.warning(f"Failed to parse tool call arguments: {e}")
+
     match = re.search(r"```goal_action\s*(\{.*?\})\s*```", reply, re.DOTALL)
     if not match:
-        # Fall back to a looser hunt in case the model botched the fence.
         match = re.search(r"```goal_action\s*(.*?)```", reply, re.DOTALL)
         if match:
             inner = re.search(r"\{.*\}", match.group(1), re.DOTALL)
@@ -395,16 +452,26 @@ def handle_goals_chat(message: str, history: list = None) -> dict:
         messages.append(HumanMessage(content=message))
 
         try:
-            raw_reply = llm_fast.invoke(messages).content
+            llm_with_tools = llm_fast.bind_tools([GOAL_ACTION_TOOL], tool_choice="auto")
+            raw_response = llm_with_tools.invoke(messages)
+            raw_reply = raw_response.content or ""
+            tool_calls = getattr(raw_response, "tool_calls", None)
+            if not tool_calls and raw_response.additional_kwargs:
+                tool_calls = raw_response.additional_kwargs.get("tool_calls")
         except Exception as e:
-            logger.error(f"Goals chat LLM call failed: {e}")
-            SupabaseLogger.error("goals-chat", f"Goals chat LLM call failed: {e}")
-            return {
-                "reply": "I'm having trouble reaching my planning brain right now. Try again in a moment.",
-                "goals_changed": False,
-            }
+            logger.warning(f"Tool-calling goals chat failed, falling back to plain generation: {e}")
+            try:
+                raw_reply = llm_fast.invoke(messages).content
+                tool_calls = None
+            except Exception as e2:
+                logger.error(f"Goals chat LLM call failed: {e2}")
+                SupabaseLogger.error("goals-chat", f"Goals chat LLM call failed: {e2}")
+                return {
+                    "reply": "I'm having trouble reaching my planning brain right now. Try again in a moment.",
+                    "goals_changed": False,
+                }
 
-    action, reply = _extract_action(raw_reply or "")
+    action, reply = _extract_action(raw_reply or "", tool_calls)
 
     if action is None:
         return {"reply": reply or "I couldn't generate a response.", "goals_changed": False}

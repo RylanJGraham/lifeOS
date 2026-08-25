@@ -158,6 +158,42 @@ natively, e.g.:
 These come from real failures of the first live run. Violating any of them is
 a failed cycle:
 
+## Order recommendations
+
+In addition to signals, write actionable orders to **`advisor_orders`** at the end of each daily cycle. One row per actionable trade.
+
+| Field | Required | Notes |
+|---|---|---|
+| `symbol` | yes | Uppercase ticker. Use exchange suffixes for EUR lines. |
+| `action` | yes | `BUY`, `SELL`, `ADD`, or `TRIM`. |
+| `order_type` | yes | `MARKET`, `LIMIT`, `STOP`, `STOP_LIMIT`, or `TRAILING_STOP`. |
+| `quantity` | yes | Number of shares/units. |
+| `limit_price` | if LIMIT/STOP_LIMIT | Specific limit price. |
+| `stop_price` | if STOP/STOP_LIMIT | Stop trigger price. |
+| `trailing_pct` | if TRAILING_STOP | e.g. `5.0` for 5% trail. |
+| `tif` | yes | `DAY`, `GTC`, `IOC`, or `FOK`. Default `DAY`. |
+| `rationale` | yes | Why this order now, with sources. |
+| `confidence` | yes | 0–1 or 0–100. |
+| `cycle_id` | yes | Same cycle_id used for advisor_signals. |
+
+Example JSON row:
+
+```json
+{
+  "symbol": "NVDA",
+  "action": "BUY",
+  "order_type": "LIMIT",
+  "quantity": 10,
+  "limit_price": 215.35,
+  "tif": "DAY",
+  "rationale": "Tech Agent: RSI cooled to 42 after earnings dip; Synthesis: 78% confidence. Limit set at current ask -3c to avoid chasing spread.",
+  "confidence": 0.78,
+  "cycle_id": "2026-08-23-a"
+}
+```
+
+The LifeOS dashboard will show these as "Proposed Orders". The user approves or rejects them, executes them manually in IBKR, and then marks them filled (or the next IBKR Flex Query sync marks them filled automatically).
+
 - **Never invent quantities, prices, or cost bases.** Read them from
   `advisor_positions` or IBKR. If you cannot get a number, write null — not a
   guess.

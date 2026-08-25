@@ -44,15 +44,24 @@ async def get_telegram_file(file_id: str) -> bytes:
 
 def process_telegram_message(chat_id: int, message: dict):
     try:
+        from utils.resolve_user_id import resolve_user_id
+        user_id = resolve_user_id("telegram", str(chat_id))
+
         # Check text
         if "text" in message:
             text = message["text"]
             if text.startswith("/start"):
                 # Already handled in webhook sync
                 return
-            
-            logger.info("Routing text to graph...")
-            result = app_graph.invoke({"input_type": "text", "content": text})
+
+            logger.info(f"Routing text to graph for user {user_id}...")
+            result = app_graph.invoke({
+                "input_type": "text",
+                "content": text,
+                "user_id": user_id,
+                "thread_source": "telegram",
+                "thread_external_id": str(chat_id),
+            })
             
             import asyncio
             asyncio.run(send_telegram_message(chat_id, result.get("response", "Done!")))
@@ -83,7 +92,13 @@ def process_telegram_message(chat_id: int, message: dict):
                         return
                         
                     logger.info("Routing PDF text to graph...")
-                    result = app_graph.invoke({"input_type": "pdf", "content": pdf_text})
+                    result = app_graph.invoke({
+                        "input_type": "pdf",
+                        "content": pdf_text,
+                        "user_id": user_id,
+                        "thread_source": "telegram",
+                        "thread_external_id": str(chat_id),
+                    })
                     asyncio.run(send_telegram_message(chat_id, result.get("response", "Parsed!")))
                     
                 except Exception as e:
@@ -109,7 +124,14 @@ def process_telegram_message(chat_id: int, message: dict):
             caption = message.get("caption")
 
             logger.info("Routing Image Base64 to graph...")
-            result = app_graph.invoke({"input_type": "image", "content": b64_image, "caption": caption})
+            result = app_graph.invoke({
+                "input_type": "image",
+                "content": b64_image,
+                "caption": caption,
+                "user_id": user_id,
+                "thread_source": "telegram",
+                "thread_external_id": str(chat_id),
+            })
             asyncio.run(send_telegram_message(chat_id, result.get("response", "Parsed!")))
 
     except Exception as e:

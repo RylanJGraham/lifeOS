@@ -1,6 +1,6 @@
 // ─── FastAPI backend client ──────────────────────────────────────
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || "";
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || "";
 
 function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
   return API_TOKEN ? { ...extra, "X-API-Key": API_TOKEN } : extra;
@@ -34,12 +34,12 @@ async function parseError(res: Response, fallback: string): Promise<Error> {
       return new Error(detail);
     }
   } catch {
-    // Non-JSON error body — fall through to generic message
+    // Non-JSON error body — fall through to generic error
   }
   return new Error(`${fallback} (HTTP ${res.status})`);
 }
 
-export async function sendChat(message: string, image?: string): Promise<{ reply: string }> {
+export async function sendChat(message: string, image?: string, sessionId?: string): Promise<{ reply: string }> {
   const res = await fetch(`${API_URL}/api/chat`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
@@ -47,6 +47,7 @@ export async function sendChat(message: string, image?: string): Promise<{ reply
       ...(message ? { message } : {}),
       // base64-encoded image WITHOUT the data: prefix
       ...(image ? { image } : {}),
+      ...(sessionId ? { session_id: sessionId } : {}),
     }),
   });
   if (!res.ok) throw await parseError(res, "Chat request failed");
@@ -82,6 +83,19 @@ export async function sendPersonaChat(
   return res.json();
 }
 
+export async function sendBudgetCoachChat(
+  message: string,
+  history: { role: string; content: string }[],
+): Promise<{ reply: string }> {
+  const res = await fetch(`${API_URL}/api/budget-coach`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ message, history }),
+  });
+  if (!res.ok) throw await parseError(res, "Budget coach request failed");
+  return res.json();
+}
+
 export async function getPipelines(): Promise<Pipeline[]> {
   const res = await fetch(`${API_URL}/api/pipelines`, { headers: authHeaders() });
   if (!res.ok) throw await parseError(res, "Failed to fetch pipelines");
@@ -97,6 +111,21 @@ export async function runPipeline(id: string): Promise<void> {
 export async function getBackendStatus(): Promise<BackendStatus> {
   const res = await fetch(`${API_URL}/status`);
   if (!res.ok) throw await parseError(res, "Failed to fetch backend status");
+  return res.json();
+}
+
+export interface TelegramWebhookInfo {
+  status: string;
+  webhook_url: string;
+  last_update_at: string | null;
+  pending_update_count: number;
+  webhook_status: "ok" | "failing" | "not_set";
+  error: string;
+}
+
+export async function getTelegramWebhookInfo(): Promise<TelegramWebhookInfo> {
+  const res = await fetch(`${API_URL}/telegram/webhook-info`, { headers: authHeaders() });
+  if (!res.ok) throw await parseError(res, "Failed to fetch Telegram webhook info");
   return res.json();
 }
 

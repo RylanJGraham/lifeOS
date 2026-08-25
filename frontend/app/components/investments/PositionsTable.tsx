@@ -5,9 +5,18 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   ComposedChart, Line, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from "recharts";
-import { ChevronDown, ChevronUp, PieChart as PieIcon } from "lucide-react";
+import { ChevronDown, ChevronUp, PieChart as PieIcon, Clock } from "lucide-react";
 import type { Position, Purchase, PositionHistoryRow } from "./types";
 import { C, num, numOrNull, curSym, fmt2, fmtMoney, confPct, shortSymbol, actionStyle, EmptyState } from "./shared";
+
+function freshness(updatedAt: string | null | undefined): { text: string; stale: boolean } {
+  if (!updatedAt) return { text: "no price timestamp", stale: true };
+  const ms = Date.now() - new Date(updatedAt).getTime();
+  const hours = ms / (1000 * 60 * 60);
+  if (hours < 1) return { text: "<1h ago", stale: false };
+  if (hours < 24) return { text: `${Math.floor(hours)}h ago`, stale: false };
+  return { text: `${Math.floor(hours / 24)}d ago`, stale: true };
+}
 
 function PositionDetail({ symbol, currency, history, purchases }: {
   symbol: string;
@@ -99,6 +108,18 @@ function PositionDetail({ symbol, currency, history, purchases }: {
   );
 }
 
+function optionBadgeText(options: Record<string, any> | null | undefined): string | null {
+  if (!options || typeof options !== "object") return null;
+  const strike = options.strike;
+  const expiry = options.expiry;
+  const right = options.put_call || options.putCall || options.right || options.side || options.type;
+  const parts: string[] = [];
+  if (right) parts.push(String(right).toUpperCase());
+  if (strike != null) parts.push(`$${parseFloat(strike).toFixed(2)}`);
+  if (expiry) parts.push(String(expiry).slice(0, 10));
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 export default function PositionsTable({ positions, positionHistory, purchases }: {
   positions: Position[];
   positionHistory: PositionHistoryRow[];
@@ -129,6 +150,7 @@ export default function PositionsTable({ positions, positionHistory, purchases }
           const target = numOrNull(p.latest_signal_price_target);
           const st = actionStyle(p.latest_signal_action);
           const isOpen = expanded === key;
+          const fresh = freshness(p.updated_at);
 
           return (
             <div key={key} className="rounded-xl overflow-hidden"
@@ -141,6 +163,15 @@ export default function PositionsTable({ positions, positionHistory, purchases }
                 <div className="min-w-0">
                   <div className="font-bold text-base flex items-center gap-2 flex-wrap" style={{ color: "var(--text-primary)" }}>
                     <span title={p.symbol}>{shortSymbol(p.symbol)}</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider flex items-center gap-1 ${fresh.stale ? "bg-amber-500/10 text-amber-600 border border-amber-500/30" : "bg-slate-500/10 text-slate-400 border border-slate-500/20"}`}>
+                      <Clock size={10} /> {fresh.text}
+                    </span>
+                    {p.source === "manual" && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider"
+                        style={{ background: "rgba(5,150,105,0.1)", color: C.optimal, border: "1px solid rgba(5,150,105,0.3)" }}>
+                        Manual
+                      </span>
+                    )}
                     {p.latest_signal_action && (
                       <span className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider"
                         style={{ background: st.bg, color: st.color, border: `1px solid ${st.border}` }}>
@@ -151,6 +182,18 @@ export default function PositionsTable({ positions, positionHistory, purchases }
                       <span className="text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase tracking-widest"
                         style={{ background: "var(--surface-secondary)", color: "var(--text-tertiary)", border: "1px solid var(--border-subtle)" }}>
                         {p.sector}
+                      </span>
+                    )}
+                    {p.asset_class && p.asset_class !== "equity" && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase tracking-widest"
+                        style={{ background: "rgba(217,119,6,0.1)", color: C.warning, border: "1px solid rgba(217,119,6,0.3)" }}>
+                        {p.asset_class}
+                      </span>
+                    )}
+                    {p.options && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase tracking-widest"
+                        style={{ background: "rgba(91,66,232,0.1)", color: C.equity, border: "1px solid rgba(91,66,232,0.3)" }}>
+                        {optionBadgeText(p.options) ?? "Option"}
                       </span>
                     )}
                   </div>

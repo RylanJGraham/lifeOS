@@ -23,6 +23,7 @@ Usage (mirrors the Windows Scheduled Tasks in scripts/windows_tasks.ps1):
 """
 import os
 import sys
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -72,6 +73,64 @@ def _period_start(cadence: str) -> datetime:
     return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def _week_start(d: datetime) -> datetime:
+    monday = d - timedelta(days=d.weekday())
+    return monday.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _parse_plan(goal: dict) -> dict:
+    """Read structured plan fields. Tolerates stringified JSON."""
+    raw = goal.get("plan") or []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = []
+    if not isinstance(raw, dict):
+        return {}
+    return raw
+
+
+def _weekly_habit_config(goal: dict):
+    """If the plan contains weekly_target / rest_days, return them."""
+    plan = _parse_plan(goal)
+    weekly_target = plan.get("weekly_target")
+    rest_days = plan.get("rest_days") or []
+    if weekly_target is not None:
+        try:
+            weekly_target = int(weekly_target)
+        except (ValueError, TypeError):
+            weekly_target = None
+    if isinstance(rest_days, str):
+        rest_days = [d.strip().lower() for d in rest_days.split(",")]
+    if not isinstance(rest_days, list):
+        rest_days = []
+    return weekly_target, [str(d).lower() for d in rest_days]
+
+
+def _weekly_checkin_count(goal_id: str) -> int:
+    """Count habit check-ins that answered yes in the current week."""
+    start = _week_start(datetime.now())
+    try:
+        res = (
+            sb.table("goal_checkins")
+            .select("id, note")
+            .eq("goal_id", goal_id)
+            .gte("created_at", start.isoformat())
+            .execute()
+        )
+        count = 0
+        for row in res.data or []:
+            note = (row.get("note") or "").lower()
+            # Count auto-sent or answered yes check-ins
+            if ":yes" in note or "auto:" in note:
+                count += 1
+        return count
+    except Exception as e:
+        logger.warning(f"Failed to count weekly check-ins for {goal_id}: {e}")
+        return 0
+
+
 def _already_checked_in(goal_id: str, since: datetime) -> bool:
     """True if any check-in (manual, auto-sent, or answered) exists this period."""
     try:
@@ -97,8 +156,12 @@ def _log_auto_checkin(goal: dict, note: str, value: float | None = None):
         logger.error(f"Failed to log check-in for goal {goal.get('id')}: {e}")
 
 
-def _resolve_linked_metric(metric: str | None) -> tuple[float | None, str]:
-    """Live value for net_worth | bank_balance | portfolio_value."""
+def _resolve_linked_metric(metric: str | None, goal: dict | None = None) -> tuple[float | None, str]:
+    """Live value for net_worth | bank_balance | portfolio_value.
+
+    For portfolio-% goals (metric_basis.baseline_value present), returns the
+    return percentage rather than the absolute portfolio value.
+    """
     bank = None
     portfolio = None
     try:
@@ -120,6 +183,36 @@ def _resolve_linked_metric(metric: str | None) -> tuple[float | None, str]:
     if metric == "bank_balance":
         return bank, "bank balance"
     if metric == "portfolio_value":
+        if goal and portfolio is not None:
+            basis = None
+            raw = goal.get("metric_basis")
+            if isinstance(raw, dict):
+                basis = raw.get("baseline_value")
+            elif isinstance(raw, str):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        basis = parsed.get("baseline_value")
+                except Exception:
+                    pass
+            if not basis and goal.get("created_at"):
+                # Fallback: earliest snapshot since the goal was created.
+                try:
+                    start = goal["created_at"][:10]
+                    res = (
+                        sb.table("advisor_portfolio_snapshots")
+                        .select("total_value")
+                        .gte("record_date", start)
+                        .order("record_date", asc=True)
+                        .limit(1)
+                        .execute()
+                    )
+                    if res.data and res.data[0].get("total_value") is not None:
+                        basis = float(res.data[0]["total_value"])
+                except Exception as e:
+                    logger.warning(f"Failed to fetch portfolio baseline: {e}")
+            if basis and float(basis) > 0:
+                return ((portfolio - float(basis)) / float(basis)) * 100, "portfolio return %"
         return portfolio, "portfolio value"
     if metric == "net_worth":
         if bank is None and portfolio is None:
@@ -154,16 +247,47 @@ def _llm_assessment(goal: dict, metric_label: str, value: float, target: float) 
 
 
 def checkin_habit_goal(goal: dict):
-    """Daily/weekly habit question with inline Yes/No buttons."""
+    """Daily/weekly habit question with inline Yes/No buttons.
+
+    Supports two richer modes via plan JSONB:
+      - weekly_target + checkin_cadence=daily: ask until the weekly target is met, then send a rest-day note.
+      - rest_days: skip sending on configured rest days.
+    """
     title = goal.get("title", "Untitled goal")
     current = goal.get("current_value") or 0
     unit = goal.get("unit") or "days"
     period = "today" if goal.get("checkin_cadence") == "daily" else "this week"
+    weekly_target, rest_days = _weekly_habit_config(goal)
+
+    # Rest-day guard
+    today_name = datetime.now().strftime("%A").lower()
+    if today_name in rest_days:
+        logger.info(f"Goal '{title}' has today ({today_name}) as a rest day; skipping")
+        return
+
+    # Weekly-target guard
+    if goal.get("checkin_cadence") == "daily" and weekly_target is not None:
+        done = _weekly_checkin_count(goal["id"])
+        if done >= weekly_target:
+            text = (
+                f"🎯 {title}\n"
+                f"Weekly target met ({done}/{weekly_target} sessions). "
+                f"Today is optional — take the recovery day if you need it."
+            )
+            if send_telegram(text):
+                _log_auto_checkin(goal, "auto:rest day note sent")
+                logger.info(f"Sent rest-day note for goal '{title}'")
+            return
 
     text = f"🎯 Goal check-in: {title}\n"
     if goal.get("description"):
         text += f"{goal['description']}\n"
-    text += f"Current streak: {current} {unit}\n\nDid you stay on track {period}?"
+    if weekly_target is not None and goal.get("checkin_cadence") == "daily":
+        done = _weekly_checkin_count(goal["id"])
+        text += f"Weekly progress: {done}/{weekly_target} sessions\n"
+    else:
+        text += f"Current streak: {current} {unit}\n"
+    text += f"\nDid you stay on track {period}?"
     keyboard = {"inline_keyboard": [[
         {"text": "✅ Yes", "callback_data": f"goal_checkin:{goal['id']}:yes"},
         {"text": "❌ Slipped", "callback_data": f"goal_checkin:{goal['id']}:no"},
@@ -194,7 +318,7 @@ def checkin_financial_goal(goal: dict):
     target = goal.get("target_value")
     currency = goal.get("currency") or ""
 
-    value, metric_label = _resolve_linked_metric(goal.get("linked_metric"))
+    value, metric_label = _resolve_linked_metric(goal.get("linked_metric"), goal)
     if value is None:
         # No live metric — fall back to the stored current_value.
         if goal.get("current_value") is not None:
@@ -203,12 +327,19 @@ def checkin_financial_goal(goal: dict):
             logger.info(f"Goal '{title}' has no resolvable metric; skipping")
             return
 
+    is_pct = goal.get("unit") == "%" or metric_label.endswith("%")
     green_light = bool(target and value >= float(target))
+
+    def fmt_val(v: float) -> str:
+        if is_pct:
+            return f"{v:,.1f}%"
+        return f"{v:,.0f} {currency}".strip()
+
     if green_light:
         text = (
             f"🟢 GREEN LIGHT: {title}\n\n"
-            f"Your {metric_label} is {value:,.0f} {currency} — "
-            f"target of {float(target):,.0f} {currency} reached."
+            f"Your {metric_label} is {fmt_val(value)} — "
+            f"target of {fmt_val(float(target))} reached."
         )
         if goal.get("description"):
             text += f"\n\n{goal['description']}"
@@ -220,13 +351,13 @@ def checkin_financial_goal(goal: dict):
             pct = value / float(target) * 100
             text = (
                 f"📊 Weekly goal update: {title}\n"
-                f"{metric_label.capitalize()}: {value:,.0f} / {float(target):,.0f} {currency} ({pct:.0f}%)"
+                f"{metric_label.capitalize()}: {fmt_val(value)} / {fmt_val(float(target))} ({pct:.0f}%)"
             )
         else:
-            text = f"📊 Weekly goal update: {title}\n{metric_label.capitalize()}: {value:,.0f} {currency}"
+            text = f"📊 Weekly goal update: {title}\n{metric_label.capitalize()}: {fmt_val(value)}"
 
     if send_telegram(text):
-        _log_auto_checkin(goal, f"auto:weekly update sent ({metric_label}={value:,.0f})", value)
+        _log_auto_checkin(goal, f"auto:weekly update sent ({metric_label}={fmt_val(value)})", value)
         _log_goal_insight(
             goal,
             text.split("\n\n", 1)[-1] if "\n\n" in text else text,  # strip the emoji header for the dashboard card

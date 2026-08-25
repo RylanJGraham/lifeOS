@@ -7,16 +7,89 @@ is a single-user, single-process service) and mirrored to system_logs via
 SupabaseLogger so runs are also visible on the /system page.
 """
 import asyncio
+import logging
 import os
 import subprocess
 import sys
 import threading
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from utils.logger import SupabaseLogger
 
+logger = logging.getLogger("pipeline_service")
+
+try:
+    from supabase import create_client, Client
+except ImportError:
+    create_client = None  # type: ignore
+    Client = None  # type: ignore
+
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000000"
+
+
+def _get_supabase() -> Client | None:
+    if not create_client:
+        return None
+    url = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
+    key = os.getenv("SUPABASE_SERVICE_KEY")
+    if not url or not key:
+        return None
+    try:
+        return create_client(url, key)
+    except Exception as e:
+        logger.warning(f"Could not create Supabase client: {e}")
+        return None
+
+
+def _insert_pipeline_run(pipeline_id: str, status: str, started_at: datetime, finished_at: datetime | None = None, error: str | None = None):
+    sb = _get_supabase()
+    if not sb:
+        return
+    duration_ms = None
+    if finished_at and started_at:
+        duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+    try:
+        sb.table("pipeline_runs").insert({
+            "pipeline_id": pipeline_id,
+            "user_id": DEFAULT_USER_ID,
+            "status": status,
+            "started_at": started_at.isoformat(),
+            "finished_at": finished_at.isoformat() if finished_at else None,
+            "duration_ms": duration_ms,
+            "error": error,
+            "metadata": {"source": "pipeline_service"},
+        }).execute()
+    except Exception as e:
+        logger.warning(f"Failed to insert pipeline_run: {e}")
+
+
+def _write_heartbeat(worker_id: str, status: str, next_expected_at: datetime | None = None, error: str | None = None):
+    sb = _get_supabase()
+    if not sb:
+        return
+    now = datetime.utcnow()
+    payload = {
+        "worker_id": worker_id,
+        "user_id": DEFAULT_USER_ID,
+        "status": status,
+        "last_run_at": now.isoformat(),
+        "next_expected_at": next_expected_at.isoformat() if next_expected_at else None,
+        "error": error,
+        "metadata": {"source": "pipeline_service"},
+        "updated_at": now.isoformat(),
+    }
+    try:
+        # upsert on (worker_id, user_id)
+        existing = sb.table("worker_heartbeats").select("id").eq("worker_id", worker_id).eq("user_id", DEFAULT_USER_ID).limit(1).execute()
+        if existing.data:
+            sb.table("worker_heartbeats").update(payload).eq("id", existing.data[0]["id"]).execute()
+        else:
+            payload["created_at"] = now.isoformat()
+            sb.table("worker_heartbeats").insert(payload).execute()
+    except Exception as e:
+        logger.warning(f"Failed to write heartbeat for {worker_id}: {e}")
 
 
 def _run_strava():
@@ -59,25 +132,61 @@ def _run_morning_briefing():
     asyncio.run(generate_and_send_briefing())
 
 
+def _run_ibkr_flex_sync():
+    from workers.ibkr_flex_sync import run_sync
+    run_sync()
+
+
+def _run_evening_audit():
+    from workers.evening_audit import main as run_evening_audit
+    run_evening_audit()
+
+
+def _run_fuel_pacing():
+    from workers.fuel_pacing import main as run_fuel_pacing
+    run_fuel_pacing()
+
+
+def _run_persona_insights():
+    from workers.persona_insights import run as run_persona_insights
+    run_persona_insights("daily")
+
+
+def _run_weekly_review():
+    from workers.weekly_review import main as run_weekly_review
+    run_weekly_review()
+
+
+def _run_symptom_analysis():
+    from workers.symptom_analysis import run as run_symptom_analysis
+    run_symptom_analysis()
+
+
+def _run_transaction_anomalies():
+    from workers.transaction_anomalies import run as run_transaction_anomalies
+    run_transaction_anomalies()
+
+
+def _run_price_refresh():
+    from workers.price_refresh import run as run_price_refresh
+    run_price_refresh()
+
+
+def _run_open_banking_sync():
+    from workers.open_banking_sync import run_sync
+    run_sync()
+
+
+def _run_pdf_statement_sync():
+    from finance.pdf_ingestion import PDFTransactionIngester
+    ingester = PDFTransactionIngester()
+    ingester.process_directory()
+
+
 PIPELINES = {
-    "strava-sync": {
-        "name": "Strava Sync",
-        "description": "Pull recent activities from Strava into the workouts table.",
-        "runner": _run_strava,
-    },
-    "xiaomi-sleep-sync": {
-        "name": "Xiaomi Sleep Sync",
-        "description": "Sync sleep records from Mi Fitness via SmartScaleConnect.",
-        "runner": _run_xiaomi_sleep,
-    },
-    "mifitness-sync": {
-        "name": "Mi Fitness Workout Sync",
-        "description": "Pull workouts (HR, calories, duration) from your Xiaomi watch via Mi Fitness cloud.",
-        "runner": _run_mifitness_workouts,
-    },
     "health-sync": {
         "name": "Health Sync",
-        "description": "Nightly aggregate of health metrics (partially stubbed).",
+        "description": "Nightly aggregate of health metrics, meals, and workouts; writes a health summary to ai_insights.",
         "runner": _run_health_sync,
     },
     "daily-analysis": {
@@ -94,6 +203,56 @@ PIPELINES = {
         "name": "Morning Briefing",
         "description": "Generate and send the daily briefing to Telegram.",
         "runner": _run_morning_briefing,
+    },
+    "ibkr-flex-sync": {
+        "name": "IBKR Flex Sync",
+        "description": "Pull positions and trades from Interactive Brokers Flex Query into Supabase.",
+        "runner": _run_ibkr_flex_sync,
+    },
+    "evening-audit": {
+        "name": "Evening Audit",
+        "description": "Nightly nudge for missing meals/health/workout data.",
+        "runner": _run_evening_audit,
+    },
+    "fuel-pacing": {
+        "name": "Fuel Pacing",
+        "description": "Midday protein/calorie pacing check and dinner suggestion.",
+        "runner": _run_fuel_pacing,
+    },
+    "persona-insights": {
+        "name": "Persona Insights",
+        "description": "Doctor + nutritionist + PT daily insight evaluation.",
+        "runner": _run_persona_insights,
+    },
+    "weekly-review": {
+        "name": "Weekly Review",
+        "description": "Sunday digest: body comp, cash runway, habit momentum, correlations.",
+        "runner": _run_weekly_review,
+    },
+    "symptom-analysis": {
+        "name": "Symptom Analysis",
+        "description": "Weekly statistical symptom correlation analysis.",
+        "runner": _run_symptom_analysis,
+    },
+    "transaction-anomalies": {
+        "name": "Transaction Anomalies",
+        "description": "Scan recent transactions for duplicate charges, subscription price changes, and unusual amounts.",
+        "runner": _run_transaction_anomalies,
+    },
+    "price-refresh": {
+        "name": "Price Refresh",
+        "description": "Refresh stale advisor position prices via Finnhub fallback.",
+        "runner": _run_price_refresh,
+    },
+    "open-banking-sync": {
+        "name": "EU Open Banking Sync",
+        "description": "Scaffold for GoCardless/Salt Edge/Plaid EU transaction pulls (requires credentials).",
+        "runner": _run_open_banking_sync,
+    },
+    "pdf-statement-sync": {
+        "name": "PDF Statement Sync",
+        "description": "Parse bank/CC PDFs from STATEMENT_DIRECTORY and insert transactions.",
+        "runner": _run_pdf_statement_sync,
     },
 }
 
@@ -142,7 +301,9 @@ def run_pipeline(pipeline_id: str) -> None:
 def _execute(pipeline_id: str) -> None:
     name = PIPELINES[pipeline_id]["name"]
     runner = PIPELINES[pipeline_id]["runner"]
+    started_at = datetime.utcnow()
     SupabaseLogger.info("pipelines", f"Pipeline started: {name}", {"pipeline_id": pipeline_id})
+    _insert_pipeline_run(pipeline_id, "running", started_at)
     error = None
     try:
         runner()
@@ -153,11 +314,44 @@ def _execute(pipeline_id: str) -> None:
             {"pipeline_id": pipeline_id, "error": error, "traceback": traceback.format_exc()[-2000:]},
         )
     finally:
+        finished_at = datetime.utcnow()
         with _state_lock:
             _state[pipeline_id].update(
                 status="idle",
-                last_finished_at=datetime.utcnow().isoformat() + "Z",
+                last_finished_at=finished_at.isoformat() + "Z",
                 last_error=error,
             )
+        _insert_pipeline_run(pipeline_id, "failed" if error else "success", started_at, finished_at, error)
+        # Heartbeat: most pipelines are expected to run daily
+        next_expected = finished_at + timedelta(days=1)
+        _write_heartbeat(pipeline_id, "failed" if error else "ok", next_expected, error)
     if error is None:
         SupabaseLogger.info("pipelines", f"Pipeline finished: {name}", {"pipeline_id": pipeline_id})
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Run a LifeOS pipeline from the command line")
+    parser.add_argument("command", choices=["run"], help="Command to execute")
+    parser.add_argument("pipeline_id", help="Pipeline ID from PIPELINES")
+    args = parser.parse_args()
+    if args.command == "run":
+        if args.pipeline_id not in PIPELINES:
+            print(f"Unknown pipeline: {args.pipeline_id}", file=sys.stderr)
+            print(f"Available: {', '.join(PIPELINES.keys())}", file=sys.stderr)
+            sys.exit(1)
+        run_pipeline(args.pipeline_id)
+        # run_pipeline starts a daemon thread; wait for it to finish
+        import time
+        while True:
+            with _state_lock:
+                status = _state[args.pipeline_id]["status"]
+            if status != "running":
+                break
+            time.sleep(0.5)
+        with _state_lock:
+            final = _state[args.pipeline_id]
+        if final.get("last_error"):
+            print(f"Pipeline failed: {final['last_error']}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Pipeline {args.pipeline_id} completed successfully.")

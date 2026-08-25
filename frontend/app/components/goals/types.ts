@@ -33,6 +33,8 @@ export interface Goal {
   // jsonb — PostgREST returns it parsed, but a legacy row could hold a
   // string; normalize with parseMilestones() in GoalCard.
   plan: Milestone[] | string | null;
+  // Optional basis for percentage goals (e.g. {"baseline_value": 250.21})
+  metric_basis: Record<string, any> | string | null;
   checkin_cadence: CheckinCadence | string | null;
   created_at: string | null;
   updated_at: string | null;

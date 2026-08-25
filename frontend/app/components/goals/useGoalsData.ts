@@ -10,6 +10,7 @@ export interface GoalsData {
   checkins: GoalCheckin[];       // last 90 days, ascending by created_at
   liveBankBalance: number | null;
   latestPortfolioValue: number | null;
+  portfolioHistory: { record_date: string; total_value: number | string }[]; // ascending
   netWorth: number | null;       // sum of the two, null only if both missing
   loading: boolean;
   error: string | null;
@@ -46,6 +47,7 @@ export function useGoalsData(): GoalsData {
   const [checkins, setCheckins] = useState<GoalCheckin[]>([]);
   const [liveBankBalance, setLiveBankBalance] = useState<number | null>(null);
   const [latestPortfolioValue, setLatestPortfolioValue] = useState<number | null>(null);
+  const [portfolioHistory, setPortfolioHistory] = useState<{ record_date: string; total_value: number | string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,7 +55,7 @@ export function useGoalsData(): GoalsData {
     setLoading(true);
     setError(null);
 
-    const [goalsRes, checkinsRes, profileRes, snapshotRes] = await Promise.all([
+    const [goalsRes, checkinsRes, profileRes, snapshotRes, historyRes] = await Promise.all([
       // status column may hold anything on legacy rows — exclude abandoned
       // in the query, sort the rest client-side.
       supabase
@@ -74,6 +76,10 @@ export function useGoalsData(): GoalsData {
         .select("record_date, total_value")
         .order("record_date", { ascending: false })
         .limit(1),
+      supabase
+        .from("advisor_portfolio_snapshots")
+        .select("record_date, total_value")
+        .order("record_date", { ascending: true }),
     ]);
 
     const failures: string[] = [];
@@ -84,6 +90,7 @@ export function useGoalsData(): GoalsData {
     if (!isMissingTable(checkinsRes.error)) check("check-ins", checkinsRes.error);
     check("profile", profileRes.error);
     check("portfolio snapshot", snapshotRes.error);
+    check("portfolio history", historyRes.error);
 
     setGoals(sortGoals((goalsRes.data as Goal[]) || []));
     setCheckins((checkinsRes.data as GoalCheckin[]) || []);
@@ -118,6 +125,10 @@ export function useGoalsData(): GoalsData {
       : null;
     setLatestPortfolioValue(numOrNull(snapshot?.total_value));
 
+    setPortfolioHistory(
+      (historyRes.data as { record_date: string; total_value: number | string }[]) || []
+    );
+
     setError(failures.length > 0 ? failures.join(" · ") : null);
     setLoading(false);
   }, []);
@@ -132,7 +143,7 @@ export function useGoalsData(): GoalsData {
       : (liveBankBalance ?? 0) + (latestPortfolioValue ?? 0);
 
   return {
-    goals, checkins, liveBankBalance, latestPortfolioValue, netWorth,
+    goals, checkins, liveBankBalance, latestPortfolioValue, portfolioHistory, netWorth,
     loading, error, refetch: load,
   };
 }

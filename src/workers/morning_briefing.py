@@ -54,14 +54,16 @@ def gather_facts() -> dict:
 
     # --- sleep & recovery ---
     try:
-        since = (now - timedelta(days=14)).isoformat()
-        rows = (
+        since = (now - timedelta(days=14)).date().isoformat()
+        hm_rows = (
             sb.table("health_metrics")
-            .select("recorded_at, hrv, resting_heart_rate, sleep_duration_minutes, sleep_deep_minutes")
-            .gte("recorded_at", since).order("recorded_at", desc=True).execute()
+            .select("recorded_at, sleep_duration_minutes, sleep_deep_minutes, resting_heart_rate, hrv")
+            .gte("recorded_at", since)
+            .order("recorded_at", desc=True)
+            .execute()
         ).data or []
-        sleep_rows = [r for r in rows if r.get("sleep_duration_minutes")]
-        rhr_rows = [r for r in rows if r.get("resting_heart_rate")]
+        sleep_rows = [r for r in hm_rows if r.get("sleep_duration_minutes")]
+        rhr_rows = [r for r in hm_rows if r.get("resting_heart_rate")]
         if sleep_rows:
             last = sleep_rows[0]
             facts["last_sleep_h"] = round(last["sleep_duration_minutes"] / 60, 1)
@@ -76,7 +78,7 @@ def gather_facts() -> dict:
                 base = [r["resting_heart_rate"] for r in rhr_rows[1:]]
                 facts["rhr_baseline"] = round(sum(base) / len(base))
     except Exception as e:
-        logger.warning(f"health_metrics fetch failed: {e}")
+        logger.warning(f"sleep/cardiovascular metrics fetch failed: {e}")
 
     # --- readiness verdict (rules, not vibes) ---
     score = 0
@@ -198,12 +200,14 @@ def main():
     send_telegram(f"☀️ Morning briefing\n\n{text}")
     try:
         insight = text if len(text) < 500 else text[:497] + "..."
-        sb.table("ai_insights").insert({
-            "user_id": _user_id(),
-            "domain": "readiness",
-            "insight_text": insight,
-            "action_item": action_item,
-        }).execute()
+        from action_items import insert_insight
+        insert_insight(
+            domain="readiness",
+            insight_text=insight,
+            action_item=action_item,
+            resolve_previous=True,
+            user_id=_user_id(),
+        )
         logger.info("Readiness insight stored")
     except Exception as e:
         logger.error(f"Failed to store readiness insight: {e}")

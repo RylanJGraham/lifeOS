@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { motion } from "framer-motion";
-import { TrendingUp, RefreshCw, AlertTriangle, PieChart as PieIcon, Radar, Zap, FileText, Briefcase } from "lucide-react";
+import { TrendingUp, RefreshCw, AlertTriangle, PieChart as PieIcon, Radar, Zap, FileText, Briefcase, ClipboardList, Shield, DollarSign } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useInvestmentsData } from "../../components/investments/useInvestmentsData";
 import PortfolioOverview from "../../components/investments/PortfolioOverview";
@@ -11,6 +11,11 @@ import CandidateRadar from "../../components/investments/CandidateRadar";
 import SignalFeed from "../../components/investments/SignalFeed";
 import ReportsPanel from "../../components/investments/ReportsPanel";
 import RsuTracker from "../../components/investments/RsuTracker";
+import ManualTrades from "../../components/investments/ManualTrades";
+import LogTradeModal from "../../components/investments/LogTradeModal";
+import OrdersPanel from "../../components/investments/OrdersPanel";
+import RiskPanel from "../../components/investments/RiskPanel";
+import PnLPanel from "../../components/investments/PnLPanel";
 import { C } from "../../components/investments/shared";
 
 function SkeletonBlock({ height }: { height: number }) {
@@ -58,10 +63,11 @@ function SectionHeader({ icon: Icon, title, sub, color }: {
 export default function InvestmentsPage() {
   const {
     positions, snapshots, signals, watchlist, performance, purchases,
-    positionHistory, reports, rsus, loading, error, refetch,
+    positionHistory, reports, rsus, orders, loading, error, refetch,
   } = useInvestmentsData();
 
   const [activeTab, setActiveTab] = React.useState("overview");
+  const [logTradeOpen, setLogTradeOpen] = React.useState(false);
 
   return (
     <div style={{ background: "var(--surface-primary)", color: "var(--text-primary)", minHeight: "100vh" }}>
@@ -116,6 +122,7 @@ export default function InvestmentsPage() {
         <div className="flex gap-2 mb-6 border-b pb-2 overflow-x-auto" style={{ borderColor: "var(--border-subtle)" }}>
           {[
             { id: "overview", label: "Overview", icon: PieIcon },
+            { id: "orders", label: "Orders", icon: ClipboardList },
             { id: "radar", label: "Candidate Radar", icon: Radar },
             { id: "intelligence", label: "Intelligence", icon: Zap },
             { id: "reports", label: "Advisor Reports", icon: FileText }
@@ -158,6 +165,24 @@ export default function InvestmentsPage() {
                 <PositionsTable positions={positions} positionHistory={positionHistory} purchases={purchases} />
               </section>
 
+              <section>
+                <ManualTrades purchases={purchases} onLogTrade={() => setLogTradeOpen(true)} />
+              </section>
+
+              <section>
+                <SectionHeader icon={Shield} title="Risk & Allocation" sub="Position limits, sector concentration & cash" color={C.warning} />
+                <div className="mt-3">
+                  <RiskPanel positions={positions} snapshots={snapshots} />
+                </div>
+              </section>
+
+              <section>
+                <SectionHeader icon={DollarSign} title="Realized & Unrealized P&L" sub="FIFO-realized gains and open position P&L" color={C.wealth} />
+                <div className="mt-3">
+                  <PnLPanel positions={positions} purchases={purchases} />
+                </div>
+              </section>
+
               {rsus && rsus.length > 0 && (
                 <section>
                   <SectionHeader icon={Briefcase} title="Company Equity & RSUs" sub="Vesting schedules and live value" color={C.wealth} />
@@ -167,6 +192,15 @@ export default function InvestmentsPage() {
                 </section>
               )}
             </>
+          )}
+
+          {activeTab === "orders" && (
+            <section>
+              <SectionHeader icon={ClipboardList} title="Orders" sub="Proposed, approved, and filled orders" color={C.equity} />
+              <div className="mt-3">
+                <OrdersPanel orders={orders} positions={positions} onUpdate={refetch} />
+              </div>
+            </section>
           )}
 
           {activeTab === "radar" && (
@@ -197,6 +231,12 @@ export default function InvestmentsPage() {
           )}
         </motion.div>
       )}
+
+      <LogTradeModal
+        open={logTradeOpen}
+        onClose={() => setLogTradeOpen(false)}
+        onSaved={refetch}
+      />
     </div>
   );
 }

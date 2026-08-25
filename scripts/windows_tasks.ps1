@@ -6,11 +6,11 @@ $settingsMorning = New-ScheduledTaskSettingsSet -WakeToRun
 
 Register-ScheduledTask -Action $actionMorning -Trigger $triggerMorning -Settings $settingsMorning -TaskName "LifeOS-MorningBriefing" -Description "Generates and sends the daily morning briefing" -User "SYSTEM" -Force
 
-$actionHealth = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"cd $PWD; .\venv\Scripts\Activate.ps1; python src/workers/sync_xiaomi.py; python src/workers/sync_health.py`""
+$actionHealth = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"cd $PWD; .\venv\Scripts\Activate.ps1; python src/workers/sync_health.py`""
 $triggerHealth = New-ScheduledTaskTrigger -Daily -At 11:30PM
 $settingsHealth = New-ScheduledTaskSettingsSet -WakeToRun
 
-Register-ScheduledTask -Action $actionHealth -Trigger $triggerHealth -Settings $settingsHealth -TaskName "LifeOS-HealthSync" -Description "Syncs Xiaomi Health data and processes nightly metrics" -User "SYSTEM" -Force
+Register-ScheduledTask -Action $actionHealth -Trigger $triggerHealth -Settings $settingsHealth -TaskName "LifeOS-HealthSync" -Description "Runs nightly health aggregate and writes ai_insights summary" -User "SYSTEM" -Force
 
 # Goal check-ins: daily habit questions in the evening, weekly financial review Sunday morning
 $actionGoalDaily = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"cd $PWD; .\venv\Scripts\Activate.ps1; python src/workers/goal_checkin.py daily`""
@@ -39,11 +39,60 @@ $settingsPacing = New-ScheduledTaskSettingsSet -WakeToRun
 
 Register-ScheduledTask -Action $actionPacing -Trigger $triggerPacing -Settings $settingsPacing -TaskName "LifeOS-FuelPacing" -Description "Midday protein/calorie pacing nudge (silent when on track)" -User "SYSTEM" -Force
 
+# Evening audit: one consolidated nudge before bed if the day is incomplete
+$actionEvening = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"cd $PWD; .\venv\Scripts\Activate.ps1; python src/workers/evening_audit.py`""
+$triggerEvening = New-ScheduledTaskTrigger -Daily -At 9:30PM
+$settingsEvening = New-ScheduledTaskSettingsSet -WakeToRun
+
+Register-ScheduledTask -Action $actionEvening -Trigger $triggerEvening -Settings $settingsEvening -TaskName "LifeOS-EveningAudit" -Description "Pre-sleep nudge for missing meals/health/workout data" -User "SYSTEM" -Force
+
 # Weekly review: body-comp trend, cash runway, habit momentum, correlations
 $actionWeekly = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"cd $PWD; .\venv\Scripts\Activate.ps1; python src/workers/weekly_review.py`""
 $triggerWeekly = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 10:00AM
 $settingsWeekly = New-ScheduledTaskSettingsSet -WakeToRun
 
 Register-ScheduledTask -Action $actionWeekly -Trigger $triggerWeekly -Settings $settingsWeekly -TaskName "LifeOS-WeeklyReview" -Description "Sunday digest: body-comp, cash runway, habit momentum, correlations" -User "SYSTEM" -Force
+
+# Symptom correlation analysis: statistical correlations between symptoms and behaviours
+$actionSymptom = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"cd $PWD; .\venv\Scripts\Activate.ps1; python src/workers/symptom_analysis.py`""
+$triggerSymptom = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 6:00AM
+$settingsSymptom = New-ScheduledTaskSettingsSet -WakeToRun
+
+Register-ScheduledTask -Action $actionSymptom -Trigger $triggerSymptom -Settings $settingsSymptom -TaskName "LifeOS-SymptomAnalysis" -Description "Weekly statistical symptom correlation analysis" -User "SYSTEM" -Force
+
+# Transaction anomaly scan: duplicate charges, subscription price changes, unusual amounts
+$actionAnomalies = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"cd $PWD; .\venv\Scripts\Activate.ps1; python src/workers/transaction_anomalies.py`""
+$triggerAnomalies = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 10:30AM
+$settingsAnomalies = New-ScheduledTaskSettingsSet -WakeToRun
+
+Register-ScheduledTask -Action $actionAnomalies -Trigger $triggerAnomalies -Settings $settingsAnomalies -TaskName "LifeOS-TransactionAnomalies" -Description "Scan transactions for duplicate charges, subscription changes, and unusual amounts" -User "SYSTEM" -Force
+
+# Price refresh: refresh stale advisor position prices via Finnhub fallback
+$actionPriceRefresh = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"cd $PWD; .\venv\Scripts\Activate.ps1; python src/workers/price_refresh.py`""
+$triggerPriceRefresh = New-ScheduledTaskTrigger -Daily -At 10:00AM
+$settingsPriceRefresh = New-ScheduledTaskSettingsSet -WakeToRun
+
+Register-ScheduledTask -Action $actionPriceRefresh -Trigger $triggerPriceRefresh -Settings $settingsPriceRefresh -TaskName "LifeOS-PriceRefresh" -Description "Refresh stale advisor position prices via Finnhub fallback" -User "SYSTEM" -Force
+
+# IBKR Flex Sync: pull real broker positions/trades before Jarvis v3 daily run
+$actionIbkr = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"cd $PWD; .\venv\Scripts\Activate.ps1; python src/workers/ibkr_flex_sync.py`""
+$triggerIbkr = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At 3:00PM
+$settingsIbkr = New-ScheduledTaskSettingsSet -WakeToRun
+
+Register-ScheduledTask -Action $actionIbkr -Trigger $triggerIbkr -Settings $settingsIbkr -TaskName "LifeOS-IBKRFlexSync" -Description "Pulls positions and trades from IBKR before the Jarvis v3 daily run" -User "SYSTEM" -Force
+
+# PDF Statement Sync: parse bank/CC PDFs from STATEMENT_DIRECTORY and insert real transactions
+$actionPdfStatement = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"cd $PWD; .\venv\Scripts\Activate.ps1; python src/pipeline_service.py run pdf-statement-sync`""
+$triggerPdfStatement = New-ScheduledTaskTrigger -Daily -At 8:00AM
+$settingsPdfStatement = New-ScheduledTaskSettingsSet -WakeToRun
+
+Register-ScheduledTask -Action $actionPdfStatement -Trigger $triggerPdfStatement -Settings $settingsPdfStatement -TaskName "LifeOS-PDFStatementSync" -Description "Parse bank/CC PDF statements and insert transactions via OpenRouter vision" -User "SYSTEM" -Force
+
+# EU Open Banking Sync: scaffold for GoCardless/Salt Edge/Plaid EU transaction pulls (requires credentials)
+$actionOpenBanking = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"cd $PWD; .\venv\Scripts\Activate.ps1; python src/pipeline_service.py run open-banking-sync`""
+$triggerOpenBanking = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 10:45AM
+$settingsOpenBanking = New-ScheduledTaskSettingsSet -WakeToRun
+
+Register-ScheduledTask -Action $actionOpenBanking -Trigger $triggerOpenBanking -Settings $settingsOpenBanking -TaskName "LifeOS-OpenBankingSync" -Description "Scaffold: pull EU bank transactions via GoCardless/Salt Edge/Plaid (requires credentials)" -User "SYSTEM" -Force
 
 Write-Host "Scheduled tasks created successfully." -ForegroundColor Green

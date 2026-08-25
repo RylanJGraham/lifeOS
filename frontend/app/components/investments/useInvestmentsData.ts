@@ -2,9 +2,11 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../../../utils/supabaseClient";
+import { dedupePositions } from "./shared";
 import type {
   Position, Signal, Snapshot, WatchlistEntry, DailyReport,
-  SignalPerformance, Purchase, PositionHistoryRow, CompanyRSU
+  SignalPerformance, Purchase, PositionHistoryRow, CompanyRSU,
+  AdvisorOrder
 } from "./types";
 
 export interface InvestmentsData {
@@ -17,6 +19,7 @@ export interface InvestmentsData {
   positionHistory: PositionHistoryRow[]; // 90d, ascending
   reports: DailyReport[];         // metadata only, newest first
   rsus: CompanyRSU[];
+  orders: AdvisorOrder[];         // proposed → filled
   loading: boolean;
   error: string | null;
   refetch: () => void;
@@ -38,6 +41,7 @@ export function useInvestmentsData(): InvestmentsData {
   const [positionHistory, setPositionHistory] = useState<PositionHistoryRow[]>([]);
   const [reports, setReports] = useState<DailyReport[]>([]);
   const [rsus, setRsus] = useState<CompanyRSU[]>([]);
+  const [orders, setOrders] = useState<AdvisorOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,6 +61,7 @@ export function useInvestmentsData(): InvestmentsData {
       historyRes,
       reportsRes,
       rsusRes,
+      ordersRes,
     ] = await Promise.all([
       supabase
         .from("advisor_positions_with_signals")
@@ -99,6 +104,11 @@ export function useInvestmentsData(): InvestmentsData {
         .from("company_rsus")
         .select("*")
         .order("created_at", { ascending: true }),
+      supabase
+        .from("advisor_orders")
+        .select("*")
+        .order("generated_at", { ascending: false })
+        .limit(100),
     ]);
 
     const failures: string[] = [];
@@ -114,8 +124,9 @@ export function useInvestmentsData(): InvestmentsData {
     check("position history", historyRes.error);
     check("daily reports", reportsRes.error);
     check("rsus", rsusRes.error);
+    check("orders", ordersRes.error);
 
-    setPositions((positionsRes.data as Position[]) || []);
+    setPositions(dedupePositions((positionsRes.data as Position[]) || []));
     setSnapshots((snapshotsRes.data as Snapshot[]) || []);
     setSignals((signalsRes.data as Signal[]) || []);
 
@@ -135,6 +146,7 @@ export function useInvestmentsData(): InvestmentsData {
     setPositionHistory((historyRes.data as PositionHistoryRow[]) || []);
     setReports((reportsRes.data as DailyReport[]) || []);
     setRsus((rsusRes.data as CompanyRSU[]) || []);
+    setOrders((ordersRes.data as AdvisorOrder[]) || []);
 
     setError(failures.length > 0 ? failures.join(" · ") : null);
     setLoading(false);
@@ -146,6 +158,6 @@ export function useInvestmentsData(): InvestmentsData {
 
   return {
     positions, snapshots, signals, watchlist, performance, purchases,
-    positionHistory, reports, rsus, loading, error, refetch: load,
+    positionHistory, reports, rsus, orders, loading, error, refetch: load,
   };
 }

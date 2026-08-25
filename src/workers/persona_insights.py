@@ -134,12 +134,14 @@ The insight is shown on the dashboard either way; alert=true also pings the user
     alert = bool(data.get("alert"))
 
     try:
-        sb.table("ai_insights").insert({
-            "user_id": user_id,
-            "domain": persona,
-            "insight_text": insight,
-            "action_item": action_item,
-        }).execute()
+        from action_items import insert_insight
+        insert_insight(
+            domain=persona,
+            insight_text=insight,
+            action_item=action_item,
+            resolve_previous=True,
+            user_id=user_id,
+        )
         logger.info(f"{persona}: insight stored (alert={alert})")
     except Exception as e:
         logger.error(f"{persona}: failed to store insight: {e}")

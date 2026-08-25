@@ -3,7 +3,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Settings, User, DollarSign, Sliders, CheckCircle2, AlertTriangle,
-  Target, Sparkles, Loader2,
+  Target, Sparkles, Loader2, Shield, Pill, Plus, Trash2,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { supabase } from "../../../utils/supabaseClient";
@@ -22,6 +22,87 @@ const itemVariants: any = {
 
 // Single-user fallback id (matches TemplatesTab convention)
 const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000000";
+
+interface SupplementItem {
+  description: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  micronutrients?: Record<string, number>;
+}
+
+interface SupplementPolicy {
+  enabled: boolean;
+  morning: SupplementItem[];
+  evening: SupplementItem[];
+  morning_hour: number;
+  evening_hour: number;
+  breakfast_trigger: boolean;
+  dinner_trigger: boolean;
+}
+
+// Default policy mirrors src/db/supplements.py hardcoded defaults.
+const DEFAULT_SUPPLEMENT_POLICY: SupplementPolicy = {
+  enabled: true,
+  morning: [
+    {
+      description: "Supradyn Men Multivitamin",
+      calories: 0, protein: 0, carbs: 0, fat: 0,
+      micronutrients: {
+        vitamin_a_dv_pct: 100, vitamin_c_dv_pct: 100, vitamin_d_dv_pct: 100,
+        vitamin_e_dv_pct: 100, vitamin_k_dv_pct: 100, vitamin_b6_dv_pct: 100,
+        vitamin_b12_dv_pct: 100, biotin_dv_pct: 100, folate_dv_pct: 100,
+        calcium_dv_pct: 15, iron_dv_pct: 100, magnesium_dv_pct: 25,
+        zinc_dv_pct: 100, selenium_dv_pct: 100, iodine_dv_pct: 100,
+        copper_dv_pct: 100, manganese_dv_pct: 100,
+      },
+    },
+    {
+      description: "Omega-3 D3 K2 Supplement",
+      calories: 20, protein: 0, carbs: 0, fat: 2,
+      micronutrients: { omega_3_dv_pct: 100, vitamin_d_dv_pct: 100, vitamin_k_dv_pct: 100 },
+    },
+  ],
+  evening: [
+    {
+      description: "Magnesium Bisglycinate",
+      calories: 0, protein: 0, carbs: 0, fat: 0,
+      micronutrients: { magnesium_dv_pct: 50 },
+    },
+  ],
+  morning_hour: 8,
+  evening_hour: 21,
+  breakfast_trigger: true,
+  dinner_trigger: true,
+};
+
+function normalizeSupplementPolicy(raw: any): SupplementPolicy {
+  if (!raw || typeof raw !== "object") return DEFAULT_SUPPLEMENT_POLICY;
+  const p = raw as Record<string, any>;
+  const mergeList = (key: "morning" | "evening"): SupplementItem[] => {
+    const arr = Array.isArray(p[key]) ? p[key] : DEFAULT_SUPPLEMENT_POLICY[key];
+    return arr
+      .filter((it: any) => it && typeof it === "object")
+      .map((it: any) => ({
+        description: String(it.description ?? ""),
+        calories: Number(it.calories ?? 0),
+        protein: Number(it.protein ?? 0),
+        carbs: Number(it.carbs ?? 0),
+        fat: Number(it.fat ?? 0),
+        micronutrients: it.micronutrients && typeof it.micronutrients === "object" ? it.micronutrients : undefined,
+      }));
+  };
+  return {
+    enabled: typeof p.enabled === "boolean" ? p.enabled : DEFAULT_SUPPLEMENT_POLICY.enabled,
+    morning: mergeList("morning"),
+    evening: mergeList("evening"),
+    morning_hour: Number(p.morning_hour ?? DEFAULT_SUPPLEMENT_POLICY.morning_hour),
+    evening_hour: Number(p.evening_hour ?? DEFAULT_SUPPLEMENT_POLICY.evening_hour),
+    breakfast_trigger: typeof p.breakfast_trigger === "boolean" ? p.breakfast_trigger : DEFAULT_SUPPLEMENT_POLICY.breakfast_trigger,
+    dinner_trigger: typeof p.dinner_trigger === "boolean" ? p.dinner_trigger : DEFAULT_SUPPLEMENT_POLICY.dinner_trigger,
+  };
+}
 
 const EMPTY_FORM = {
   height_cm: "",
@@ -42,6 +123,11 @@ const EMPTY_FORM = {
   expected_yield: "",
   strict_macros: false,
   dynamic_budget: false,
+  risk_max_position_pct: "15",
+  risk_max_sector_pct: "40",
+  risk_min_cash_pct: "5",
+  risk_daily_loss_guardrail_pct: "5",
+  risk_approval_threshold_usd: "1000",
 };
 
 const toNum = (v: string) => (v === "" ? null : Number(v));
@@ -71,6 +157,7 @@ export default function SettingsOS() {
   const [calcLoading, setCalcLoading] = useState(false);
   const [calcError, setCalcError] = useState("");
   const [calcResult, setCalcResult] = useState<CalculatedTargets | null>(null);
+  const [supplements, setSupplements] = useState<SupplementPolicy>(DEFAULT_SUPPLEMENT_POLICY);
 
   useEffect(() => {
     const load = async () => {
@@ -80,25 +167,32 @@ export default function SettingsOS() {
       if (p.id) setProfileKey({ col: "id", val: p.id });
       else if (p.user_id) setProfileKey({ col: "user_id", val: p.user_id });
       setLoadedBankBalance(p.bank_balance != null ? Number(p.bank_balance) : null);
+      setSupplements(normalizeSupplementPolicy(p.supplements));
+      const rp = p.risk_policy || {};
       setForm({
-        height_cm:            p.height_cm ?? "",
-        age:                  p.age ?? "",
-        sex:                  p.sex ?? "",
-        current_weight_kg:    p.current_weight_kg ?? "",
-        target_weight_kg:     p.target_weight_kg ?? "",
-        goal:                 p.goal ?? "",
-        activity_level:       p.activity_level ?? "",
-        physique_description: "",
-        daily_caloric_target: p.daily_caloric_target ?? "",
-        protein_target_g:     p.protein_target_g ?? "",
-        carbs_target_g:       p.carbs_target_g ?? "",
-        fat_target_g:         p.fat_target_g ?? "",
-        base_salary:          p.base_salary ?? "",
-        bank_balance:         p.bank_balance ?? "",
-        target_savings_rate:  p.target_savings_rate ?? "",
-        expected_yield:       p.expected_yield ?? "",
-        strict_macros:        !!p.strict_macros,
-        dynamic_budget:       !!p.dynamic_budget,
+        height_cm:                       p.height_cm ?? "",
+        age:                             p.age ?? "",
+        sex:                             p.sex ?? "",
+        current_weight_kg:               p.current_weight_kg ?? "",
+        target_weight_kg:                p.target_weight_kg ?? "",
+        goal:                            p.goal ?? "",
+        activity_level:                  p.activity_level ?? "",
+        physique_description:            "",
+        daily_caloric_target:            p.daily_caloric_target ?? "",
+        protein_target_g:                p.protein_target_g ?? "",
+        carbs_target_g:                  p.carbs_target_g ?? "",
+        fat_target_g:                    p.fat_target_g ?? "",
+        base_salary:                     p.base_salary ?? "",
+        bank_balance:                    p.bank_balance ?? "",
+        target_savings_rate:             p.target_savings_rate ?? "",
+        expected_yield:                  p.expected_yield ?? "",
+        strict_macros:                   !!p.strict_macros,
+        dynamic_budget:                  !!p.dynamic_budget,
+        risk_max_position_pct:           rp.max_position_pct ?? "15",
+        risk_max_sector_pct:             rp.max_sector_pct ?? "40",
+        risk_min_cash_pct:               rp.min_cash_pct ?? "5",
+        risk_daily_loss_guardrail_pct:   rp.daily_loss_guardrail_pct ?? "5",
+        risk_approval_threshold_usd:     rp.approval_threshold_usd ?? "1000",
       });
     };
     load();
@@ -136,6 +230,13 @@ export default function SettingsOS() {
       expected_yield:       toNum(f.expected_yield),
       strict_macros:        f.strict_macros,
       dynamic_budget:       f.dynamic_budget,
+      risk_policy: {
+        max_position_pct: Number(f.risk_max_position_pct) || 15,
+        max_sector_pct: Number(f.risk_max_sector_pct) || 40,
+        min_cash_pct: Number(f.risk_min_cash_pct) || 5,
+        daily_loss_guardrail_pct: Number(f.risk_daily_loss_guardrail_pct) || 5,
+        approval_threshold_usd: Number(f.risk_approval_threshold_usd) || 1000,
+      },
       ...extraPayload,
     };
     // Only stamp bank_balance_updated_at when the balance actually changed —
@@ -166,7 +267,7 @@ export default function SettingsOS() {
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
-    saveProfile();
+    saveProfile({ extraPayload: { supplements }, successMsg: "Settings saved" });
   };
 
   const handleCalculate = async () => {
@@ -466,6 +567,37 @@ export default function SettingsOS() {
           </div>
         </motion.div>
 
+        {/* ─── Investment Risk Policy ─── */}
+        <motion.div variants={itemVariants} className="p-8 bg-white border border-slate-200 shadow-sm rounded-xl">
+          <div className="flex items-center gap-2 mb-6 border-b border-slate-100 pb-4">
+            <Shield className="text-rose-600" size={20} />
+            <h2 className="text-lg font-bold text-slate-900">Investment Risk Policy</h2>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <div>
+              <label className={labelCls}>Max Position Size (%)</label>
+              <input type="number" value={form.risk_max_position_pct} onChange={set("risk_max_position_pct")} step="0.1" className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Max Sector Size (%)</label>
+              <input type="number" value={form.risk_max_sector_pct} onChange={set("risk_max_sector_pct")} step="0.1" className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Minimum Cash Reserve (%)</label>
+              <input type="number" value={form.risk_min_cash_pct} onChange={set("risk_min_cash_pct")} step="0.1" className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Daily Loss Guardrail (%)</label>
+              <input type="number" value={form.risk_daily_loss_guardrail_pct} onChange={set("risk_daily_loss_guardrail_pct")} step="0.1" className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Approval Threshold (USD)</label>
+              <input type="number" value={form.risk_approval_threshold_usd} onChange={set("risk_approval_threshold_usd")} step="1" className={inputCls} />
+            </div>
+          </div>
+        </motion.div>
+
         {/* ─── Agent toggles ─── */}
         <motion.div variants={itemVariants} className="p-8 bg-white border border-slate-200 shadow-sm rounded-xl">
           <div className="flex items-center gap-2 mb-6 border-b border-slate-100 pb-4">
@@ -498,6 +630,150 @@ export default function SettingsOS() {
                 >
                   <span className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${form[rule.key] ? "right-1" : "left-1"}`} />
                 </button>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+
+        {/* ─── Supplement Policy ─── */}
+        <motion.div variants={itemVariants} className="p-8 bg-white border border-slate-200 shadow-sm rounded-xl">
+          <div className="flex items-center gap-2 mb-6 border-b border-slate-100 pb-4">
+            <Pill className="text-teal-600" size={20} />
+            <h2 className="text-lg font-bold text-slate-900">Supplement Policy</h2>
+          </div>
+
+          <div className="space-y-6">
+            {/* Master + trigger toggles */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="flex items-center justify-between p-4 bg-slate-50 border border-slate-200 rounded-lg">
+                <div>
+                  <div className="font-semibold text-slate-900">Enable auto-logging</div>
+                  <div className="text-sm text-slate-500">Add supplements automatically when meals are logged.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSupplements(s => ({ ...s, enabled: !s.enabled }))}
+                  className={`relative inline-block w-12 h-6 rounded-full transition-colors shrink-0 ${supplements.enabled ? "bg-teal-500" : "bg-slate-200"}`}
+                >
+                  <span className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${supplements.enabled ? "right-1" : "left-1"}`} />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex items-center justify-between p-4 bg-slate-50 border border-slate-200 rounded-lg">
+                  <div className="text-sm font-semibold text-slate-900">Breakfast trigger</div>
+                  <button
+                    type="button"
+                    onClick={() => setSupplements(s => ({ ...s, breakfast_trigger: !s.breakfast_trigger }))}
+                    className={`relative inline-block w-12 h-6 rounded-full transition-colors shrink-0 ${supplements.breakfast_trigger ? "bg-teal-500" : "bg-slate-200"}`}
+                  >
+                    <span className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${supplements.breakfast_trigger ? "right-1" : "left-1"}`} />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between p-4 bg-slate-50 border border-slate-200 rounded-lg">
+                  <div className="text-sm font-semibold text-slate-900">Dinner trigger</div>
+                  <button
+                    type="button"
+                    onClick={() => setSupplements(s => ({ ...s, dinner_trigger: !s.dinner_trigger }))}
+                    className={`relative inline-block w-12 h-6 rounded-full transition-colors shrink-0 ${supplements.dinner_trigger ? "bg-teal-500" : "bg-slate-200"}`}
+                  >
+                    <span className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${supplements.dinner_trigger ? "right-1" : "left-1"}`} />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Timing */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div>
+                <label className="block text-[11px] text-slate-500 font-semibold mb-1.5">Morning hour</label>
+                <input
+                  type="number"
+                  min={0} max={23}
+                  value={supplements.morning_hour}
+                  onChange={e => setSupplements(s => ({ ...s, morning_hour: Math.min(23, Math.max(0, Number(e.target.value) || 0)) }))}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-500 font-semibold mb-1.5">Evening hour</label>
+                <input
+                  type="number"
+                  min={0} max={23}
+                  value={supplements.evening_hour}
+                  onChange={e => setSupplements(s => ({ ...s, evening_hour: Math.min(23, Math.max(0, Number(e.target.value) || 0)) }))}
+                  className={inputCls}
+                />
+              </div>
+            </div>
+
+            {/* Editable lists */}
+            {(["morning", "evening"] as const).map(slot => (
+              <div key={slot}>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-[11px] uppercase tracking-widest text-slate-500 font-bold">
+                    {slot === "morning" ? "Morning" : "Evening"} supplements
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSupplements(s => ({ ...s, [slot]: [...s[slot], { description: "", calories: 0, protein: 0, carbs: 0, fat: 0 }] }))}
+                    className="flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md bg-teal-50 text-teal-700 border border-teal-200 hover:bg-teal-100 transition-colors"
+                  >
+                    <Plus size={12} /> Add
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {supplements[slot].map((item, idx) => (
+                    <div key={idx} className="grid grid-cols-1 sm:grid-cols-6 gap-3 p-3 bg-slate-50 border border-slate-200 rounded-lg items-center">
+                      <div className="sm:col-span-2">
+                        <input
+                          type="text"
+                          value={item.description}
+                          placeholder="Description"
+                          onChange={e => {
+                            const next = [...supplements[slot]];
+                            next[idx] = { ...item, description: e.target.value };
+                            setSupplements(s => ({ ...s, [slot]: next }));
+                          }}
+                          className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-md text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
+                        />
+                      </div>
+                      {[
+                        { key: "calories", label: "kcal" },
+                        { key: "protein", label: "P" },
+                        { key: "carbs", label: "C" },
+                        { key: "fat", label: "F" },
+                      ].map(field => (
+                        <div key={field.key} className="relative">
+                          <input
+                            type="number"
+                            min={0}
+                            value={item[field.key as keyof SupplementItem] as number}
+                            onChange={e => {
+                              const next = [...supplements[slot]];
+                              next[idx] = { ...item, [field.key]: Number(e.target.value) || 0 };
+                              setSupplements(s => ({ ...s, [slot]: next }));
+                            }}
+                            className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-md text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
+                          />
+                          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-bold pointer-events-none">{field.label}</span>
+                        </div>
+                      ))}
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setSupplements(s => ({ ...s, [slot]: s[slot].filter((_, i) => i !== idx) }))}
+                          className="p-1.5 rounded-md hover:bg-rose-100 text-slate-400 hover:text-rose-600 transition-colors"
+                          title="Remove"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {supplements[slot].length === 0 && (
+                    <div className="text-sm text-slate-500 italic">No {slot} supplements configured.</div>
+                  )}
+                </div>
               </div>
             ))}
           </div>

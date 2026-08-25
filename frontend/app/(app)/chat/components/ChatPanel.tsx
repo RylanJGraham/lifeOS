@@ -17,6 +17,7 @@ interface ChatMessage {
 }
 
 const STORAGE_KEY = "lifeos_chat_history";
+const SESSION_KEY = "lifeos_chat_session_id";
 const MAX_STORED = 100;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // ~8MB — LLM API rejects huge images
 
@@ -47,14 +48,24 @@ export default function ChatPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const prevStatuses = useRef<Record<string, string> | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const sessionIdRef = useRef<string>("");
 
-  // Restore history + prefill composer from ?q=
+  // Restore history + session id + prefill composer from ?q=
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) setMessages(JSON.parse(raw).slice(-MAX_STORED));
     } catch {
       // Corrupt history — start fresh
+    }
+    try {
+      sessionIdRef.current = localStorage.getItem(SESSION_KEY) || "";
+      if (!sessionIdRef.current) {
+        sessionIdRef.current = `web-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        localStorage.setItem(SESSION_KEY, sessionIdRef.current);
+      }
+    } catch {
+      sessionIdRef.current = `web-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     }
     const q = searchParams.get("q");
     if (q) setInput(q);
@@ -145,7 +156,7 @@ export default function ChatPanel() {
     setAttachError("");
     setSending(true);
     try {
-      const { reply } = await sendChat(trimmed, image?.base64);
+      const { reply } = await sendChat(trimmed, image?.base64, sessionIdRef.current);
       setBackendOffline(false);
       setMessages((prev) => [...prev, { role: "agent", text: reply, ts: Date.now() }]);
     } catch (e: any) {

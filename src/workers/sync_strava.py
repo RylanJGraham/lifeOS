@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 # Add parent directory to path so we can import utils
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from utils.logger import SupabaseLogger
+from utils.retry import with_retry
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -91,10 +92,14 @@ def get_activity_for_date(target_date: str):
     after = int((day - timedelta(days=2)).timestamp())
     before = int((day + timedelta(days=2)).timestamp())
     headers = {"Authorization": f"Bearer {access_token}"}
-    resp = httpx.get(
-        f"https://www.strava.com/api/v3/athlete/activities?after={after}&before={before}&per_page=20",
-        headers=headers, timeout=15.0)
-    resp.raise_for_status()
+    @with_retry(max_retries=2, base_delay=2.0, exceptions=(Exception,))
+    def _fetch():
+        r = httpx.get(
+            f"https://www.strava.com/api/v3/athlete/activities?after={after}&before={before}&per_page=20",
+            headers=headers, timeout=15.0)
+        r.raise_for_status()
+        return r
+    resp = _fetch()
     activities = resp.json()
     if not isinstance(activities, list):
         return None
@@ -116,6 +121,8 @@ def sync_strava_activities():
     if not access_token:
         raise RuntimeError("Strava token refresh failed.")
 
+    from utils.dedup import upsert_workout
+
     supabase = get_supabase_client()
     if not supabase:
         raise RuntimeError("Supabase client not configured.")
@@ -136,10 +143,13 @@ def sync_strava_activities():
     headers = {"Authorization": f"Bearer {access_token}"}
     
     logger.info(f"Fetching activities from Strava for the last {days_to_sync} days...")
+    @with_retry(max_retries=2, base_delay=2.0, exceptions=(Exception,))
+    def _fetch_activities():
+        r = httpx.get(activities_url, headers=headers)
+        r.raise_for_status()
+        return r.json()
     try:
-        response = httpx.get(activities_url, headers=headers)
-        response.raise_for_status()
-        activities = response.json()
+        activities = _fetch_activities()
     except Exception as e:
         logger.error(f"Failed to fetch Strava activities: {e}")
         SupabaseLogger.error("sync_strava", f"Failed to fetch Strava activities: {e}")
@@ -151,31 +161,6 @@ def sync_strava_activities():
     for activity in activities:
         activity_id = str(activity["id"])
         start_date = activity["start_date"] # UTC format
-        
-        # Check if activity already exists in workouts table
-        is_duplicate = False
-        
-        # 1. Check by unique Strava Activity ID
-        try:
-            dup_check = supabase.table("workouts").select("id").eq("strava_id", activity_id).execute()
-            if dup_check.data and len(dup_check.data) > 0:
-                is_duplicate = True
-        except Exception as e:
-            logger.warning(f"Could not query workouts by strava_id: {e}")
-
-        # 2. Check by exact workout date/time (timestamp) for absolute safety
-        if not is_duplicate:
-            try:
-                dup_check = supabase.table("workouts").select("id").eq("workout_date", start_date).execute()
-                if dup_check.data and len(dup_check.data) > 0:
-                    is_duplicate = True
-            except Exception as e:
-                logger.error(f"Error checking duplicate workout_date in workouts table: {e}")
-                
-        if is_duplicate:
-            logger.info(f"Activity {activity_id} ({activity['name']}) starting on {start_date} is already synced. Skipping.")
-            continue
-            
         logger.info(f"Syncing activity: {activity['name']} ({activity['type']}) starting on {start_date}")
         
         # Optionally fetch streams (Heart rate, etc)
@@ -237,12 +222,12 @@ def sync_strava_activities():
         }
         
         try:
-            supabase.table("workouts").insert(payload).execute()
-            logger.info(f"Successfully inserted activity {activity_id} into workouts table.")
+            upsert_workout(supabase, payload)
+            logger.info(f"Successfully synced activity {activity_id} into workouts table.")
             synced_count += 1
         except Exception as e:
-            logger.error(f"Failed to insert activity {activity_id} into workouts table: {e}")
-            SupabaseLogger.error("sync_strava", f"Failed to insert activity {activity_id}: {e}")
+            logger.error(f"Failed to sync activity {activity_id} into workouts table: {e}")
+            SupabaseLogger.error("sync_strava", f"Failed to sync activity {activity_id}: {e}")
             continue
             
     if synced_count > 0:

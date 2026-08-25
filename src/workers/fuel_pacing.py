@@ -62,19 +62,23 @@ def main():
 
     today = datetime.now().date().isoformat()
     meals = (
-        sb.table("meals").select("description, calories, protein")
+        sb.table("meals").select("description, calories, protein, planned")
         .gte("meal_time", f"{today}T00:00:00").lt("meal_time", f"{today}T23:59:59.999").execute()
     ).data or []
-    kcal = sum(float(m.get("calories") or 0) for m in meals)
-    protein = sum(float(m.get("protein") or 0) for m in meals)
-    logger.info(f"Today so far: {kcal:.0f} kcal, {protein:.0f}g protein ({len(meals)} meals)")
+    kcal = sum(float(m.get("calories") or 0) for m in meals if not m.get("planned"))
+    protein = sum(float(m.get("protein") or 0) for m in meals if not m.get("planned"))
+    planned_kcal = sum(float(m.get("calories") or 0) for m in meals if m.get("planned"))
+    planned_protein = sum(float(m.get("protein") or 0) for m in meals if m.get("planned"))
+    projected_kcal = kcal + planned_kcal
+    projected_protein = protein + planned_protein
+    logger.info(f"Today so far: {kcal:.0f} kcal, {protein:.0f}g protein ({len(meals)} meals); planned: {planned_kcal:.0f} kcal, {planned_protein:.0f}g protein")
 
     if not meals:
         logger.info("Nothing logged yet today — not pacing's job to nag about logging")
         return
 
-    protein_behind = protein < p_target * PROTEIN_FRACTION
-    calories_behind = bool(cal_target) and kcal < cal_target * CALORIE_FRACTION
+    protein_behind = projected_protein < p_target * PROTEIN_FRACTION
+    calories_behind = bool(cal_target) and projected_kcal < cal_target * CALORIE_FRACTION
     if not (protein_behind or calories_behind):
         logger.info("On pace — staying silent")
         return
@@ -90,10 +94,12 @@ def main():
     except Exception as e:
         logger.warning(f"known_items fetch failed: {e}")
 
-    p_gap = round(p_target - protein)
+    p_gap = round(p_target - projected_protein)
     lines = [f"🍽️ Fuel pacing check: at {datetime.now():%H:%M} you're at {protein:.0f}g of {p_target:.0f}g protein"]
     if cal_target:
         lines.append(f"and {kcal:.0f} of {cal_target:.0f} kcal")
+    if planned_kcal > 0 or planned_protein > 0:
+        lines.append(f"(planned adds {planned_protein:.0f}g P / {planned_kcal:.0f} kcal)")
     lines.append(f"— dinner needs to carry ~{p_gap}g protein.")
     if suggestions:
         lines.append("Easy closers from your saved items: " + "; ".join(suggestions[:3]))
@@ -101,12 +107,14 @@ def main():
     text = "\n".join(lines)
     send_telegram(text)
     try:
-        sb.table("ai_insights").insert({
-            "user_id": _user_id(),
-            "domain": "pacing",
-            "insight_text": text,
-            "action_item": f"Plan a ~{p_gap}g-protein dinner tonight.",
-        }).execute()
+        from action_items import insert_insight
+        insert_insight(
+            domain="pacing",
+            insight_text=text,
+            action_item=f"Plan a ~{p_gap}g-protein dinner tonight.",
+            resolve_previous=True,
+            user_id=_user_id(),
+        )
         logger.info("Pacing insight stored")
     except Exception as e:
         logger.error(f"Failed to store pacing insight: {e}")

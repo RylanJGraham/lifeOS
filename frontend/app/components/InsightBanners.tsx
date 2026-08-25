@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import {
-  Stethoscope, Apple, Dumbbell, Target, Zap, Wallet, TrendingUp, Radar, LucideIcon,
+  Stethoscope, Apple, Dumbbell, Target, Zap, Wallet, TrendingUp, Radar, Moon, LucideIcon,
 } from "lucide-react";
 import { supabase } from "../../utils/supabaseClient";
 
@@ -20,6 +20,7 @@ export const INSIGHT_DOMAIN_META: Record<string, { name: string; icon: LucideIco
   cash:         { name: "Cash flow",    icon: Wallet,      color: "#059669", href: "/finance" },
   habits:       { name: "Habits",       icon: Target,      color: "#0EA5E9", href: "/goals" },
   goals:        { name: "Goals",        icon: Target,      color: "#0EA5E9", href: "/goals" },
+  evening_audit:{ name: "Evening audit",icon: Moon,        color: "#5B42E8", href: "/chat" },
 };
 
 function relDay(iso: string): string {

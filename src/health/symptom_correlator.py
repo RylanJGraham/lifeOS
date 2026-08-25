@@ -44,7 +44,9 @@ class SymptomCorrelator:
         }
 
         # Continuous variables (e.g., HRV, Sleep Duration, Sodium Intake)
-        continuous_vars = ['hrv', 'sleep_duration_minutes', 'sodium_mg', 'caffeine_mg']
+        # Note: real data fetch below is stubbed. When wired to Supabase, use
+        # health_metrics.hrv and health_metrics.sleep_duration_minutes.
+        continuous_vars = ['hrv', 'duration_minutes', 'sodium_mg', 'caffeine_mg']
         for var in continuous_vars:
             if var in data.columns and data[var].notna().sum() > 5:
                 # Point-Biserial correlation (Pearson correlation between continuous and binary)
@@ -80,25 +82,116 @@ class SymptomCorrelator:
 
     def _fetch_historical_data(self, user_id: str, days: int) -> pd.DataFrame:
         """
-        Placeholder for the Supabase DB join.
-        Returns a mock DataFrame for structural completeness.
+        Joins health_metrics, meals, and workouts on date for the last `days` days.
+        Returns a DataFrame with one row per day.
         """
-        # In a real scenario, this joins health_metrics, meals, workouts on date.
-        # Generating synthetic data to demonstrate the mathematical logic above.
-        dates = pd.date_range(end=pd.Timestamp.now(), periods=days)
-        df = pd.DataFrame({'date': dates})
-        df['symptom_name'] = np.random.choice(['dizzy', 'headache', None], size=days, p=[0.1, 0.2, 0.7])
-        df['hrv'] = np.random.normal(45, 10, days)
-        df['sleep_duration_minutes'] = np.random.normal(420, 60, days)
-        df['sodium_mg'] = np.random.normal(2500, 800, days)
-        df['caffeine_mg'] = np.random.normal(200, 100, days)
-        df['worked_out'] = np.random.choice([0, 1], size=days)
-        df['high_stress_day'] = np.random.choice([0, 1], size=days)
-        
-        # Inject artificial correlation for 'dizzy' and 'sodium_mg'
-        dizzy_mask = df['symptom_name'] == 'dizzy'
-        df.loc[dizzy_mask, 'sodium_mg'] += 1500 
-        
+        from datetime import datetime, timedelta
+        start = (datetime.now() - timedelta(days=days)).date().isoformat()
+        end = datetime.now().date().isoformat()
+
+        # Health metrics: HRV, sleep duration, RHR
+        health_rows = (
+            self.db.table("health_metrics")
+            .select("recorded_at, hrv, sleep_duration_minutes, resting_heart_rate, symptom_name")
+            .eq("user_id", user_id)
+            .gte("recorded_at", f"{start}T00:00:00")
+            .lte("recorded_at", f"{end}T23:59:59")
+            .execute()
+        ).data or []
+
+        # Meals: sodium and caffeine estimates from micronutrients or description
+        meal_rows = (
+            self.db.table("meals")
+            .select("meal_time, micronutrients, description, calories, protein, carbs, fat")
+            .eq("user_id", user_id)
+            .gte("meal_time", f"{start}T00:00:00")
+            .lte("meal_time", f"{end}T23:59:59")
+            .execute()
+        ).data or []
+
+        # Workouts
+        workout_rows = (
+            self.db.table("workouts")
+            .select("workout_date, duration_minutes, calories")
+            .eq("user_id", user_id)
+            .gte("workout_date", f"{start}T00:00:00")
+            .lte("workout_date", f"{end}T23:59:59")
+            .execute()
+        ).data or []
+
+        def to_date(raw: str) -> str:
+            return raw[:10] if raw else None
+
+        days_range = pd.date_range(end=pd.Timestamp.now(), periods=days)
+        df = pd.DataFrame({"date": days_range})
+        df["date"] = df["date"].dt.date.astype(str)
+
+        # Aggregate health metrics per day
+        health_by_day: dict = {}
+        for r in health_rows:
+            d = to_date(r.get("recorded_at"))
+            if not d:
+                continue
+            if d not in health_by_day:
+                health_by_day[d] = {"hrv": [], "sleep_duration_minutes": [], "resting_heart_rate": [], "symptom_name": None}
+            for k in ("hrv", "sleep_duration_minutes", "resting_heart_rate"):
+                v = r.get(k)
+                if v is not None:
+                    health_by_day[d][k].append(float(v))
+            if r.get("symptom_name"):
+                health_by_day[d]["symptom_name"] = r["symptom_name"]
+
+        for d, vals in health_by_day.items():
+            mask = df["date"] == d
+            for k in ("hrv", "sleep_duration_minutes", "resting_heart_rate"):
+                if vals[k]:
+                    df.loc[mask, k] = sum(vals[k]) / len(vals[k])
+            df.loc[mask, "symptom_name"] = vals["symptom_name"]
+
+        # Aggregate meals per day
+        meal_by_day: dict = {}
+        for r in meal_rows:
+            d = to_date(r.get("meal_time"))
+            if not d:
+                continue
+            if d not in meal_by_day:
+                meal_by_day[d] = {"sodium_mg": 0.0, "caffeine_mg": 0.0, "calories": 0.0, "protein": 0.0}
+            micros = r.get("micronutrients") or {}
+            meal_by_day[d]["sodium_mg"] += float(micros.get("sodium_mg") or micros.get("sodium") or 0)
+            meal_by_day[d]["caffeine_mg"] += float(micros.get("caffeine_mg") or micros.get("caffeine") or 0)
+            meal_by_day[d]["calories"] += float(r.get("calories") or 0)
+            meal_by_day[d]["protein"] += float(r.get("protein") or 0)
+
+        for d, vals in meal_by_day.items():
+            mask = df["date"] == d
+            for k, v in vals.items():
+                df.loc[mask, k] = v
+
+        # Aggregate workouts per day
+        workout_by_day: dict = {}
+        for r in workout_rows:
+            d = to_date(r.get("workout_date"))
+            if not d:
+                continue
+            if d not in workout_by_day:
+                workout_by_day[d] = {"worked_out": 0, "workout_duration_minutes": 0.0, "workout_calories": 0.0}
+            workout_by_day[d]["worked_out"] = 1
+            workout_by_day[d]["workout_duration_minutes"] += float(r.get("duration_minutes") or 0)
+            workout_by_day[d]["workout_calories"] += float(r.get("calories") or 0)
+
+        for d, vals in workout_by_day.items():
+            mask = df["date"] == d
+            for k, v in vals.items():
+                df.loc[mask, k] = v
+
+        # high_stress_day proxy: RHR > 10 above rolling median OR very short sleep
+        df["high_stress_day"] = 0
+        if df["resting_heart_rate"].notna().sum() >= 5:
+            median_rhr = df["resting_heart_rate"].median()
+            df.loc[df["resting_heart_rate"] > median_rhr + 10, "high_stress_day"] = 1
+        if df["sleep_duration_minutes"].notna().sum() >= 5:
+            df.loc[df["sleep_duration_minutes"] < 360, "high_stress_day"] = 1
+
         return df
 
     def _generate_recommendations(self, correlations: Dict) -> List[str]:

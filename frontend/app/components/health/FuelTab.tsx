@@ -9,7 +9,7 @@ import {
 import {
   Flame, Zap, Target, Clock, Brain, CheckCircle,
   ChevronDown, ChevronUp, ArrowRight, TrendingUp,
-  Activity, Dumbbell, X, Trash2, Pencil, Plus, Check
+  Activity, Dumbbell, X, Trash2, Pencil, Plus, Check, Star, UtensilsCrossed
 } from "lucide-react";
 import { supabase } from "../../../utils/supabaseClient";
 import { THEME } from "../../../utils/theme";
@@ -144,8 +144,8 @@ function StatusBadge({ status }: { status: "optimal" | "warning" | "critical" | 
 
 // ─── Zone 1: Intake Overview HUD ─────────────────────────────────
 // All figures are sums over the meals in the selected range.
-function IntakeHUD({ totalCal, totalP, totalC, totalFat, loggedDays, calTarget, pTarget, cTarget, fTarget, timeFilter }: {
-  totalCal: number; totalP: number; totalC: number; totalFat: number;
+function IntakeHUD({ totalCal, totalP, totalC, totalFat, totalCaffeine, loggedDays, calTarget, pTarget, cTarget, fTarget, timeFilter }: {
+  totalCal: number; totalP: number; totalC: number; totalFat: number; totalCaffeine: number;
   loggedDays: number; calTarget: number | null;
   pTarget: number | null; cTarget: number | null; fTarget: number | null;
   timeFilter: string;
@@ -155,6 +155,7 @@ function IntakeHUD({ totalCal, totalP, totalC, totalFat, loggedDays, calTarget, 
   const avgP = Math.round(totalP / days);
   const avgC = Math.round(totalC / days);
   const avgF = Math.round(totalFat / days);
+  const avgCaffeine = Math.round(totalCaffeine / days);
   const macroKcal = totalP * 4 + totalC * 4 + totalFat * 9;
 
   const chips = [
@@ -207,10 +208,20 @@ function IntakeHUD({ totalCal, totalP, totalC, totalFat, loggedDays, calTarget, 
       pct: fTarget ? pct(avgF, fTarget) : (macroKcal > 0 ? Math.round((totalFat * 9 / macroKcal) * 100) : null),
       icon: Activity,
     },
+    {
+      id: "caffeine",
+      label: "Caffeine",
+      value: totalCaffeine,
+      unit: "mg",
+      sublabel: `~${avgCaffeine}mg/day avg`,
+      color: "#A855F7",
+      pct: null,
+      icon: Zap,
+    },
   ];
 
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+    <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
       {chips.map((chip, i) => {
         const r = 26, circ = 2 * Math.PI * r;
         const ringPct = chip.pct ?? 0;
@@ -486,8 +497,8 @@ function DailyMacroChart({ dbMeals, timeFilter, onDaySelect }: {
 }
 
 // ─── Zone 3: Macro Split + Workout Sync ──────────────────────────
-function MacroSplitPanel({ totalP, totalC, totalFat, totalFib }: {
-  totalP: number; totalC: number; totalFat: number; totalFib: number;
+function MacroSplitPanel({ totalP, totalC, totalFat, avgFib }: {
+  totalP: number; totalC: number; totalFat: number; avgFib: number;
 }) {
   const macroKcal = totalP * 4 + totalC * 4 + totalFat * 9;
   const macros = [
@@ -544,11 +555,66 @@ function MacroSplitPanel({ totalP, totalC, totalFat, totalFib }: {
           );
         })}
       </div>
-      {totalFib > 0 && (
+      {avgFib > 0 && (
         <div className="mt-4 flex items-center justify-between text-[11px] px-3 py-2 rounded-lg"
           style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
-          <span className="font-bold uppercase tracking-widest" style={{ color: C.textTer }}>Fiber (from micronutrients)</span>
-          <span className="font-black font-mono" style={{ color: C.fiber }}>{totalFib}g</span>
+          <span className="font-bold uppercase tracking-widest" style={{ color: C.textTer }}>Fiber · avg/day</span>
+          <span className="font-black font-mono" style={{ color: C.fiber }}>{avgFib}g</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Zone 3b: Caffeine Timeline ──────────────────────────────────
+function CaffeinePanel({ dbMeals, timeFilter }: { dbMeals: any[]; timeFilter: string }) {
+  const dailyData = useMemo(() => {
+    const byDay: Record<string, number> = {};
+    dbMeals.forEach(m => {
+      const dk = dayKeyOf(m.meal_time);
+      byDay[dk] = (byDay[dk] || 0) + (m.caffeine_mg || 0);
+    });
+    return Object.keys(byDay).sort().map(dk => ({
+      dk,
+      date: new Date(dk + "T00:00:00").toLocaleDateString([], { month: "short", day: "numeric" }),
+      mg: byDay[dk],
+    }));
+  }, [dbMeals]);
+
+  const avg = dailyData.length > 0
+    ? Math.round(dailyData.reduce((a, d) => a + d.mg, 0) / dailyData.length)
+    : 0;
+
+  return (
+    <div className="card-surface p-5" style={{ borderRadius: "var(--radius-xl)" }}>
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+        <div>
+          <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>Caffeine · {rangeLabel(timeFilter)}</div>
+          <div className="text-[11px] mt-0.5" style={{ color: C.textSec }}>Daily total · 400mg guideline</div>
+        </div>
+        <div className="text-[10px] font-bold px-2 py-1 rounded-lg" style={{ background: "rgba(168,85,247,0.1)", color: "#A855F7", border: "1px solid rgba(168,85,247,0.25)" }}>
+          avg {avg}mg/day
+        </div>
+      </div>
+      {dailyData.length === 0 ? (
+        <div className="text-[11px]" style={{ color: C.textTer }}>No caffeine logged in this range.</div>
+      ) : (
+        <div style={{ height: 180 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={dailyData} margin={{ top: 8, right: 20, left: 0, bottom: 0 }}>
+              <XAxis dataKey="date" axisLine={false} tickLine={false}
+                tick={{ fontSize: 10, fill: C.textTer, fontFamily: "var(--font-mono)" }} />
+              <YAxis axisLine={false} tickLine={false}
+                tick={{ fontSize: 10, fill: C.textTer, fontFamily: "var(--font-mono)" }} width={36} />
+              <RechartsTooltip
+                formatter={(v: number) => [`${v}mg`, "Caffeine"]}
+                contentStyle={{ borderRadius: "8px", border: `1px solid ${C.border}`, boxShadow: "0 4px 16px rgba(0,0,0,0.08)", background: "#fff", fontSize: 11 }}
+              />
+              <ReferenceLine y={400} stroke={C.warning} strokeDasharray="4 4" strokeWidth={1.5}
+                label={{ value: "400mg", position: "right", fontSize: 10, fill: C.warning }} />
+              <Bar dataKey="mg" fill="#A855F7" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       )}
     </div>
@@ -904,13 +970,307 @@ function MicroPanel({ dbMeals, timeFilter, dayLabel }: { dbMeals: any[]; timeFil
   );
 }
 
+// ─── Save meal as a known / frequent item ─────────────────────────
+function SaveToKnownItemButton({ meal }: { meal: any }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState(meal.description || "");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const save = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setSaving(true);
+    const payload = {
+      user_id: "00000000-0000-0000-0000-000000000000",
+      name: trimmed,
+      aliases: [trimmed.toLowerCase()],
+      calories: meal.calories || 0,
+      protein: meal.protein || 0,
+      carbs: meal.carbs || 0,
+      fat: meal.fat || 0,
+      micronutrients: meal.micronutrients || {},
+      use_count: 1,
+      last_used_at: new Date().toISOString(),
+    };
+    try {
+      const { error } = await supabase.from("known_items").upsert(payload, { onConflict: "user_id,name" });
+      if (error) throw error;
+      setSaved(true);
+      setTimeout(() => { setOpen(false); setSaved(false); }, 1200);
+    } catch (e: any) {
+      console.error("Failed to save frequent item:", e);
+      alert("Failed to save frequent item: " + (e.message || e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg transition-colors hover:bg-black/5"
+        style={{ color: C.textTer }}
+        title="Save as frequent item"
+      >
+        <Star size={12} /> Save
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        type="text"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setOpen(false); }}
+        className="w-32 text-[10px] px-2 py-1 rounded-lg outline-none"
+        style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)", color: "var(--text-primary)" }}
+        placeholder="Frequent item name"
+      />
+      <button
+        onClick={save}
+        disabled={saving || !name.trim()}
+        className="text-[10px] font-bold px-2 py-1 rounded-lg transition-colors disabled:opacity-50"
+        style={{ background: C.optimal, color: "#fff" }}
+      >
+        {saving ? "…" : saved ? <Check size={12} /> : "Save"}
+      </button>
+      <button
+        onClick={() => setOpen(false)}
+        className="p-1 rounded-lg hover:bg-black/5 transition-colors"
+        style={{ color: C.textTer }}
+      >
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
+const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000000";
+
+function nowLocalInputValue(date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+// ─── Favorites quick-add bar ───────────────────────────────────────
+interface KnownItem {
+  id: string;
+  name: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  use_count?: number;
+}
+
+function FavoritesBar({ onAdd }: { onAdd: (item: KnownItem, quantity: number) => void }) {
+  const [items, setItems] = useState<KnownItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [picked, setPicked] = useState<KnownItem | null>(null);
+  const [qty, setQty] = useState("1");
+
+  useEffect(() => {
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) return;
+    setLoading(true);
+    supabase
+      .from("known_items")
+      .select("id, name, calories, protein, carbs, fat, use_count")
+      .order("use_count", { ascending: false })
+      .limit(12)
+      .then(({ data, error }) => {
+        if (!error && data) setItems(data as KnownItem[]);
+        setLoading(false);
+      });
+  }, []);
+
+  if ((loading && items.length === 0) || items.length === 0) return null;
+
+  return (
+    <div className="card-surface p-4" style={{ borderRadius: "var(--radius-xl)" }}>
+      <div className="flex items-center gap-2 mb-3">
+        <Star size={14} style={{ color: C.warning }} />
+        <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>Favorites</div>
+      </div>
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {items.map(item => (
+          <button
+            key={item.id}
+            onClick={() => { setPicked(item); setQty("1"); }}
+            className={`shrink-0 flex items-center gap-2 px-3 py-2 rounded-lg text-[11px] font-bold transition-colors hover:opacity-90 ${picked?.id === item.id ? "ring-1 ring-teal-500 bg-teal-50/30" : ""}`}
+            style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)", color: C.textSec }}
+            title={`${item.name} · ${item.calories || 0} kcal · ${item.protein || 0}g P`}
+          >
+            <Plus size={12} style={{ color: C.optimal }} />
+            <span className="truncate max-w-[120px]">{item.name}</span>
+            <span className="font-mono" style={{ color: C.calories }}>{item.calories || 0}</span>
+          </button>
+        ))}
+      </div>
+      {picked && (
+        <div className="mt-3 p-3 rounded-lg flex flex-wrap items-center gap-3" style={{ background: "var(--surface-tertiary)", border: "1px dashed var(--border-subtle)" }}>
+          <span className="text-[11px] font-bold" style={{ color: C.textSec }}>{picked.name}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-bold" style={{ color: C.textTer }}>Qty / portions</span>
+            <input
+              type="number"
+              min="0.1"
+              step="0.1"
+              value={qty}
+              onChange={e => setQty(e.target.value)}
+              className="w-20 px-2 py-1 rounded-md bg-white border border-slate-200 text-sm focus:outline-none focus:border-teal-500"
+            />
+          </div>
+          <button
+            onClick={() => { onAdd(picked, Number(qty) || 1); setPicked(null); }}
+            className="px-3 py-1.5 rounded-md bg-teal-600 text-white text-[11px] font-bold hover:bg-teal-700 transition-colors"
+          >
+            Add {Math.round((picked.calories || 0) * (Number(qty) || 1))} kcal
+          </button>
+          <button
+            onClick={() => setPicked(null)}
+            className="px-2 py-1.5 rounded-md text-[11px] font-bold text-slate-500 hover:bg-slate-100 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Meal add/edit form ────────────────────────────────────────────
+interface MealFormData {
+  id?: string;
+  description: string;
+  meal_time: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  caffeine_mg: number;
+  planned: boolean;
+}
+
+const EMPTY_MEAL: MealFormData = {
+  description: "",
+  meal_time: "",
+  calories: 0,
+  protein: 0,
+  carbs: 0,
+  fat: 0,
+  caffeine_mg: 0,
+  planned: false,
+};
+
+function MealEditor({
+  initial,
+  onClose,
+  onSave,
+}: {
+  initial?: Partial<MealFormData>;
+  onClose: () => void;
+  onSave: (data: MealFormData) => void;
+}) {
+  const [data, setData] = useState<MealFormData>({
+    ...EMPTY_MEAL,
+    meal_time: nowLocalInputValue(),
+    ...initial,
+  });
+  const [saving, setSaving] = useState(false);
+
+  const setNum = (key: keyof MealFormData) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setData(prev => ({ ...prev, [key]: Number(e.target.value) || 0 }));
+
+  return (
+    <div className="card-surface p-4 mb-4" style={{ borderRadius: "var(--radius-xl)", border: "1px solid var(--border-active)" }}>
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>
+          {initial?.id ? "Edit meal" : "Add meal"}
+        </div>
+        <button onClick={onClose} className="p-1 rounded-lg hover:bg-black/5 transition-colors" style={{ color: C.textTer }}>
+          <X size={14} />
+        </button>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+        <div className="sm:col-span-2">
+          <input
+            type="text"
+            value={data.description}
+            onChange={e => setData(prev => ({ ...prev, description: e.target.value }))}
+            placeholder="Meal description"
+            className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1">Time</label>
+          <input
+            type="datetime-local"
+            value={data.meal_time}
+            onChange={e => setData(prev => ({ ...prev, meal_time: e.target.value }))}
+            className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
+          />
+        </div>
+        <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 border border-slate-200">
+          <span className="text-sm font-semibold text-slate-700">Planned</span>
+          <button
+            type="button"
+            onClick={() => setData(prev => ({ ...prev, planned: !prev.planned }))}
+            className={`relative inline-block w-12 h-6 rounded-full transition-colors ${data.planned ? "bg-teal-500" : "bg-slate-200"}`}
+          >
+            <span className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${data.planned ? "right-1" : "left-1"}`} />
+          </button>
+        </div>
+        {[
+          { key: "calories", label: "Calories", color: C.calories },
+          { key: "protein", label: "Protein", color: C.protein },
+          { key: "carbs", label: "Carbs", color: C.carbs },
+          { key: "fat", label: "Fat", color: C.fat },
+          { key: "caffeine_mg", label: "Caffeine (mg)", color: "#A855F7" },
+        ].map(field => (
+          <div key={field.key}>
+            <label className="block text-[10px] uppercase tracking-widest font-bold mb-1" style={{ color: C.textTer }}>{field.label}</label>
+            <input
+              type="number"
+              min={0}
+              value={data[field.key as keyof MealFormData] as number}
+              onChange={setNum(field.key as keyof MealFormData)}
+              className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
+              style={{ color: field.color }}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        <button
+          onClick={onClose}
+          className="px-3 py-1.5 rounded-lg text-[11px] font-bold text-slate-500 hover:bg-slate-100 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => { setSaving(true); onSave(data); }}
+          disabled={saving || !data.description.trim() || !data.meal_time}
+          className="flex items-center gap-1 px-4 py-1.5 rounded-lg text-[11px] font-bold text-white bg-teal-600 hover:bg-teal-700 transition-colors disabled:opacity-50"
+        >
+          <Check size={12} /> {initial?.id ? "Update" : "Log"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Zone 5: Meal Stream (Rich Cards) ────────────────────────────
-function MealStreamCard({ meal, index }: { meal: any; index: number }) {
+function MealStreamCard({ meal, index, onEdit }: { meal: any; index: number; onEdit?: (meal: any) => void }) {
   const [open, setOpen] = useState(false);
   const cal = meal.calories || 0;
   const p   = meal.protein  || 0;
   const c   = meal.carbs    || 0;
   const f   = meal.fat      || 0;
+  const caffeine = meal.caffeine_mg || 0;
 
   const totalMacroG = p + c + f || 1;
   const macroWidths = {
@@ -927,7 +1287,12 @@ function MealStreamCard({ meal, index }: { meal: any; index: number }) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: Math.min(index, 8) * 0.07 + 0.15, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
       className="card-surface overflow-hidden"
-      style={{ borderRadius: "var(--radius-lg)" }}
+      style={{
+        borderRadius: "var(--radius-lg)",
+        background: meal.planned ? "var(--surface-tertiary)" : undefined,
+        borderStyle: meal.planned ? "dashed" : "solid",
+        borderColor: meal.planned ? "var(--border-active)" : undefined,
+      }}
     >
       <div className="p-4">
         {/* Header row */}
@@ -938,7 +1303,15 @@ function MealStreamCard({ meal, index }: { meal: any; index: number }) {
               <Flame size={15} style={{ color: "var(--accent-sleep)" }} />
             </div>
             <div>
-              <div className="text-sm font-bold" style={{ color: C.text }}>{meal.description || "Unclassified Meal"}</div>
+              <div className="flex items-center gap-2">
+                <div className="text-sm font-bold" style={{ color: C.text }}>{meal.description || "Unclassified Meal"}</div>
+                {meal.planned && (
+                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider"
+                    style={{ background: "rgba(91,66,232,0.1)", color: "var(--accent-sleep)", border: "1px solid rgba(91,66,232,0.2)" }}>
+                    planned
+                  </span>
+                )}
+              </div>
               <div className="flex items-center gap-2 mt-0.5">
                 <Clock size={10} style={{ color: C.textTer }} />
                 <span className="text-[10px] font-bold font-mono" style={{ color: C.textTer }}>
@@ -950,9 +1323,27 @@ function MealStreamCard({ meal, index }: { meal: any; index: number }) {
             </div>
           </div>
 
-          <div className="text-right shrink-0">
-            <div className="text-lg font-black" style={{ fontFamily: "var(--font-mono)", color: C.calories, lineHeight: 1 }}>{cal}</div>
-            <div className="text-[10px] font-bold" style={{ color: C.textTer }}>kcal</div>
+          <div className="text-right shrink-0 flex flex-col items-end gap-1">
+            <div>
+              <div className="text-lg font-black" style={{ fontFamily: "var(--font-mono)", color: C.calories, lineHeight: 1 }}>{cal}</div>
+              <div className="text-[10px] font-bold" style={{ color: C.textTer }}>kcal</div>
+            </div>
+            {caffeine > 0 && (
+              <div className="text-[9px] font-bold font-mono" style={{ color: "#A855F7" }}>{caffeine}mg caf</div>
+            )}
+            <div className="flex items-center gap-1 justify-end">
+              {onEdit && (
+                <button
+                  onClick={() => onEdit(meal)}
+                  className="flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg transition-colors hover:bg-black/5"
+                  style={{ color: C.textTer }}
+                  title="Edit meal"
+                >
+                  <Pencil size={12} /> Edit
+                </button>
+              )}
+              <SaveToKnownItemButton meal={meal} />
+            </div>
           </div>
         </div>
 
@@ -996,12 +1387,13 @@ function MealStreamCard({ meal, index }: { meal: any; index: number }) {
             transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
             className="overflow-hidden"
           >
-            <div className="px-4 py-3 grid grid-cols-4 gap-2" style={{ background: "var(--surface-tertiary)", borderTop: `1px solid ${C.border}` }}>
+            <div className="px-4 py-3 grid grid-cols-5 gap-2" style={{ background: "var(--surface-tertiary)", borderTop: `1px solid ${C.border}` }}>
               {[
                 { label: "Calories", val: cal, unit: "kcal", color: C.calories },
                 { label: "Protein",  val: p,   unit: "g",    color: C.protein  },
                 { label: "Carbs",    val: c,   unit: "g",    color: C.carbs    },
                 { label: "Fat",      val: f,   unit: "g",    color: C.fat      },
+                { label: "Caffeine", val: caffeine, unit: "mg", color: "#A855F7" },
               ].map(s => (
                 <div key={s.label} className="text-center">
                   <div className="text-[10px] font-bold uppercase tracking-widest mb-0.5" style={{ color: C.textTer }}>{s.label}</div>
@@ -1048,6 +1440,7 @@ function MealGallery({ dbMeals, timeFilter, onOpenDay }: {
         p: meals.reduce((a, m) => a + (m.protein || 0), 0),
         c: meals.reduce((a, m) => a + (m.carbs || 0), 0),
         f: meals.reduce((a, m) => a + (m.fat || 0), 0),
+        caffeine: meals.reduce((a, m) => a + (m.caffeine_mg || 0), 0),
       };
     });
   }, [dbMeals]);
@@ -1085,6 +1478,7 @@ function MealGallery({ dbMeals, timeFilter, onOpenDay }: {
                 <span style={{ color: C.protein }}>P {d.p}g</span>
                 <span style={{ color: C.carbs }}>C {d.c}g</span>
                 <span style={{ color: C.fat }}>F {d.f}g</span>
+                {d.caffeine > 0 && <span style={{ color: "#A855F7" }}>☕ {d.caffeine}mg</span>}
               </div>
               <div className="space-y-1.5">
                 {shown.map((m, i) => (
@@ -1109,7 +1503,7 @@ function MealGallery({ dbMeals, timeFilter, onOpenDay }: {
 }
 
 // ─── Day Timeline: clock-ordered meals with running totals ───────
-function DayTimeline({ meals }: { meals: any[] }) {
+function DayTimeline({ meals, onEdit }: { meals: any[]; onEdit?: (meal: any) => void }) {
   const sorted = [...meals].sort((a, b) => new Date(a.meal_time).getTime() - new Date(b.meal_time).getTime());
   let running = 0;
 
@@ -1134,7 +1528,7 @@ function DayTimeline({ meals }: { meals: any[] }) {
               </div>
               <div className="flex-1 pb-4 min-w-0">
                 <div className="text-[10px] font-mono mb-1" style={{ color: C.textTer }}>running {run} kcal</div>
-                <MealStreamCard meal={m} index={i} />
+                <MealStreamCard meal={m} index={i} onEdit={onEdit} />
               </div>
             </div>
           );
@@ -1285,27 +1679,115 @@ export default function FuelTab({
 }: FuelTabProps) {
   const targets = useNutritionTargets();
   const calTarget = targets.calories;
+  const [editingMeal, setEditingMeal] = useState<any | null>(null);
+  const [showEditor, setShowEditor] = useState(false);
+  const [formKey, setFormKey] = useState(0);
+
+  const openAdd = () => {
+    setEditingMeal(null);
+    setFormKey(k => k + 1);
+    setShowEditor(true);
+  };
+
+  const openEdit = (meal: any) => {
+    setEditingMeal(meal);
+    setFormKey(k => k + 1);
+    setShowEditor(true);
+  };
+
+  const closeEditor = () => {
+    setShowEditor(false);
+    setEditingMeal(null);
+  };
+
+  const saveMeal = async (data: MealFormData) => {
+    const payload: any = {
+      user_id: DEFAULT_USER_ID,
+      description: data.description.trim(),
+      meal_time: new Date(data.meal_time).toISOString(),
+      calories: data.calories,
+      protein: data.protein,
+      carbs: data.carbs,
+      fat: data.fat,
+      caffeine_mg: data.caffeine_mg,
+      planned: data.planned,
+    };
+    try {
+      if (data.id) {
+        const { error } = await supabase.from("meals").update(payload).eq("id", data.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("meals").insert(payload);
+        if (error) throw error;
+      }
+      closeEditor();
+    } catch (e: any) {
+      console.error("Failed to save meal:", e);
+      alert("Failed to save meal: " + (e.message || e));
+    }
+  };
+
+  const addFromFavorite = async (item: KnownItem, quantity: number) => {
+    const scale = Math.max(0, quantity);
+    if (!scale) return;
+    const today = new Date();
+    const meal_time = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 12, 0, 0).toISOString();
+    const payload: any = {
+      user_id: DEFAULT_USER_ID,
+      description: `${item.name} × ${scale}`,
+      meal_time,
+      calories: Math.round((item.calories || 0) * scale),
+      protein: Math.round((item.protein || 0) * scale),
+      carbs: Math.round((item.carbs || 0) * scale),
+      fat: Math.round((item.fat || 0) * scale),
+      caffeine_mg: 0,
+      planned: false,
+    };
+    try {
+      const { error } = await supabase.from("meals").insert(payload);
+      if (error) throw error;
+      // Bump use_count if the column exists (defensive)
+      try {
+        await supabase
+          .from("known_items")
+          .update({ use_count: (item.use_count || 0) + 1, last_used_at: new Date().toISOString() })
+          .eq("id", item.id);
+      } catch (err) {
+        console.warn("Could not bump known_items.use_count:", err);
+      }
+    } catch (e: any) {
+      console.error("Failed to add favorite meal:", e);
+      alert("Failed to add favorite meal: " + (e.message || e));
+    }
+  };
 
   // Range aggregates (also used for the day-vs-average comparison chip)
-  let totalCal = 0, totalP = 0, totalC = 0, totalFat = 0, totalFib = 0;
+  let totalCal = 0, totalP = 0, totalC = 0, totalFat = 0, totalFib = 0, totalCaffeine = 0;
   dbMeals.forEach(m => {
     totalCal += m.calories || 0;
     totalP   += m.protein  || 0;
     totalC   += m.carbs    || 0;
     totalFat += m.fat      || 0;
     totalFib += parseMicros(m.micronutrients).fiber || 0;
+    totalCaffeine += m.caffeine_mg || 0;
   });
   const loggedDays = new Set(dbMeals.map(m => dayKeyOf(m.meal_time))).size;
+  const avgFib = loggedDays > 0 ? Math.round(totalFib / loggedDays) : 0;
 
   // Day lens: narrow to the picked day
   const isDay = viewMode === "day" && !!selectedDay;
   const dayMeals = isDay ? dbMeals.filter(m => dayKeyOf(m.meal_time) === selectedDay) : dbMeals;
-  let dCal = 0, dP = 0, dC = 0, dF = 0;
+  let dCal = 0, dP = 0, dC = 0, dF = 0, dCaffeine = 0, dPlannedCal = 0, dPlannedP = 0;
   dayMeals.forEach(m => {
     dCal += m.calories || 0;
     dP   += m.protein  || 0;
     dC   += m.carbs    || 0;
     dF   += m.fat      || 0;
+    dCaffeine += m.caffeine_mg || 0;
+    if (m.planned) {
+      dPlannedCal += m.calories || 0;
+      dPlannedP += m.protein || 0;
+    }
   });
 
   // No data in the active lens — honest empty state, not stale all-time data
@@ -1365,6 +1847,7 @@ export default function FuelTab({
               { label: "Protein", val: dP, unit: "g", color: C.protein, target: targets.protein },
               { label: "Carbs", val: dC, unit: "g", color: C.carbs, target: targets.carbs },
               { label: "Fat", val: dF, unit: "g", color: C.fat, target: targets.fat },
+              { label: "Caffeine", val: dCaffeine, unit: "mg", color: "#A855F7", target: null },
             ].map(s => (
               <div key={s.label} className="p-3 rounded-xl text-center" style={{ background: "var(--surface-tertiary)", border: "1px solid var(--border-subtle)" }}>
                 <div className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: C.textTer }}>{s.label}</div>
@@ -1380,7 +1863,14 @@ export default function FuelTab({
             ))}
           </div>
           {/* Day macro split — 100% stacked bar */}
-          <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: C.textTer }}>Macro Split (share of macro kcal)</div>
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-[10px] font-bold uppercase tracking-widest" style={{ color: C.textTer }}>Macro Split (share of macro kcal)</div>
+            {dPlannedCal > 0 && (
+              <div className="text-[10px] font-bold" style={{ color: C.textSec }}>
+                Includes {dPlannedCal} planned kcal · {dPlannedP}g P
+              </div>
+            )}
+          </div>
           <div className="flex h-6 rounded-lg overflow-hidden" style={{ background: "var(--border-subtle)" }}>
             {dayMacros.map(m => {
               const share = macroKcal > 0 ? Math.round((m.kcal / macroKcal) * 100) : 0;
@@ -1398,13 +1888,47 @@ export default function FuelTab({
         </div>
 
         {/* Hourly intake curve for the day */}
-        <IntakeTimeline dbMeals={dayMeals} calTarget={calTarget} timeFilter="day" />
+        <div className="overflow-x-auto">
+          <div className="min-w-[360px]">
+            <IntakeTimeline dbMeals={dayMeals} calTarget={calTarget} timeFilter="day" />
+          </div>
+        </div>
 
         {/* Micronutrient goals for this day */}
         <MicroPanel dbMeals={dayMeals} timeFilter="day" dayLabel={fmtDayLong(selectedDay!)} />
 
+        {/* Favorites + add */}
+        <FavoritesBar onAdd={addFromFavorite} />
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>Meals</div>
+          <button
+            onClick={openAdd}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-bold text-white bg-teal-600 hover:bg-teal-700 transition-colors"
+          >
+            <Plus size={12} /> Add meal
+          </button>
+        </div>
+        {showEditor && (
+          <MealEditor
+            key={formKey}
+            initial={editingMeal ? {
+              id: editingMeal.id,
+              description: editingMeal.description || "",
+              meal_time: editingMeal.meal_time ? nowLocalInputValue(new Date(editingMeal.meal_time)) : nowLocalInputValue(),
+              calories: editingMeal.calories || 0,
+              protein: editingMeal.protein || 0,
+              carbs: editingMeal.carbs || 0,
+              fat: editingMeal.fat || 0,
+              caffeine_mg: editingMeal.caffeine_mg || 0,
+              planned: !!editingMeal.planned,
+            } : undefined}
+            onClose={closeEditor}
+            onSave={saveMeal}
+          />
+        )}
+
         {/* Clock-ordered meal timeline */}
-        <DayTimeline meals={dayMeals} />
+        <DayTimeline meals={dayMeals} onEdit={openEdit} />
       </div>
     );
   }
@@ -1416,21 +1940,38 @@ export default function FuelTab({
 
       {/* Zone 1 — Intake Overview HUD */}
       <IntakeHUD
-        totalCal={totalCal} totalP={totalP} totalC={totalC} totalFat={totalFat}
+        totalCal={totalCal} totalP={totalP} totalC={totalC} totalFat={totalFat} totalCaffeine={totalCaffeine}
         loggedDays={loggedDays} calTarget={calTarget}
         pTarget={targets.protein} cTarget={targets.carbs} fTarget={targets.fat}
         timeFilter={timeFilter}
       />
 
       {/* Zone 2 — Intake Timeline (clickable) */}
-      <IntakeTimeline dbMeals={dbMeals} calTarget={calTarget} timeFilter={timeFilter} onDaySelect={onJumpToDay} />
+      <div className="overflow-x-auto">
+        <div className="min-w-[360px]">
+          <IntakeTimeline dbMeals={dbMeals} calTarget={calTarget} timeFilter={timeFilter} onDaySelect={onJumpToDay} />
+        </div>
+      </div>
 
       {/* Zone 2b — Macros per Day (stacked grams, clickable) */}
-      <DailyMacroChart dbMeals={dbMeals} timeFilter={timeFilter} onDaySelect={onJumpToDay} />
+      <div className="overflow-x-auto">
+        <div className="min-w-[360px]">
+          <DailyMacroChart dbMeals={dbMeals} timeFilter={timeFilter} onDaySelect={onJumpToDay} />
+        </div>
+      </div>
 
-      {/* Zone 3 — Macro Split + Workout Sync */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <MacroSplitPanel totalP={totalP} totalC={totalC} totalFat={totalFat} totalFib={totalFib} />
+      {/* Zone 3 — Macro Split + Workout Sync + Caffeine */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="overflow-x-auto">
+          <div className="min-w-[320px]">
+            <MacroSplitPanel totalP={totalP} totalC={totalC} totalFat={totalFat} avgFib={avgFib} />
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <div className="min-w-[320px]">
+            <CaffeinePanel dbMeals={dbMeals} timeFilter={timeFilter} />
+          </div>
+        </div>
         <MacroWorkoutCorrelation dbWorkouts={dbWorkouts} totalP={totalP} totalC={totalC} loggedDays={loggedDays} timeFilter={timeFilter} />
       </div>
 
@@ -1438,8 +1979,42 @@ export default function FuelTab({
       <MicroPanel dbMeals={dbMeals} timeFilter={timeFilter} />
 
       {/* Zone 5 + 6 — Meal Gallery & Actions */}
+      <FavoritesBar onAdd={addFromFavorite} />
+      {showEditor && (
+        <MealEditor
+          key={formKey}
+          initial={editingMeal ? {
+            id: editingMeal.id,
+            description: editingMeal.description || "",
+            meal_time: editingMeal.meal_time ? nowLocalInputValue(new Date(editingMeal.meal_time)) : nowLocalInputValue(),
+            calories: editingMeal.calories || 0,
+            protein: editingMeal.protein || 0,
+            carbs: editingMeal.carbs || 0,
+            fat: editingMeal.fat || 0,
+            caffeine_mg: editingMeal.caffeine_mg || 0,
+            planned: !!editingMeal.planned,
+          } : undefined}
+          onClose={closeEditor}
+          onSave={saveMeal}
+        />
+      )}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <MealGallery dbMeals={dbMeals} timeFilter={timeFilter} onOpenDay={onJumpToDay} />
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-xs font-bold uppercase tracking-widest" style={{ color: C.textTer }}>Meal Log</div>
+            <button
+              onClick={openAdd}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-bold text-white bg-teal-600 hover:bg-teal-700 transition-colors"
+            >
+              <Plus size={12} /> Add meal
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <div className="min-w-[320px]">
+              <MealGallery dbMeals={dbMeals} timeFilter={timeFilter} onOpenDay={onJumpToDay} />
+            </div>
+          </div>
+        </div>
         <ActionItems
           totalCal={totalCal} totalP={totalP} totalC={totalC}
           loggedDays={loggedDays} calTarget={calTarget} dbWorkouts={dbWorkouts} timeFilter={timeFilter}

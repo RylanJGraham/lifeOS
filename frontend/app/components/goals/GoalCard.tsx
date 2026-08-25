@@ -30,6 +30,17 @@ export interface LiveValues {
   netWorth: number | null;
 }
 
+function parseMetricBasis(raw: Goal["metric_basis"]): Record<string, any> | null {
+  if (!raw) return null;
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, any>;
+  try {
+    const parsed = JSON.parse(raw as string);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────
 /** `plan` is jsonb — parsed array normally, but tolerate a stringified legacy row. */
 function parseMilestones(plan: Goal["plan"]): Milestone[] {
@@ -81,11 +92,12 @@ function deadlineCountdown(deadline: string): number | null {
 
 // ─── GoalCard ────────────────────────────────────────────────────
 export default function GoalCard({
-  goal, checkins, liveValues, onChanged,
+  goal, checkins, liveValues, portfolioHistory, onChanged,
 }: {
   goal: Goal;
   checkins: GoalCheckin[];
   liveValues: LiveValues;
+  portfolioHistory: { record_date: string; total_value: number | string }[];
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -97,12 +109,25 @@ export default function GoalCard({
   const isAchieved = goal.status === "achieved";
 
   // ─── Progress computation ──────────────────────────────────────
+  const basis = parseMetricBasis(goal.metric_basis);
   const target = numOrNull(goal.target_value);
+  const isPctGoal = goal.unit === "%" || (basis && basis.baseline_value != null);
+
   let current: number | null;
   if (goal.linked_metric === "net_worth") current = liveValues.netWorth;
   else if (goal.linked_metric === "bank_balance") current = liveValues.bank;
-  else if (goal.linked_metric === "portfolio_value") current = liveValues.portfolio;
-  else {
+  else if (goal.linked_metric === "portfolio_value") {
+    if (isPctGoal && liveValues.portfolio != null) {
+      const baselineValue = basis?.baseline_value != null
+        ? num(basis.baseline_value)
+        : (portfolioHistory.length > 0 ? num(portfolioHistory[0].total_value) : null);
+      current = baselineValue && baselineValue > 0
+        ? ((liveValues.portfolio - baselineValue) / baselineValue) * 100
+        : liveValues.portfolio;
+    } else {
+      current = liveValues.portfolio;
+    }
+  } else {
     const withValue = checkins.filter(c => numOrNull(c.value) != null);
     const latest = withValue.length > 0 ? withValue[withValue.length - 1] : null;
     current = latest ? numOrNull(latest.value) : numOrNull(goal.current_value);
@@ -147,6 +172,14 @@ export default function GoalCard({
     if (!window.confirm(`Delete "${goal.title}"? This also removes its check-ins.`)) return;
     setBusy(true);
     const { error: err } = await supabase.from("goals").delete().eq("id", goal.id);
+    setBusy(false);
+    if (!err) onChanged();
+  };
+
+  const toggleMilestone = async (idx: number) => {
+    setBusy(true);
+    const next = milestones.map((m, i) => ({ ...m, done: i === idx ? !m.done : m.done }));
+    const { error: err } = await supabase.from("goals").update({ plan: next }).eq("id", goal.id);
     setBusy(false);
     if (!err) onChanged();
   };
@@ -286,7 +319,13 @@ export default function GoalCard({
           </div>
           <div className="flex flex-col gap-1.5">
             {milestones.map((m, i) => (
-              <div key={`${m.label}-${i}`} className="flex items-center gap-2">
+              <button
+                key={`${m.label}-${i}`}
+                onClick={() => toggleMilestone(i)}
+                disabled={busy}
+                className="flex items-center gap-2 w-full text-left disabled:opacity-50"
+                style={{ background: "none", border: "none", cursor: "pointer" }}
+              >
                 {m.done
                   ? <CheckCircle2 size={13} style={{ color: C.optimal, flexShrink: 0 }} />
                   : <Circle size={13} style={{ color: "var(--border-active)", flexShrink: 0 }} />}
@@ -309,7 +348,7 @@ export default function GoalCard({
                     {String(m.date).slice(0, 10)}
                   </span>
                 )}
-              </div>
+              </button>
             ))}
           </div>
         </div>

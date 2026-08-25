@@ -19,6 +19,23 @@ export interface Position {
   latest_signal_action: string | null;
   latest_signal_confidence: number | string | null;
   latest_signal_price_target: number | string | null;
+  asset_class?: string | null;
+  options?: Record<string, any> | null;
+  tags?: string[] | Record<string, any> | null;
+  source?: string | null;
+  updated_at?: string | null;
+}
+
+export interface Dividend {
+  id: string | null;
+  symbol: string;
+  dividend_date: string | null;
+  amount: number | string | null;
+  currency: string | null;
+  source?: string | null;
+  ex_date?: string | null;
+  record_date?: string | null;
+  created_at?: string | null;
 }
 
 export interface Signal {
@@ -126,6 +143,7 @@ export interface Purchase {
   currency: string | null;
   direction: string | null;
   reason: string | null;
+  processed: boolean | null;
   executed_at: string | null;
 }
 
@@ -151,4 +169,43 @@ export interface CompanyRSU {
   vesting_years: number | string | null;
   vest_percent_per_year: number | string | null;
   created_at: string;
+}
+
+export type OrderAction = "BUY" | "SELL" | "ADD" | "TRIM";
+export type OrderType = "MARKET" | "LIMIT" | "STOP" | "STOP_LIMIT" | "TRAILING_STOP";
+export type OrderTIF = "DAY" | "GTC" | "IOC" | "FOK";
+export type OrderStatus = "proposed" | "approved" | "rejected" | "sent" | "filled" | "cancelled" | "expired";
+
+export interface AdvisorOrder {
+  id: string;
+  user_id: string;
+  symbol: string;
+  action: OrderAction;
+  order_type: OrderType;
+  quantity: number | string;
+  limit_price: number | string | null;
+  stop_price: number | string | null;
+  trailing_pct: number | string | null;
+  tif: OrderTIF;
+  currency: string | null;
+  rationale: string | null;
+  confidence: number | string | null;
+  source: string;
+  status: OrderStatus;
+  generated_at: string;
+  approved_at: string | null;
+  executed_at: string | null;
+  cycle_id: string | null;
+  linked_signal_id: string | null;
+  created_at: string;
+}
+
+export interface OrderFill {
+  id: string;
+  order_id: string;
+  fill_qty: number | string;
+  fill_price: number | string;
+  fees: number | string | null;
+  filled_at: string;
+  broker_order_id: string | null;
 }

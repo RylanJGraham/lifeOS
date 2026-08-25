@@ -178,6 +178,7 @@ def sync_mifitness_activities(days: int = 30):
     load_dotenv()
 
     from utils.logger import get_supabase_client
+    from utils.dedup import upsert_workout
     supabase = get_supabase_client()
     if not supabase:
         raise RuntimeError("Supabase client not configured.")
@@ -215,7 +216,7 @@ def sync_mifitness_activities(days: int = 30):
             "average_heartrate": n["average_heartrate"],
             "max_heartrate": n["max_heartrate"],
         }
-        supabase.table("workouts").insert(payload).execute()
+        upsert_workout(supabase, payload)
         synced += 1
         logger.info(f"Synced: {n['type']} on {n['start_date_local']} (avg HR {n['average_heartrate']})")
 
