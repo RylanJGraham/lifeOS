@@ -212,7 +212,7 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
     }}
     """
     res = llm_fast.invoke([HumanMessage(content=ext_prompt)]).content
-    match = re.search(r'\{{.*}}', res, re.DOTALL)
+    match = re.search(r'\{.*\}', res, re.DOTALL)
     if match:
         m = json.loads(match.group(0))
         # Apply static override as a safety fallback if search failed/empty
@@ -424,7 +424,7 @@ Return ONLY a valid JSON object matching the following structure (no other text 
     try:
         response = llm_cloud.invoke(prompt)
         raw_json = response.content
-        json_match = re.search(r'\{{.*}}', raw_json, re.DOTALL)
+        json_match = re.search(r'\{.*\}', raw_json, re.DOTALL)
         if json_match:
             meal = json.loads(json_match.group(0))
             # Scale macros by portion_multiplier if present and plausible.
@@ -458,7 +458,7 @@ Return ONLY a valid JSON object matching the following structure (no other text 
                     """
                     try:
                         refine_res = llm_fast.invoke([HumanMessage(content=refine_prompt)]).content
-                        refine_match = re.search(r'\{{.*}}', refine_res, re.DOTALL)
+                        refine_match = re.search(r'\{.*\}', refine_res, re.DOTALL)
                         if refine_match:
                             meal = json.loads(refine_match.group(0))
                             logger.info("Successfully refined image parsed nutrition data with search results.")

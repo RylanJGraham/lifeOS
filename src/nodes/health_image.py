@@ -92,7 +92,7 @@ Return ONLY a valid JSON object (null for values not found):
     try:
         response = llm_cloud.invoke(prompt)
         raw_json = response.content
-        json_match = re.search(r'\{{.*}}', raw_json, re.DOTALL)
+        json_match = re.search(r'\{.*\}', raw_json, re.DOTALL)
         if json_match:
             data = json.loads(json_match.group(0))
             

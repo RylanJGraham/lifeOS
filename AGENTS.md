@@ -172,6 +172,12 @@ If you cannot write a clear "What's New" summary, the change is not ready to pus
 4. Add a scheduled task in `scripts/windows_tasks.ps1` and a cron line in `deploy/lifeos.cron`.
 5. Document it in `README.md`.
 
+### Deploy changes to production
+
+1. Push to `main` (with updated docs — see the "What's New" rules above).
+2. Backend: `ssh root@<droplet-ip> "bash /opt/lifeos/deploy/update.sh"` — pulls, installs deps (`pip install --no-deps`), refreshes systemd unit + crontab, restarts the API.
+3. Frontend: Vercel redeploys automatically on push; nothing to do.
+
 ### Add a new dashboard tab
 
 1. Create component in `frontend/app/components/<module>/`.

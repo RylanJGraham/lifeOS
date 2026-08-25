@@ -4,7 +4,14 @@
 
 ---
 
-## Latest change: VPS production deployment (DigitalOcean + Caddy + cron, frontend on Vercel)
+## Latest change: Fix broken JSON extraction regex in all agent nodes
+
+What's New:
+- **Critical bug fix**: `re.search(r'\{{.*}}', ...)` in `src/nodes/health_image.py`, `src/nodes/finance.py`, and `src/nodes/nutrition.py` (5 call sites) matched literal `{{`/`}}` double braces, which valid JSON never contains — so every LLM JSON extraction in those nodes silently failed (e.g. "Could not extract structured health metrics from the screenshot"). All now use `r'\{.*\}'` like the other nodes. Introduced during the graph.py → src/nodes/ refactor; not VPS-related.
+
+---
+
+## Previous change: VPS production deployment (DigitalOcean + Caddy + cron, frontend on Vercel)
 
 What's New:
 - **Linux-compatible dependencies**: `requirements.txt` regenerated from the known-good local venv — it now actually contains `langchain-openai`, `langchain-ollama`, and `PyMuPDF` (imported but previously missing), drops unused `redis` and the editable `mi_fitness_sync` install (dead integration), and gates `pywin32` behind a `sys_platform == "win32"` marker so `pip install` works on Linux. **Install with `pip install --no-deps -r requirements.txt`**: plain resolution fails on a fresh venv because `realtime` (unused supabase sub-package) and `langsmith` have mutually exclusive `websockets` version constraints; the freeze already pins every transitive dep, so resolution is skipped.

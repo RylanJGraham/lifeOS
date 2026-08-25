@@ -47,7 +47,7 @@ def handle_finance_text(state: GraphState) -> GraphState:
     }}
     """
     res = llm_fast.invoke([HumanMessage(content=ext_prompt)]).content
-    match = re.search(r'\{{.*}}', res, re.DOTALL)
+    match = re.search(r'\{.*\}', res, re.DOTALL)
     if match and supabase:
         data = json.loads(match.group(0))
         transactions = data.get("transactions", [])
