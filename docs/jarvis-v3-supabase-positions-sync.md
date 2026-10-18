@@ -1,6 +1,8 @@
 # Jarvis v3 Patch — Read Positions from Supabase
 
-This patch makes Jarvis Advisor v3 treat Supabase `advisor_positions` as the source of truth for current holdings, instead of its local `config/user_config.json`. Apply these changes in the Jarvis workspace:
+**Historical — Jarvis Advisor v3 has been removed from the user's setup.** This document is kept only because it describes the exact read/write contract (tables, columns, cadence) that the in-house replacement, `src/workers/market_advisor.py`, now implements against the same schema. See `docs/architecture.md` §3.3 for the live implementation and `docs/daily-finance-flow.md` for the current daily sequence. Do not apply this patch or resurrect the external Jarvis service.
+
+This patch made Jarvis Advisor v3 treat Supabase `advisor_positions` as the source of truth for current holdings, instead of its local `config/user_config.json`. Apply these changes in the Jarvis workspace:
 
 ```
 /root/.openclaw/workspace/Jarvis_Trading/advisor/

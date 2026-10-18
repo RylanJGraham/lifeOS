@@ -22,8 +22,11 @@ LOG=/opt/lifeos/logs/cron.log
 30 21 * * * cd $LIFEOS/src && $PY pipeline_service.py run evening-audit >> $LOG 2>&1
 30 23 * * * cd $LIFEOS/src && $PY pipeline_service.py run health-sync >> $LOG 2>&1
 
-# Weekdays (before the Jarvis v3 daily run)
+# Weekdays (before the market advisor daily run)
 0 15 * * 1-5 cd $LIFEOS/src && $PY pipeline_service.py run ibkr-flex-sync >> $LOG 2>&1
+
+# Weekdays — market advisor (revalue + swarm signals), replaces Jarvis v3
+30 15 * * 1-5 cd $LIFEOS/src && $PY pipeline_service.py run market-advisor >> $LOG 2>&1
 
 # Sunday
 0 10 * * 0  cd $LIFEOS/src && $PY pipeline_service.py run goal-checkin-weekly >> $LOG 2>&1

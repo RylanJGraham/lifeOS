@@ -282,7 +282,7 @@ export default function OrdersPanel({
   if (orders.length === 0) {
     return (
       <EmptyState
-        message="No advisor orders yet. Jarvis will propose orders here after you update it to write to advisor_orders."
+        message="No advisor orders yet. The market advisor will propose orders here after its next run."
         icon={ClipboardList}
       />
     );

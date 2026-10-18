@@ -70,10 +70,15 @@ Register-LifeOSTask -Name "LifeOS-PDFStatementSync" -PipelineId "pdf-statement-s
     -Description "Parse bank/CC PDF statements and insert transactions via OpenRouter vision" `
     -Trigger (New-ScheduledTaskTrigger -Daily -At 8:00AM)
 
-# Weekday IBKR sync (before Jarvis v3 daily run)
+# Weekday IBKR sync (before the market advisor daily run)
 Register-LifeOSTask -Name "LifeOS-IBKRFlexSync" -PipelineId "ibkr-flex-sync" `
-    -Description "Pull positions and trades from IBKR before the Jarvis v3 daily run" `
+    -Description "Pull positions and trades from IBKR before the market advisor daily run" `
     -Trigger (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At 3:00PM)
+
+# Weekday market advisor (revalue + swarm signals + proposed orders; replaces Jarvis v3)
+Register-LifeOSTask -Name "LifeOS-MarketAdvisor" -PipelineId "market-advisor" `
+    -Description "Revalue positions and run the advisor swarm for BUY/SELL/HOLD signals" `
+    -Trigger (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At 3:30PM)
 
 # Sunday pipelines
 Register-LifeOSTask -Name "LifeOS-GoalCheckinWeekly" -PipelineId "goal-checkin-weekly" `

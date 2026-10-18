@@ -16,6 +16,7 @@ import traceback
 from datetime import datetime, timedelta
 
 from utils.logger import SupabaseLogger
+from utils.push_notifications import send_push
 
 logger = logging.getLogger("pipeline_service")
 
@@ -169,6 +170,11 @@ def _run_price_refresh():
     run_price_refresh()
 
 
+def _run_market_advisor():
+    from workers.market_advisor import run as run_market_advisor
+    run_market_advisor()
+
+
 def _run_open_banking_sync():
     from workers.open_banking_sync import run_sync
     run_sync()
@@ -210,6 +216,12 @@ PIPELINES = {
         "description": "Pull positions and trades from Interactive Brokers Flex Query into Supabase.",
         "schedule": "Mon–Fri at 3:00 PM",
         "runner": _run_ibkr_flex_sync,
+    },
+    "market-advisor": {
+        "name": "Market Advisor",
+        "description": "Revalue positions, grade past signals, and run the advisor swarm for BUY/SELL/HOLD signals, proposed orders, and the daily report. Replaces the removed Jarvis Advisor v3.",
+        "schedule": "Mon–Fri at 3:30 PM",
+        "runner": _run_market_advisor,
     },
     "evening-audit": {
         "name": "Evening Audit",
@@ -337,6 +349,7 @@ def _execute(pipeline_id: str) -> None:
             "pipelines", f"Pipeline failed: {name}",
             {"pipeline_id": pipeline_id, "error": error, "traceback": traceback.format_exc()[-2000:]},
         )
+        send_push(f"{name} failed", error[:200], {"pipeline_id": pipeline_id})
     finally:
         finished_at = datetime.utcnow()
         with _state_lock:

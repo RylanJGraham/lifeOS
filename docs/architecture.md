@@ -13,11 +13,13 @@ LifeOS is a personal operating system that aggregates health, finance, investmen
 | Layer | Technology | Key Files |
 |---|---|---|
 | Frontend | Next.js 14 + Tailwind CSS + Recharts + Framer Motion | `frontend/app/(app)/` |
+| Mobile app (iOS, native — current) | Expo / React Native, own UI, same backend contracts | `mobile/src/app/`, `mobile/src/lib/` |
+| Mobile app (iOS, Capacitor wrapper — superseded) | Capacitor 6 wrapping a static export of the Next.js frontend | `frontend/capacitor.config.ts`, `frontend/ios/` |
 | Backend | FastAPI + Python 3.11+ | `src/api.py`, `src/chat_service.py`, `src/pipeline_service.py` |
 | Agent | LangGraph + LangChain (OpenRouter cloud / Ollama local) | `src/graph.py` (orchestrator), `src/nodes/*.py` (handlers), `src/goals_service.py` |
 | Database | Supabase / PostgreSQL + pgvector | `docs/supabase-schema.sql` |
 | Local runtime | Windows PowerShell + Python venv | `scripts/windows_tasks.ps1`, `start_services.bat` |
-| External advisor | Jarvis Advisor v3 (separate repo/server) | `docs/jarvis-v3-supabase-positions-sync.md` |
+| Advisor (in-house) | `market_advisor.py` — replaces the removed Jarvis Advisor v3 | `src/workers/market_advisor.py`, §3.3 |
 
 ### High-level data flow
 
@@ -74,12 +76,13 @@ The source of truth for the schema is `docs/supabase-schema.sql`, which is regen
 | `user_identities` | Maps Telegram chat IDs / web sessions to real `user_id` | `user_id`, `source`, `external_id` |
 | `telegram_webhook_health` | Latest Telegram webhook status snapshot | `webhook_url`, `status`, `pending_update_count`, `last_update_at`, `error` |
 | `statement_uploads` | PDF bank/CC statements queued for processing | `user_id`, `file_name`, `storage_path`, `status` |
+| `device_push_tokens` | Registered Expo push tokens for the native mobile app | `user_id`, `expo_push_token`, `platform`, `last_seen_at` |
 
 ### Investment / advisor tables
 
 | Table | Purpose | Key Columns |
 |---|---|---|
-| `advisor_positions` | **Source of truth for current holdings.** Shared with Jarvis v3. | `user_id`, `symbol`, `quantity`, `average_cost`, `current_price`, `position_value`, `unrealized_pnl`, `currency`, `status`, `source`, `side`, `sector`, `tags`, `asset_class`, `options` |
+| `advisor_positions` | **Source of truth for current holdings.** Owned by `ibkr_flex_sync.py`/`price_refresh.py`; read (not written) by `market_advisor.py`. | `user_id`, `symbol`, `quantity`, `average_cost`, `current_price`, `position_value`, `unrealized_pnl`, `currency`, `status`, `source`, `side`, `sector`, `tags`, `asset_class`, `options` |
 | `advisor_position_history` | Daily per-position history | `user_id`, `symbol`, `record_date`, `quantity`, `price`, `position_value`, `unrealized_pnl` |
 | `advisor_purchases` | Immutable trade history (events) | `user_id`, `symbol`, `action`, `quantity`, `price`, `total_cost`, `direction`, `fees`, `currency`, `executed_at`, `processed` |
 | `advisor_purchase_history` | Compatibility view over `advisor_purchases` | mirrors `advisor_purchases` |
@@ -200,29 +203,34 @@ This updates `docs/supabase-schema.sql` from the live database. Do this after ev
 
 ### 3.3 Investments / Advisor
 
-This is the most tightly integrated subsystem. LifeOS and Jarvis v3 share `advisor_positions` as the single source of truth.
+**Jarvis Advisor v3 (the external swarm-analysis service this section originally described) has been removed from the user's setup.** LifeOS now takes over that role in-house via `src/workers/market_advisor.py`, registered as the `market-advisor` pipeline (`src/pipeline_service.py`), scheduled weekdays at 3:30 PM (after `ibkr-flex-sync`). It runs a small fixed roster of independent LLM personas (Macro Strategist, Technical Analyst, Risk Manager, Contrarian — `src/workers/market_advisor.py`'s `PERSONAS` dict) concurrently over every open position and active watchlist candidate; an action is only written as actionable (BUY/SELL/ADD/TRIM) when **≥2 personas agree**, otherwise the synthesized signal is HOLD — same consensus rule Jarvis used. Before generating new signals each run, it also **grades signals from ≥5 days ago** against what actually happened and rolls the result into `advisor_signal_performance` (win rate per action/symbol), which is fed back into every persona's prompt — the learning loop. Actionable signals above a confidence threshold are surfaced as `advisor_orders` rows (`status='proposed'`, `source='market_advisor'`) — **never auto-approved or executed**; the user acts manually, same as the existing Log Trade flow. `price_refresh.py` (mark-to-market via Finnhub) is unaffected and is called directly as the worker's first step so revaluation and analysis run atomically.
 
-**Daily flow (weekdays, Central European time)**
+The rest of this section describes the schema/contract as designed — it holds regardless of whether Jarvis or `market_advisor.py` is the writer, since both target the same tables.
+
+**Daily flow**
 
 ```
-15:00  LifeOS-IBKRFlexSync   → pull real IBKR positions/trades → Supabase
-15:30  Jarvis v3 daily run  → read positions from Supabase
-                         → run swarm intelligence / P&L / watchlist
-                         → write signals, snapshots, reports, orders to Supabase
-        User views dashboard / gets Telegram brief
+15:00  LifeOS-IBKRFlexSync → pull real IBKR positions/trades → Supabase
+15:30  market_advisor.py   → revalue (price_refresh) → grade past signals (learning loop)
+                            → swarm analysis (OpenRouter, 4 personas) → synthesize
+                            → write signals, snapshots, position history, reports, proposed orders
+        User reviews/decides in the dashboard Orders panel or mobile Capital tab (§3.7)
+
+Sunday  market_advisor.py also runs an extra "Scout" persona call proposing 1-5 new
+        watchlist candidates (symbols not already held or tracked).
 ```
 
 **Position source of truth**
 
-- `advisor_positions` is read by both LifeOS and Jarvis.
-- Manual trades from Telegram/UI or the Log Trade modal set `source = 'manual'`.
-- IBKR sync sets `source = 'jarvis'`.
-- Jarvis v3 preserves `source = 'manual'` when it updates positions.
+- `advisor_positions` is the shared source of truth — any future advisor worker and the mobile app both read/write it.
+- Manual trades from Telegram/UI or the Log Trade / Log Fill flow set `source = 'manual'`.
+- IBKR sync sets `source = 'jarvis'` (field name predates the Jarvis removal — still means "broker-synced," not written by the Jarvis service specifically).
+- An advisor worker updating positions should preserve `source = 'manual'` rows, same contract as before.
 - If a manual row exists, IBKR sync preserves its `average_cost` and `source`.
 
 **Trade lifecycle**
 
-1. Jarvis or the user creates a proposal in `advisor_orders` with `status = 'proposed'`.
+1. An advisor worker (planned) or the user creates a proposal in `advisor_orders` with `status = 'proposed'`.
 2. User approves in the dashboard → `status = 'approved'`.
 3. User executes manually in IBKR (no broker integration).
 4. IBKR Flex Query sync creates a fill record in `advisor_order_fills` or a trade event in `advisor_purchases`.
@@ -291,6 +299,72 @@ The `RiskPanel` in the dashboard reads this policy and warns on concentration, c
 - `src/chat_service.py` is the web chat wrapper around `graph.py`; it now accepts `session_id` and passes `thread_source`/`thread_external_id` into the graph state.
 - Telegram messages hit `POST /webhook` and are routed the same way, using the Telegram `chat_id` as the thread key.
 
+### 3.6 Mobile App (iOS, Capacitor wrapper) — superseded, kept for reference
+
+**Superseded by the native app in §3.7.** This was the first iOS attempt: the same `frontend/` Next.js app, bundled as a static export and wrapped with [Capacitor](https://capacitorjs.com) into a native Xcode project. Chat + photo logging on the app go through `/api/chat` exactly like the web dashboard (same LangGraph pipeline as Telegram); the app is simply another client of the same backend, with `source="web"` in `advisor_purchases`/chat threads. Left in the repo (`frontend/ios/`, `frontend/capacitor.config.ts`) in case the native rewrite in §3.7 needs to be compared against or reverted from, but new mobile work happens in `mobile/`.
+
+- `frontend/next.config.js` — `output: "export"` is only enabled when `BUILD_TARGET=capacitor` (set by `npm run build:ios`). The normal `npm run build` used by Vercel is unaffected and still does a standard server build.
+- `frontend/.env.ios` (gitignored, not committed) — build-time env for the mobile build: `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_API_TOKEN` (must match the droplet's `API_SECRET`), `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Because the app ships as static assets with no server at runtime, these are baked in at build time — there is no way to change them without rebuilding.
+- `frontend/capacitor.config.ts` — `appId: com.humanengine.lifeos`, `webDir: "out"`. The app bundles the UI locally (no remote URL); only API calls to `NEXT_PUBLIC_API_URL` need a network connection.
+- `frontend/ios/` — the generated Xcode project (`App.xcworkspace`). Committed to git except `Pods/`, `build/`, and `App/public/` (regenerated by `cap sync`), which are gitignored.
+- `frontend/app/components/NativeBridge.tsx` — no-ops on web; on the native build it sets the iOS status bar style and switches the keyboard to native resize mode so it doesn't cover the chat input.
+- Safe-area handling: `viewport.viewportFit: "cover"` in `app/layout.tsx` plus `env(safe-area-inset-*)` CSS in `globals.css` (`.safe-area-top` / `.safe-area-bottom`, used by the fixed sidebar in `app/(app)/layout.tsx`) so content clears the iPhone notch and home indicator.
+- Camera/photo-library usage strings are set in `frontend/ios/App/App/Info.plist` (`NSCameraUsageDescription`, `NSPhotoLibraryUsageDescription`, `NSPhotoLibraryAddUsageDescription`) — required by Apple for the existing chat image-attach flow (`ChatPanel.tsx`'s `<input type="file">`) to work on-device.
+
+**Rebuilding after a frontend change:**
+```
+cd frontend
+npm run ios:sync   # rebuilds the static export + copies it into ios/App/App/public + pod install
+npm run ios:open   # opens Xcode — build/run to device, or Archive for TestFlight
+```
+
+**TestFlight**: not yet set up. Requires a paid Apple Developer account, an App Store Connect record for `com.humanengine.lifeos`, and an Xcode Archive + upload. Until then, distribution is Xcode-to-device sideload only (free Apple ID, 7-day provisioning).
+
+### 3.7 Mobile App (iOS, native — Expo/React Native) — current
+
+**This is the primary mobile app.** Unlike §3.6, this is a real native rewrite, not a WebView: `mobile/` is a separate Expo (React Native) project with its own UI per screen, built with [Expo Router](https://docs.expo.dev/router/introduction/) (file-based routes under `mobile/src/app/`). It talks to the same backend and Supabase project as the web dashboard — same contracts, same tables, same `/api/*` endpoints — just with native screens instead of reusing the Next.js frontend.
+
+**Why a second mobile app exists**: the Capacitor wrapper (§3.6) was built first as a faster path to "something on your phone," but the user wanted a genuinely native app (native navigation, native camera/photo picker, real push notifications, no WebView), which requires a UI rewrite — Capacitor can't bridge that gap, only a separate native project can.
+
+**Design system**: ported from a Stitch-generated design ("Human Engine Personal Cockpit" — Swiss functionalism + aviation glass-cockpit, light). `mobile/src/theme/index.ts` holds the exact token values (Slate 50/100/200 surfaces, six functional status colors — crimson/cobalt/emerald/amber/cyan/violet, each semantic not decorative — Space Grotesk for headings, Geist for body, JetBrains Mono for all numeric/tabular data). `mobile/src/components/ui.tsx` implements the component language as native primitives: `Surface` ("Telemetry Pod"), `Stat` (hero numeric readout), `Ring` (radial progress), `Pill` (status chip), `Dot`, `ListRow`, `SegmentedControl` (recessed tray), `NavRow`, `FormField`, `PrimaryButton`, `ScreenTitle`, `ErrorBanner`. Haptics on primary interactions via `expo-haptics`. Bottom-tabs has no native large-title header support (that's Stack-only) — every top-level screen renders its own `<ScreenTitle>`; the one exception is Settings, a real nested Stack with the genuine native large title.
+
+**Navigation — 5 primary tabs, 2 secondary screens reached from Cockpit**: Cockpit (home), Ingest (chat), Bio (health), Capital (cash + investments, merged), Settings. Goals and Advisors are deliberately **not** tab-bar items (7 tabs would clutter a 5-icon bar) — they're reachable via quick-access cards on the Cockpit screen instead, at most one tap away. `system` is a hidden route (`href: null`) reached from a row inside Settings.
+
+**Structure**:
+- `mobile/src/app/_layout.tsx` — root stack; redirects between `/login` and the `(app)` group based on Supabase auth state, loads the three Google Fonts families via `expo-font`, and registers for push notifications once signed in.
+- `mobile/src/app/(app)/_layout.tsx` — the 5-tab bottom navigator (Cockpit/Ingest/Bio/Capital/Settings), floating/blurred (`expo-blur`, light tint). Goals, Advisors, and System are registered as hidden routes (`href: null`).
+- `mobile/src/app/(app)/capital.tsx` — merges what were separate Finance and Investments screens into one, matching how the design was actually drawn: a segmented **Cash**/**Portfolio** toggle in a single screen, not two tabs.
+- `mobile/src/app/(app)/settings/` — nested Stack (drill-down edit screens): `index.tsx` (grouped nav list) → `body.tsx`, `targets.tsx` (includes the AI target calculator), `capital.tsx` (salary/bank balance/savings rate — distinct from the top-level Capital tab). Each saves independently.
+- `mobile/src/lib/supabase.ts` — same Supabase project, using `@react-native-async-storage/async-storage` as the session storage adapter.
+- `mobile/src/lib/api.ts` — line-for-line port of `frontend/utils/api.ts` (same backend, same `X-API-Key` auth, same endpoints), plus `uploadStatement()`.
+- `mobile/src/lib/queries.ts` — shared data hooks (`useInsights`, `useHealthMetrics`, `useWorkouts`, `useMeals`, `useTodayMeals`, `useProfile`, `useTransactions`, `usePositions`, `usePortfolioSnapshots`, `useOrders`) built on one internal `useAsync` (loading/refreshing/error/refetch).
+- `mobile/src/lib/finance.ts` — the live-bank-balance formula (`stored_balance + Σ(transactions since bank_balance_updated_at)`), centralized once instead of duplicated per-screen like the web app does.
+- `mobile/src/lib/pacing.ts` — **live, time-of-day-aware status computation** (distinct from the `ai_insights` table, which is LLM-generated/batch). `paceStatus(target, actual, dayFraction)` is the core primitive; `nutritionStatus()`, `sleepStatus()`, `spendStatus()` build on it, plus `detectPRs()` (pure comparison over recent `workouts` — flags a logged weight beating every prior occurrence of the same exercise, case-insensitive). This answers "do I need more protein right now" / "go to bed earlier" on Cockpit and Bio — computed on-device from today's actual data vs. profile targets.
+- `mobile/src/lib/notifications.ts` — registers the device's Expo push token into `device_push_tokens` (migration 024) on sign-in.
+- `mobile/.env` (gitignored) — `EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_API_TOKEN`, `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`, baked in at build/bundle time.
+
+**Capital's recommendations are read-only — the app never executes or tracks order state.** This was a deliberate simplification after the first pass over-built it (a full proposed→approved→sent→filled lifecycle with in-app fill-entry forms, mirroring the web dashboard's `OrdersPanel`). The actual product model: `market_advisor.py` (see §3.3) writes rows to `advisor_orders`; Capital's Portfolio tab shows them as plain advisory cards (symbol, direction, rationale, confidence) with a "tell Ingest when you act on this" hint; the user's only way to act is to tell the chat what they actually did ("bought 50 NVDA at 230"), which updates `advisor_purchases`/`advisor_positions` through the existing trade-logging path in `src/nodes/trade.py` — not through any UI action in the mobile app. `mobile/src/lib/positions.ts` (the weighted-average-cost fill math) was removed along with the Approve/Reject/Log Fill UI it supported.
+
+**Feature coverage vs. the web dashboard**:
+- **Full parity**: Ingest (text + photo via an action-sheet attach flow — camera or library — same `/api/chat` pipeline, same localStorage-equivalent history via AsyncStorage), Goals (chat + goal cards with the same progress/pace logic, radial-progress presentation), Advisors (3 personas, chat + insights + memories).
+- **Cockpit "Ranked Action Queue"**: merges live-computed status (`pacing.ts`) with the top unresolved `ai_insights` rows, severity-sorted, with the single most urgent item rendered as a visually dominant card — not a flat list where everything has equal weight.
+- **Bio**: real nutrition depth beyond vitals — today's calorie/macro progress (pace-aware), a micronutrient coverage section (priority subset: Vitamin D, Magnesium, Zinc, Omega-3, Calcium, Iron, from `meals.micronutrients` jsonb, expandable to the full ~18-nutrient set), sleep/HR vitals and trend charts.
+- **Settings**: includes the "Calculate with AI" target flow (`calculateTargets()` — existed in `api.ts`, was never wired into any mobile UI until now).
+- **Simplified vs. web** (real data, real writes, no bespoke charts/animations): the web app's dual-axis composed charts, custom sleep-schedule timeline, muscle body-map, portfolio "orbiting planets" visualization, FIFO realized P&L, RSU vesting, risk-policy checks, Budgets panel, candidate radar, and signal feed are not ported. Daily Report viewer also not built (web sandboxes HTML in an iframe — no direct RN equivalent, needs a WebView). Order execution tracking is intentionally *not* ported — see above.
+
+**Push notifications**: `src/utils/push_notifications.py` sends via Expo's push API (`https://exp.host/--/api/v2/push/send`, no Expo access token needed) to every token in `device_push_tokens`. Currently wired to one trigger — pipeline failures, from `pipeline_service.py`'s `_execute()` — as a best-effort side channel that never raises (a failed push send does not fail the pipeline). Daily-report-ready and goal-check-in-due triggers are not wired yet.
+
+**Building**:
+```
+cd mobile
+npx expo start              # Metro only — requires Expo Go, and Expo Go may lag behind the newest SDK
+npx expo run:ios             # builds + installs to the iOS Simulator (no Apple ID needed)
+npx expo run:ios --device "<name or UDID>"   # builds + installs to a physical iPhone (needs free/paid Apple ID signing — see expo.fyi/setup-xcode-signing)
+```
+`ios/` and `android/` are gitignored (Expo's Continuous Native Generation regenerates them from `app.json` + installed plugins — never hand-edit them).
+
+**TestFlight**: not set up yet — same requirement as §3.6 (paid Apple Developer account), but for this project the natural path is `eas build --platform ios` + `eas submit` (no local Xcode needed) rather than a manual Archive.
+
 ---
 
 ## 4. API / Contracts
@@ -322,7 +396,8 @@ Every scheduled task now invokes `python src/pipeline_service.py run <pipeline-i
 | `LifeOS-DailyAnalysis` | Daily 06:00 | Generate health/wealth insights with local Ollama |
 | `LifeOS-MorningBriefing` | Daily 07:00 | Telegram morning briefing |
 | `LifeOS-InvestmentNotifier` | Daily 09:00 | Scan transactions for new investments and alert |
-| `LifeOS-IBKRFlexSync` | Mon–Fri 15:00 | Pull IBKR positions/trades before Jarvis run |
+| `LifeOS-IBKRFlexSync` | Mon–Fri 15:00 | Pull IBKR positions/trades before the market advisor run |
+| `LifeOS-MarketAdvisor` | Mon–Fri 15:30 | Revalue positions, run advisor swarm, propose orders/report (Sunday: also weekly discovery) |
 | `LifeOS-PriceRefresh` | Daily 10:00 | Refresh stale position prices via Finnhub |
 | `LifeOS-HealthSync` | Daily 23:30 | Runs nightly health aggregate and writes summary to `ai_insights` |
 | `LifeOS-GoalCheckinDaily` | Daily 20:00 | Daily habit check-in questions |
@@ -400,12 +475,11 @@ This is the read-only broker sync. The system never places orders.
 - Env vars: `IBKR_FLEX_TOKEN`, `IBKR_FLEX_QUERY_ID`.
 - No trading API access. The system never places orders.
 
-### Jarvis Advisor v3
+### Jarvis Advisor v3 — removed
 
-- External advisor that reads/writes Supabase.
-- Writes to: `advisor_positions`, `advisor_signals`, `advisor_portfolio_snapshots`, `advisor_daily_reports`, `advisor_watchlist`, `advisor_orders`.
-- Reads `advisor_positions` as the source of truth for holdings.
-- See `docs/jarvis-v3-supabase-positions-sync.md` for the integration patch.
+- Was an external advisor that read/wrote Supabase (`advisor_positions`, `advisor_signals`, `advisor_portfolio_snapshots`, `advisor_daily_reports`, `advisor_watchlist`, `advisor_orders`). The user has removed it from their setup and it has been fully superseded by `src/workers/market_advisor.py` going forward; if it is still running externally anywhere, it should be decommissioned rather than treated as a second writer of these tables.
+- `docs/jarvis-v3-supabase-positions-sync.md` is now historical — it documents the contract those tables were built against, which `market_advisor.py` (§3.3) now implements.
+- Do not resurrect or recommend re-integrating the external Jarvis service.
 
 ### Telegram
 
@@ -429,13 +503,12 @@ This is the read-only broker sync. The system never places orders.
 
 ### Database breaking changes
 
-- Renaming a table/column that the frontend or Jarvis reads requires:
+- Renaming a table/column that the frontend, mobile app, or `market_advisor.py` reads requires:
   1. A migration that preserves the old name with a compatibility view or column alias.
   2. Updating `docs/supabase-schema.sql`.
-  3. Updating all backend/frontend references.
-  4. Communicating the change to Jarvis v3 (external repo).
-- Dropping `advisor_positions`, `advisor_purchases`, `advisor_signals`, or `advisor_portfolio_snapshots` will break both LifeOS and Jarvis. Do not drop without a migration plan.
-- Changing the `source` enum or semantics breaks the manual-vs-Jarvis contract.
+  3. Updating all backend/frontend/mobile references.
+- Dropping `advisor_positions`, `advisor_purchases`, `advisor_signals`, or `advisor_portfolio_snapshots` will break the frontend, mobile app, and `market_advisor.py`. Do not drop without a migration plan.
+- Changing the `source` enum or semantics breaks the manual-vs-advisor contract (currently manual-only, since no advisor worker is writing yet).
 
 ### API breaking changes
 
@@ -517,5 +590,5 @@ If you are a new AI working on this repo:
 
 - Windows is the primary local runtime. PowerShell is used for scheduled tasks.
 - Supabase is remote; all data flows through it.
-- Jarvis v3 is external and cannot be edited from this repo.
-- The system is intentionally manual for broker actions: it suggests orders, but the user executes them in IBKR and either texts the bot or lets the Flex Query sync pick them up.
+- Jarvis v3 has been removed from the user's setup — do not resurrect or recommend it. The in-house `market_advisor.py` (§3.3) is its replacement.
+- The system is intentionally manual for broker actions: it suggests orders, but the user executes them in IBKR and either texts the bot, logs a fill in the mobile Orders screen (§3.7), or lets the Flex Query sync pick them up.

@@ -4,7 +4,151 @@
 
 ---
 
-## Latest change: Fix broken JSON extraction regex in all agent nodes
+## Latest change: Mobile app rebuilt to match the "Human Engine" Stitch design; chat reply formatting
+
+What's New:
+- **Mobile app visual rebuild** (`mobile/`): all 9 screens (`Cockpit`, `Bio`/health, `Capital`, `Goals`, `Specialist Advisors`, `System`, `Settings` + its 4 sub-screens, `Ingest`/chat) restructured to match the Stitch "Human Engine Personal Cockpit" design. `src/components/ui.tsx` gained new shared primitives: `PacingBar` (segmented progress track), `AccentCard` (severity-tiered card with left accent stripe), `PodDetailed` (telemetry pod with a secondary metric "well"), `MetaRow`, and `FormattedText` (lightweight `**bold**` + paragraph-break renderer for backend reply text). `ScreenHeader` was reworked from an inline scrolling page title into a fixed, blurred top bar (`HEADER_BAR_HEIGHT` exported for screens to pad against), and `Surface`/`AccentCard` gained soft drop-shadow elevation to match the design's "Instrument Pod" spec. No data-fetching, routes, or business logic changed — this was a layout/composition pass; screens deliberately omit any Stitch widget with no real backing data (fake live clocks, invented uptime/runway figures, broker order-flow UI) rather than fabricating values.
+- **Fixed a real bug found during this pass**: `mobile/src/app/(app)/chat.tsx`'s message list/empty-state `ScrollView`/`FlatList` had no `flex: 1`, so on a tall empty state (header + 4 quick-prompt rows) the input bar could be pushed off-screen entirely. Also widened the input bar's bottom clearance so it doesn't render under the floating blurred tab bar.
+- **Nutrition chat replies now use light markdown** (`src/nodes/nutrition.py`, both the text-logged and photo-logged meal response paths): `**Logged:** <summary>` + a macros line, blank-line-separated from the AI insight, instead of one run-on sentence. Renders correctly via the new `FormattedText` component; other node handlers (trade/workout/general) are unchanged.
+
+Why: the mobile app's colors/fonts already matched the Stitch design system, but screen layouts didn't — flat bordered cards instead of elevated "instrument pods," an oversized scrolling page title instead of Stitch's compact pinned header bar, and plain-paragraph chat replies that were hard to scan.
+
+Files/modules touched:
+- `mobile/src/components/ui.tsx`, all files under `mobile/src/app/(app)/` (and its `settings/` subfolder), `mobile/src/lib/pacing.ts` (exported `DAY_START_HOUR`/`DAY_END_HOUR`).
+- `src/nodes/nutrition.py` (chat response string formatting only — no new fields, no schema change).
+
+Breaking changes / manual setup: none — no schema, API contract, or scheduled-task changes.
+
+---
+
+## Previous change: In-house market advisor (`market_advisor.py`) replaces the removed Jarvis Advisor v3
+
+What's New:
+- **New worker `src/workers/market_advisor.py`**, registered as the `market-advisor` pipeline, scheduled Mon-Fri 3:30 PM (after `ibkr-flex-sync` at 3:00 PM). Each run: revalues positions (calls `price_refresh.run()` directly), grades signals from ≥5 days ago against actual price moves and rolls wins/losses into `advisor_signal_performance` (the learning loop — this performance summary is fed into every persona prompt), runs a 4-persona LLM swarm (Macro Strategist, Technical Analyst, Risk Manager, Contrarian — all via OpenRouter `openai/gpt-4o-mini`, run concurrently) over every open position and active watchlist candidate, synthesizes votes into one `advisor_signals` row per symbol (actionable only when ≥2 personas agree, otherwise HOLD), surfaces actionable signals above a 0.7 confidence threshold as proposed `advisor_orders` rows, and writes `advisor_portfolio_snapshots` + `advisor_position_history` + an `advisor_daily_reports` HTML/JSON digest. On Sundays only, an extra "Scout" persona call proposes 1-5 new `advisor_watchlist` candidates.
+- **The app only ever surfaces recommendations — it never auto-approves or executes orders.** Proposed `advisor_orders` rows go through the existing manual approve/reject flow (`OrdersPanel.tsx` on web; read-only advisory cards on mobile); the user acts manually via broker/Telegram/Log Trade, same as before.
+- **Fixed a real Jarvis-era data bug**: `advisor_watchlist` had silent duplicate rows per symbol (Jarvis's select-then-update dedup was failing — e.g. ORCL/Fraport/SOXX each had 3 rows, all `conviction_score=0`). New migration `025-advisor-watchlist-dedupe-and-orders-source.sql` deletes the duplicates (keeping the highest-conviction row) and adds a real `UNIQUE (user_id, symbol)` constraint.
+- **Dashboard empty-state copy updated** (`OrdersPanel.tsx`, `RiskPanel.tsx`) — no longer references Jarvis by name.
+- `docs/architecture.md` §3.3, `docs/daily-finance-flow.md`, `docs/jarvis-v3-supabase-positions-sync.md`, and `docs/research-bot-command.md` updated to describe the in-house worker as implemented rather than planned, and to mark the Jarvis-era docs as historical reference only.
+
+Why: Jarvis Advisor v3 (external, its own cron, its own Supabase service-role key, invisible to LifeOS's `pipeline_service.py` observability) was removed from the user's setup. The tables and UI it fed (`advisor_signals`, `advisor_watchlist`, `advisor_daily_reports`, `advisor_orders`) were already fully wired up on both the dashboard and mobile app — they just had no writer. This closes that gap in-house, and additionally closes a gap Jarvis itself never closed: `advisor_orders` and `advisor_signal_performance` were both empty even while Jarvis was running (461 signals generated, zero ever became an order, zero performance rollups ever computed).
+
+Files/modules touched:
+- New: `src/workers/market_advisor.py`, `docs/supabase-migrations/025-advisor-watchlist-dedupe-and-orders-source.sql`.
+- Modified: `src/pipeline_service.py` (new `market-advisor` pipeline entry), `scripts/windows_tasks.ps1` (new `LifeOS-MarketAdvisor` task), `deploy/lifeos.cron` (new weekday 15:30 line), `frontend/app/components/investments/OrdersPanel.tsx`, `frontend/app/components/investments/RiskPanel.tsx`, `AGENTS.md` (testing checklist).
+- Docs: `docs/architecture.md`, `docs/daily-finance-flow.md`, `docs/jarvis-v3-supabase-positions-sync.md`, `docs/research-bot-command.md`.
+
+Breaking changes / manual setup:
+- **Migration required**: `docs/supabase-migrations/025-advisor-watchlist-dedupe-and-orders-source.sql` must be run in the Supabase SQL Editor before `market_advisor.py`'s weekly discovery step or any order proposal can write successfully — it adds a `UNIQUE (user_id, symbol)` constraint on `advisor_watchlist` and widens the `advisor_orders.source` CHECK constraint to allow `'market_advisor'` (previously only `'jarvis'`/`'manual'`).
+- `docs/supabase-schema.sql` should be regenerated (`python scripts/introspect_supabase_schema.py`) after that migration is applied.
+- No new environment variables — reuses existing `OPENROUTER_API_KEY`, `SUPABASE_URL`/`SUPABASE_SERVICE_KEY`, `FINNHUB_API_KEY`.
+- If Jarvis v3 is still running externally anywhere, it should be decommissioned — it is no longer the intended writer of these tables.
+
+---
+
+## Previous change: Mobile app rebuilt on a Stitch-designed light theme, Capital screen merges cash+investments, Orders simplified to read-only recommendations
+
+What's New:
+- **New design system implemented from a Stitch design**, replacing the hand-built dark theme from the previous pass. `mobile/src/theme/index.ts` and `mobile/src/components/ui.tsx` now match the "Human Engine Personal Cockpit" Stitch project exactly: light Swiss-functionalism/glass-cockpit palette (Slate surfaces, six semantic status colors), Space Grotesk headings, Geist body text, JetBrains Mono for all numeric data (via `@expo-google-fonts/*`, loaded in `mobile/src/app/_layout.tsx`).
+- **Navigation restructured to 5 tabs**: Cockpit, Ingest, Bio, Capital, Settings — down from 8. Goals and Advisors are no longer tab-bar items (would clutter a 5-icon bar); they're reachable via quick-access cards on Cockpit instead, still at most one tap away. `mobile/src/app/(app)/capital.tsx` is new — merges what were separate Finance and Investments screens into one Cash/Portfolio segmented view, matching how the design was actually drawn.
+- **Orders simplified to read-only recommendations — a real product-model correction, not just styling.** The previous pass over-built this: a full proposed→approved→sent→filled lifecycle with an in-app fill-entry form, mirroring the web dashboard's `OrdersPanel`. The actual model: an advisor process (planned, not yet built — see below) only *suggests*; the user acts on a suggestion by telling Ingest what they actually did ("bought 50 NVDA at 230"), which is the existing trade-logging path, not a new UI action. Removed `mobile/src/lib/positions.ts` (fill math) and the Approve/Reject/Log Fill UI entirely; Capital's Portfolio tab now shows plain advisory cards (symbol, direction, rationale, confidence, a "tell Ingest" hint).
+- **Cockpit's action queue now has real hierarchy**: the single most urgent item renders as a visually dominant card; everything else is a compact secondary row. The first version gave every item equal weight, which undercut the "glance and know what's wrong" goal.
+- **Jarvis Advisor v3 confirmed removed** from the user's production setup (not just a docs note this time — verified no external service is running). The in-house replacement (`src/workers/market_advisor.py`: daily market analysis + recommendation generation + a learning loop that feeds `advisor_signal_performance` back into the generation prompt) is designed but **not yet built** — next piece of work. `price_refresh.py` (mark-to-market via Finnhub) already works independently and doesn't depend on it.
+- **Two backend bugs fixed and deployed** (found while confirming the data layer could support live pacing): `src/nodes/nutrition.py` had a `NameError` on `llm_cloud` that broke all photo-based meal logging; `src/nodes/workout.py` couldn't resolve relative weight phrases ("went up 3kg on bench") since the extraction prompt never saw the current logged weight. Both fixed — see prior entry below for detail.
+- **New production droplet + Finnhub key**: covered in the entry below — the droplet was lost and replaced, a new `API_SECRET` propagated everywhere, Finnhub confirmed live.
+
+Why: the first mobile rebuild was functionally real but visually generic ("looks like the web dashboard ported into an app," per direct feedback) and the Orders flow was built against an assumption (an external swarm agent handling trade proposals) that no longer holds now that Jarvis v3 is gone and advisor logic is moving in-house. Iterated the visual design through several rounds in Stitch (an AI UI design tool, connected via its MCP server) before implementing — each round reviewed against the actual data model to catch fabricated features (invented wearable-sync/brokerage-API settings rows, a fake water-target field) before they reached code.
+
+Files/modules touched:
+- Rewritten: `mobile/src/theme/index.ts`, `mobile/src/components/ui.tsx`, every screen in `mobile/src/app/(app)/`.
+- New: `mobile/src/app/(app)/capital.tsx`.
+- Removed: `mobile/src/app/(app)/finance.tsx`, `mobile/src/app/(app)/investments.tsx`, `mobile/src/lib/positions.ts`.
+- Docs: `docs/ARCHITECTURE.md` §3.7.
+
+Breaking changes / manual setup:
+- None to data contracts — no schema changes this pass.
+- Mobile app needs a fresh `npx expo run:ios` to pick up the new font packages (`@expo-google-fonts/space-grotesk`, `@expo-google-fonts/geist`, `@expo-google-fonts/jetbrains-mono`, `expo-font`) added since the last build.
+- Any bookmarked deep link to `/finance` or `/investments` in the mobile app is now dead — both routes were removed in favor of `/capital`.
+
+---
+
+## Previous change: Native visual/data rework of the mobile app, Orders flow, live pacing recommendations, Jarvis v3 removed
+
+What's New:
+- **Full visual rework of `mobile/`** — replaced the initial build (which read as "the web dashboard ported into an app") with a real native-first presentation system: dark-first theme (`mobile/src/theme/index.ts`), new primitives (`Surface`, `Stat`, `Ring` radial progress, `Pill`, `Dot`, `ListRow`, `SegmentedControl`, `NavRow`, `FormField`, `ScreenTitle`) in `mobile/src/components/ui.tsx`, haptics on key interactions, a floating blurred tab bar, and — since bottom-tabs has no native large-title support — Settings converted into a real nested Stack (`mobile/src/app/(app)/settings/`) so it gets a genuine native large title with drill-down edit screens (Body / Daily Targets / Capital Flow).
+- **Data layer refactor**: `mobile/src/lib/queries.ts` consolidates every screen's Supabase fetch logic into shared hooks on one `useAsync` primitive (loading/refreshing/error/refetch) instead of copy-pasted fetch blocks per screen.
+- **New: live, time-of-day-aware recommendations** (`mobile/src/lib/pacing.ts`) — distinct from the batch-generated `ai_insights` table. Computes on-device whether you're behind pace on protein/calories (given the time of day), whether last night's sleep was low, whether monthly spending is ahead of pace, and detects workout PRs (today's logged weight beating prior history for that exercise). Surfaced in a new Nexus "Needs Attention" section (merged with top `ai_insights` rows, severity-sorted) and a new Health "Today's fuel" section (macro progress + a micronutrient coverage slice for priority nutrients).
+- **Investments Orders flow, built in full** (not deferred): `Overview`/`Orders` segmented toggle; Approve/Reject/Mark Sent/Log Fill/Cancel actions against `advisor_orders`, with Log Fill inserting `advisor_order_fills` and upserting `advisor_positions` via a new shared position-math module (`mobile/src/lib/positions.ts`, ported from the web app's `LogTradeModal`/`OrdersPanel` — which duplicate this math in two places there; here it's one function). Fixed a real bug caught during this work: the ported math didn't set `user_id` (`NOT NULL`, no default on `advisor_positions`) — a first fill on a brand-new symbol would have failed the insert.
+- **Settings/targets now wires `calculateTargets()`** (existed in `api.ts`, never had a mobile UI) — goal/activity pickers → AI-calculated BMR/TDEE/macros → apply to targets.
+- **Two backend bugs fixed** (found while investigating whether the DB/backend needed restructuring to support live pacing — verdict: schema was fine, these were real write-path bugs):
+  - `src/nodes/nutrition.py` — photo-based meal logging (`nutrition_node`) referenced `llm_cloud` without importing it, raising `NameError` before any insert. Text-only meal logging was unaffected. Fixed with a one-line import.
+  - `src/nodes/workout.py` — weight-delta phrases ("went up 3kg on bench") had no way to resolve correctly, since the extraction prompt never saw the current logged weight; the LLM had to guess an absolute number. Now the prompt asks for `weight_delta` when the user speaks relatively, and the existing template weight (already fetched server-side) resolves it.
+- **Jarvis Advisor v3 removed** from the user's setup — the external swarm-analysis service this system was built around is gone. `advisor_signals`/`advisor_watchlist`/`advisor_daily_reports` currently have no active writer. Replacement plan: an in-house `src/workers/market_advisor.py` (not built yet — next piece of work) will generate daily signals/orders/reports via OpenRouter, with a learning loop that feeds `advisor_signal_performance` (past win-rate) back into the generation prompt. Targets the same schema Jarvis used, so nothing else needs to change once it exists.
+- **New production droplet + Finnhub key**: the prior droplet was lost and replaced (`lifeos-prod`, 104.248.161.4, DuckDNS repointed); new `API_SECRET` generated and propagated to the droplet, `frontend/.env.ios`, and `mobile/.env`; Finnhub API key added, confirmed live (`price_refresh.py` now actually mark-to-markets `advisor_positions` instead of silently skipping).
+- **Push notifications**: `device_push_tokens` table (migration 024) + `mobile/src/lib/notifications.ts` registers the Expo push token on sign-in; `src/utils/push_notifications.py` sends via Expo's push API, wired to one trigger so far (pipeline failures).
+
+Why: the first mobile build was functionally real but visually and conceptually just a port. The product's actual job — monitor health/finance, surface specific actionable gaps ("you need a protein-rich lunch," "low sleep, go to bed earlier"), support real trade decisions, and look like a native app — needed a presentation rework, a live-status computation layer, and the Orders decision flow actually built, not stubbed. The Jarvis removal is unrelated but happened mid-session — the user is bringing that capability in-house.
+
+Files/modules touched:
+- Rewritten: every screen in `mobile/src/app/(app)/`, `mobile/src/theme/index.ts`, `mobile/src/components/ui.tsx`.
+- New: `mobile/src/lib/queries.ts`, `mobile/src/lib/pacing.ts`, `mobile/src/lib/positions.ts`, `mobile/src/app/(app)/settings/` (nested Stack).
+- Backend: `src/nodes/nutrition.py`, `src/nodes/workout.py` (bug fixes, deployed).
+- Infra: new droplet, new `API_SECRET`, Finnhub key added.
+- Docs: `docs/ARCHITECTURE.md` §3.3 and §3.7, `AGENTS.md`, `README.md` (Jarvis references updated to reflect removal + in-house replacement plan).
+
+Breaking changes / manual setup:
+- None to data contracts — `advisor_*` tables are unchanged, just currently unwritten by any advisor process until `market_advisor.py` exists.
+- Mobile app needs a fresh `npx expo run:ios` to pick up the new native modules (`expo-blur`, `expo-haptics`, `expo-linear-gradient`, `expo-document-picker`, `expo-notifications`, `expo-device`) added since the last build.
+- Settings is now a nested route (`/settings/body`, `/settings/targets`, `/settings/capital`) instead of one flat screen — no external links reference the old flat route, so no redirect needed.
+
+---
+
+## Previous change: Native iOS app (Expo/React Native rewrite), push notifications, new production droplet
+
+What's New:
+- **Native mobile app at `mobile/`**: a real Expo/React Native app (not a WebView) — supersedes the Capacitor wrapper below as the primary mobile app, though that wrapper is left in place. Own UI per screen via Expo Router (`mobile/src/app/`), talking to the same backend/`Supabase` project as the web dashboard (same `/api/*` contracts, same tables). Full parity: Chat (text + photo via `expo-image-picker`, same `/api/chat` pipeline), Goals (chat + goal cards), Specialist (3 personas). Functional-but-simplified (real data/writes, basic charts via `react-native-gifted-charts` for sleep/HR/spend/portfolio trends, not full visual parity yet): Nexus, Health, Finance, Investments, Settings, System. Not built yet: Investments Orders tab, Budgets panel, Daily Report viewer. Full inventory in `docs/ARCHITECTURE.md` §3.7.
+- **Push notifications**: new `device_push_tokens` table (migration 024) + `mobile/src/lib/notifications.ts` registers the device's Expo push token on sign-in. `src/utils/push_notifications.py` sends via Expo's push API; currently wired to one trigger (pipeline failures, from `pipeline_service.py`). Best-effort — a failed send never fails the pipeline.
+- **New production droplet**: the old DigitalOcean droplet was lost; provisioned a new one (`lifeos-prod`, 104.248.161.4, $6/mo 1GB) via `deploy/setup.sh`, repointed DuckDNS (`life-os-rylang.duckdns.org`) at it. **New `API_SECRET`** generated (the old one is gone) — propagated to the droplet's `.env`, `frontend/.env.ios`, and `mobile/.env`. **Vercel's `NEXT_PUBLIC_API_TOKEN` still needs manually updating to the new secret** or the web dashboard's API calls will 401.
+- **Docs**: `docs/ARCHITECTURE.md` §3.7 (new), Components table, DB schema table; `docs/supabase-schema.sql` regenerated.
+
+Why: the Capacitor wrapper was a fast first pass, but the goal was a genuinely native app (real navigation, real camera/photo picker, real push notifications) — not achievable from a WebView, hence the separate native rewrite. The droplet work was unplanned — the original production droplet was lost and had to be replaced from scratch.
+
+Files/modules touched:
+- New: `mobile/` (full Expo project), `docs/supabase-migrations/024-device-push-tokens.sql`, `src/utils/push_notifications.py`.
+- Modified: `src/pipeline_service.py` (push on pipeline failure), `docs/supabase-schema.sql`, `docs/ARCHITECTURE.md`, `README.md`.
+- Infra: new droplet `lifeos-prod`, DuckDNS repoint, new `API_SECRET`.
+
+Breaking changes / manual setup:
+- **The old `API_SECRET` no longer works anywhere.** Update Vercel's `NEXT_PUBLIC_API_TOKEN` to the new value or the web dashboard breaks.
+- Run `docs/supabase-migrations/024-device-push-tokens.sql` if not already applied (it was applied directly via the Supabase connection pooler as part of this change, so should already be live — verify with `select 1 from device_push_tokens limit 1;`).
+- Mobile app build requires `mobile/.env` filled in (not committed) — see `mobile/.env.example`.
+- iOS native build to a physical device needs a one-time manual Xcode signing step (free or paid Apple ID) — see `docs/ARCHITECTURE.md` §3.7. Building to the iOS Simulator needs no Apple ID at all.
+
+---
+
+## Previous change: iOS app (Capacitor wrapper around the existing frontend, debug build first, TestFlight later)
+
+What's New:
+- **No new UI code**: the iOS app is the existing `frontend/` Next.js app, built as a static export and wrapped with Capacitor 6 into a native Xcode project at `frontend/ios/`. Chat + photo logging on the app already worked over `/api/chat` (same LangGraph pipeline as Telegram) — nothing backend-side changed.
+- **New build path**: `npm run build:ios` (sets `BUILD_TARGET=capacitor`, which flips on `output: "export"` in `next.config.js`) → `npm run ios:sync` (export + `cap sync` + `pod install`) → `npm run ios:open` (opens Xcode). The normal `npm run build` used by Vercel is untouched.
+- **New env file**: `frontend/.env.ios` (gitignored) holds build-time `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_API_TOKEN`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — baked into the static bundle since there's no server at runtime on-device.
+- **Mobile polish**: `NativeBridge.tsx` sets iOS status bar style + native keyboard resize; `viewportFit: "cover"` + `env(safe-area-inset-*)` CSS so content clears the notch/home indicator in the fixed sidebar; `Info.plist` camera/photo-library usage strings added for the existing image-attach flow in `ChatPanel.tsx`.
+- Full detail: `docs/ARCHITECTURE.md` §3.6.
+
+Why: run LifeOS on iOS as a real app instead of Telegram, reusing the same backend and the same chat/photo pipeline, without maintaining a second frontend.
+
+Files/modules touched:
+- New: `frontend/next.config.js`, `frontend/capacitor.config.ts`, `frontend/app/components/NativeBridge.tsx`, `frontend/ios/` (Xcode project; `Pods/`, `build/`, `App/public/` gitignored), `frontend/.env.ios` (gitignored, not committed).
+- Modified: `frontend/package.json` (Capacitor deps + `build:ios`/`ios:sync`/`ios:open` scripts), `frontend/app/layout.tsx`, `frontend/app/(app)/layout.tsx`, `frontend/app/globals.css`, root `.gitignore`.
+- Docs: `docs/ARCHITECTURE.md`, `docs/CHANGES.md`.
+
+Breaking changes / manual setup:
+- None to the backend or web dashboard — this is additive.
+- To build: fill in `NEXT_PUBLIC_API_TOKEN` in `frontend/.env.ios` (must match `API_SECRET` on the droplet), then `npm run ios:sync && npm run ios:open`, pick your signing team in Xcode, and run to a device over USB (free Apple ID, 7-day provisioning).
+- TestFlight is not wired up yet — needs a paid Apple Developer account + App Store Connect record for `com.humanengine.lifeos` + an Xcode Archive/upload.
+
+---
+
+## Previous change: Fix broken JSON extraction regex in all agent nodes
 
 What's New:
 - **Critical bug fix**: `re.search(r'\{{.*}}', ...)` in `src/nodes/health_image.py`, `src/nodes/finance.py`, and `src/nodes/nutrition.py` (5 call sites) matched literal `{{`/`}}` double braces, which valid JSON never contains — so every LLM JSON extraction in those nodes silently failed (e.g. "Could not extract structured health metrics from the screenshot"). All now use `r'\{.*\}'` like the other nodes. Introduced during the graph.py → src/nodes/ refactor; not VPS-related.

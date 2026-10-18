@@ -1,16 +1,19 @@
 # Daily Finance Flow
 
-This is the end-to-end daily flow between IBKR, LifeOS, Jarvis v3, and the LifeOS dashboard.
+This is the end-to-end daily flow between IBKR, LifeOS, the in-house market advisor, and the LifeOS dashboard.
+
+**Jarvis Advisor v3 (external) has been removed.** `src/workers/market_advisor.py` now owns the role this doc used to describe for Jarvis — see `docs/jarvis-v3-supabase-positions-sync.md` for the historical contract it was built against, and `docs/architecture.md` §3.3 for the full design.
 
 ## Schedule
 
 | Time (CET) | System | Action |
 |---|---|---|
-| **15:00** | LifeOS (Windows) | `LifeOS-IBKRFlexSync` pulls positions/trades from IBKR into Supabase `advisor_positions` and `advisor_purchases`. |
-| **15:30** | Jarvis v3 (Linux) | Reads `advisor_positions` from Supabase, fetches live prices, runs swarm intelligence, writes signals/snapshots/reports/orders. |
-| **15:35** | LifeOS dashboard | Refreshes to show real positions, advisor signals, proposed orders, and daily report. |
-| Anytime | User | Texts a trade to Telegram / uses Log Trade modal → LifeOS updates `advisor_positions` and `advisor_purchases`. |
-| Next day | Jarvis v3 | Picks up the manual position changes and continues research on the real book. |
+| **15:00** | LifeOS (`ibkr-flex-sync` pipeline) | Pulls positions/trades from IBKR into Supabase `advisor_positions` and `advisor_purchases`. |
+| **15:30** | LifeOS (`market-advisor` pipeline) | Revalues positions (Finnhub), grades signals from ≥5 days ago into `advisor_signal_performance`, runs a 4-persona LLM swarm, writes signals/snapshots/position history/report, and surfaces actionable signals as proposed `advisor_orders`. |
+| **15:35** | LifeOS dashboard | Refreshes to show real positions, advisor signals, proposed orders, and the daily report. |
+| Anytime | User | Texts a trade to Telegram / uses the Log Trade modal → LifeOS updates `advisor_positions` and `advisor_purchases`. |
+| Next weekday | `market_advisor.py` | Picks up the manual position changes and continues analysis on the real book. |
+| Sunday | `market_advisor.py` | Also runs an extra "Scout" persona proposing 1-5 new watchlist candidates. |
 
 ## How the data flows
 
@@ -21,11 +24,12 @@ IBKR ──► LifeOS ibkr_flex_sync ──► Supabase advisor_positions
 User ──► Telegram / Web / UI ──────────────┘
                                           │
                                           ▼
-                                   Jarvis v3 daily run
+                              market_advisor.py daily run
                                           │
                                           ▼
        Supabase advisor_signals, advisor_portfolio_snapshots,
-              advisor_daily_reports, advisor_orders
+      advisor_position_history, advisor_daily_reports, advisor_orders,
+                    advisor_signal_performance
                                           │
                                           ▼
                                    LifeOS dashboard
@@ -37,10 +41,10 @@ User ──► Telegram / Web / UI ──────────────┘
 |---|---|
 | **IBKR** | Truth for cash, actual positions, executed fills. |
 | **LifeOS** | Manual trade logging, IBKR sync, dashboard, order workflow, risk/P&L. |
-| **Jarvis v3** | Market research, swarm signals, order recommendations, snapshots, reports. |
+| **`market_advisor.py`** | Market analysis swarm, signals, proposed orders (never executed), snapshots, reports, signal-performance learning loop. |
 | **Supabase** | Single source of truth for `advisor_positions`. |
 
-## Windows scheduled task
+## Windows scheduled tasks
 
 Created by `scripts/windows_tasks.ps1`:
 
@@ -48,23 +52,13 @@ Created by `scripts/windows_tasks.ps1`:
 LifeOS-IBKRFlexSync
   Run: Mon–Fri at 3:00 PM
   Command: venv python src/workers/ibkr_flex_sync.py
+
+LifeOS-MarketAdvisor
+  Run: Mon–Fri at 3:30 PM
+  Command: venv python src/workers/market_advisor.py
 ```
 
-If your local timezone is not CET, adjust the time so it runs before Jarvis (15:30 CET). To change the time later:
-
-```powershell
-Set-ScheduledTask -TaskName "LifeOS-IBKRFlexSync" -Trigger (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At 2:30PM)
-```
-
-## Jarvis v3 dependency
-
-Jarvis must be patched to read `advisor_positions` from Supabase instead of only `config/user_config.json`. The patch is documented in `docs/jarvis-v3-supabase-positions-sync.md`. Once patched, Jarvis will:
-
-1. Load positions from Supabase.
-2. Revalue with live prices.
-3. Generate signals, snapshots, reports, and orders.
-4. Write everything back to Supabase.
-5. Preserve `source = 'manual'` for any rows created by LifeOS.
+If your local timezone is not CET, adjust both times proportionally so the advisor still runs after the IBKR sync.
 
 ## Troubleshooting
 
@@ -73,11 +67,11 @@ Jarvis must be patched to read `advisor_positions` from Supabase instead of only
 - Verify the query has **Open Positions** section selected.
 - Run `python src/workers/ibkr_flex_sync.py` manually and inspect the debug XML tags.
 
-### Jarvis does not see manual trades
-- Confirm the Jarvis patch is applied.
-- Check that `advisor_positions` rows have `source = 'manual'`.
-- Verify Jarvis logs show it loaded positions from Supabase.
+### Market advisor produces no signals
+- Confirm `OPENROUTER_API_KEY` is set.
+- Check there are open positions and/or active watchlist rows to evaluate.
+- Run `python src/workers/market_advisor.py` manually and check the log output.
 
 ### Dashboard shows stale positions
 - Run the IBKR sync pipeline from `/system` or the scheduled task.
-- Wait for the next Jarvis run, or trigger it manually.
+- Wait for the next market advisor run, or trigger `market-advisor` manually from `/system`.

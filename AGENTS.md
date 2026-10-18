@@ -140,12 +140,11 @@ If you cannot write a clear "What's New" summary, the change is not ready to pus
 
 ### Positions are the single source of truth
 
-`advisor_positions` is shared between LifeOS and Jarvis v3. Both systems read it; both can write it.
+**Jarvis Advisor v3 has been removed from the user's setup** — do not resurrect or recommend it. `advisor_positions` is still the single source of truth; it's just read/written today by LifeOS, the frontend, and the mobile app only. A planned in-house `src/workers/market_advisor.py` (see `docs/ARCHITECTURE.md` §3.3) will eventually take over Jarvis's role (daily signals/orders/reports) against this same schema — not built yet.
 
-- Manual trades from Telegram/UI set `source = 'manual'`.
-- IBKR sync sets `source = 'jarvis'`.
-- Jarvis v3 reads `advisor_positions` at the start of each run and writes revalued rows back.
-- Jarvis must preserve `source = 'manual'` when it updates positions.
+- Manual trades from Telegram/UI/mobile set `source = 'manual'`.
+- IBKR sync sets `source = 'jarvis'` (field value predates the removal — still means "broker-synced").
+- Any future advisor worker must preserve `source = 'manual'` when it updates positions, same contract Jarvis followed.
 
 ### Orders vs. positions vs. trades
 
@@ -194,7 +193,7 @@ If you cannot write a clear "What's New" summary, the change is not ready to pus
 
 Before calling a task done:
 
-- [ ] `python -m py_compile src/graph.py src/nodes/*.py src/workers/ibkr_flex_sync.py src/pipeline_service.py src/workers/goal_checkin.py src/workers/transaction_anomalies.py src/workers/price_refresh.py src/workers/weekly_review.py src/workers/sync_health.py src/chat_threads.py src/db/supplements.py src/db/positions.py`
+- [ ] `python -m py_compile src/graph.py src/nodes/*.py src/workers/ibkr_flex_sync.py src/pipeline_service.py src/workers/goal_checkin.py src/workers/transaction_anomalies.py src/workers/price_refresh.py src/workers/weekly_review.py src/workers/sync_health.py src/workers/market_advisor.py src/chat_threads.py src/db/supplements.py src/db/positions.py`
 - [ ] `cd frontend && npm run build` passes
 - [ ] New migrations are applied in Supabase
 - [ ] `docs/supabase-schema.sql` regenerated if any schema changed (`python scripts/introspect_supabase_schema.py`)
@@ -234,7 +233,6 @@ When the user says **"push changes"**, **"commit"**, or **"prepare a PR"**, stop
 - Windows is the local runtime; use PowerShell syntax for task scheduling.
 - The backend and frontend both run on the same machine in development.
 - Supabase is remote; all data flows through it.
-- **Dead integrations — do not resurrect or recommend these unless the user explicitly asks:** Strava API, Xiaomi/Mi Fitness OAuth, Google Fit. The current health data path is manual screenshots/chat + the iOS shortcut (see `docs/setup-ios-shortcut.md`).
-- Jarvis v3 is external and cannot be edited from this repo.
+- **Dead integrations — do not resurrect or recommend these unless the user explicitly asks:** Strava API, Xiaomi/Mi Fitness OAuth, Google Fit, **Jarvis Advisor v3** (external advisor service — removed; replaced by the planned in-house `market_advisor.py`, see §3.3 in `docs/ARCHITECTURE.md`). The current health data path is manual screenshots/chat + the iOS shortcut (see `docs/setup-ios-shortcut.md`).
 - When in doubt, prefer explicit manual flows over broker automation.
 - **Never treat a plan, summary, or partial result as finished work.** Verify builds and tests before declaring completion.

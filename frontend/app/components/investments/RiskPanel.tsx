@@ -46,7 +46,7 @@ export default function RiskPanel({ positions, snapshots }: { positions: Positio
   }, []);
 
   if (positions.length === 0 && snapshots.length === 0) {
-    return <EmptyState message="No portfolio telemetry yet. Risk metrics will appear once Jarvis writes a snapshot." icon={Shield} />;
+    return <EmptyState message="No portfolio telemetry yet. Risk metrics will appear once the market advisor writes a snapshot." icon={Shield} />;
   }
 
   const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null;

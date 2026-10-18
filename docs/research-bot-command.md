@@ -1,5 +1,7 @@
 # Research Bot Command — Jarvis Advisor: Daily Advisor + Autonomous Scout
 
+**Historical — this was the operational mandate for the external Jarvis Advisor v3 bot, which has been removed from the user's setup.** The contract it describes (signals, watchlist, daily reports, orders) is now implemented in-house by `src/workers/market_advisor.py` — see `docs/architecture.md` §3.3. Kept for reference only; do not use this to resurrect or recommend an external bot.
+
 Copy-paste command for the external trading/research bot feeding LifeOS. The
 full write contract lives in `docs/trading-bot-integration.md`; this document
 is the operational mandate. It assumes migration
