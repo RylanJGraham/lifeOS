@@ -7,12 +7,13 @@ from langchain_core.messages import HumanMessage
 from db.supplements import ensure_supplements_for_meal
 from workers.action_items import mark_resolved
 from nodes.shared import (
-    GraphState, logger, llm_fast, supabase, ZERO_UUID,
+    GraphState, logger, llm_fast, llm_cloud, supabase, ZERO_UUID,
     MICRO_DV_GUIDE, fetch_openfoodfacts_by_barcode, search_openfoodfacts,
     check_supplement_overrides, _resolve_day_reference, _process_meal_removals,
     _get_known_items, _get_frequent_items, _match_known_item,
     _match_frequent_item_shortcut, web_search,
 )
+from nodes.ui_blocks import confirmation_block
 
 
 def handle_nutrition_text(state: GraphState) -> GraphState:
@@ -60,11 +61,22 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
 
     # Step 1b: Frequent-items shortcut. If the message matches one of the
     # user's top 20 habit items, short-circuit to its canonical macros.
+    # BUT only short-circuit if the known item actually has nutritional data
+    # (calories > 0) — otherwise let the LLM estimate from web search.
     frequent_items = _get_frequent_items(supabase, user_id, limit=20) if supabase else []
     shortcut_match = _match_frequent_item_shortcut(text, frequent_items) if not known_match else known_match
     if shortcut_match and not known_match:
-        known_match = shortcut_match
-        logger.info(f"Nutrition text matched frequent item '{shortcut_match.get('name')}' — using canonical macros.")
+        # Only use the shortcut if the known item has real nutritional data
+        if (shortcut_match.get("calories") or 0) > 0:
+            known_match = shortcut_match
+            logger.info(f"Nutrition text matched frequent item '{shortcut_match.get('name')}' — using canonical macros.")
+        else:
+            logger.info(f"Nutrition text matched frequent item '{shortcut_match.get('name')}' but it has no nutritional data — falling through to LLM estimation.")
+
+    # If the known item has no nutritional data, don't use it as a shortcut
+    if known_match and not (known_match.get("calories") or 0) > 0:
+        logger.info(f"Known item '{known_match.get('name')}' has no nutritional data — not short-circuiting.")
+        known_match = None
 
     # Step 2: Query construction and web search for supplements or brand names
     # (skipped entirely when the text matches a saved known item / frequent shortcut)
@@ -236,16 +248,21 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
 
                 for it in items:
                     # Known-item override: a saved item's canonical values
-                    # always win over LLM estimates (macros + micronutrients).
+                    # win over LLM estimates — but only if the known item
+                    # actually has nutritional data (calories > 0). A known
+                    # item with 0/null values means it was saved without
+                    # nutrition info, so let the LLM estimates stand.
                     it_name = it.get("meal_name") or ""
                     it_match = known_match if (known_match and len(items) == 1) else _match_known_item(it_name, known_items)
-                    if it_match:
+                    if it_match and (it_match.get("calories") or 0) > 0:
                         for field in ("calories", "protein", "carbs"):
                             if it_match.get(field) is not None:
                                 it[field] = it_match.get(field)
                         if it_match.get("fat") is not None:
                             it["fats"] = it_match.get("fat")
                         it["meal_name"] = it_match.get("name")
+                    else:
+                        it_match = None  # don't use empty known item for micros either
 
                     known_micros = (it_match or {}).get("micronutrients") or {}
                     micro_payload = {
@@ -300,6 +317,7 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
 
                     # Track habit usage: bump the matching known item, or
                     # learn this item as a new known item for next time.
+                    # Only learn if the item has real nutritional data (calories > 0).
                     try:
                         it_name = it.get("meal_name") or ""
                         it_match = known_match if (known_match and len(items) == 1) else _match_known_item(it_name, known_items)
@@ -308,7 +326,7 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
                                 "use_count": (it_match.get("use_count") or 0) + 1,
                                 "last_used_at": current_time
                             }).eq("id", it_match["id"]).execute()
-                        elif it_name:
+                        elif it_name and (it.get("calories") or 0) > 0:
                             supabase.table("known_items").insert({
                                 "user_id": user_id,
                                 "name": it_name,
@@ -331,10 +349,34 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
             removed_info = ("Removed " + ", ".join(removed_summaries) + ".\n") if removed_summaries else ""
             if len(logged_summaries) > 1:
                 state["response"] = removed_info + f"Logged {len(logged_summaries)} items{search_info}:\n" + "\n".join(f"• {s}" for s in logged_summaries)
+                state["ui"] = confirmation_block(
+                    status="logged",
+                    title=f"{len(logged_summaries)} items logged",
+                    rows=[
+                        {"label": it.get("meal_name") or "Item", "value": f"{it.get('calories') or 0} kcal"}
+                        for it in items
+                    ],
+                    subtitle=search_info.strip(" ()") or None,
+                )
             elif logged_summaries:
-                state["response"] = removed_info + f"Logged meal: {logged_summaries[0]}{search_info}{known_info}. Insight: {items[0].get('ai_analysis') if items else ''}"
+                insight = items[0].get('ai_analysis') if items else ''
+                state["response"] = removed_info + f"**Logged:** {logged_summaries[0]}{search_info}{known_info}" + (f"\n\n{insight}" if insight else "")
+                logged_item = items[0] if items else {}
+                state["ui"] = confirmation_block(
+                    status="logged",
+                    title=logged_item.get("meal_name") or "Meal",
+                    subtitle=(search_info or known_info or "").strip(" ()") or None,
+                    rows=[
+                        {"label": "Calories", "value": f"{logged_item.get('calories') or 0} kcal"},
+                        {"label": "Protein", "value": f"{logged_item.get('protein') or 0}g"},
+                        {"label": "Carbs", "value": f"{logged_item.get('carbs') or 0}g"},
+                        {"label": "Fat", "value": f"{logged_item.get('fats') or 0}g"},
+                    ],
+                    insight=insight or None,
+                )
             elif removed_summaries:
                 state["response"] = removed_info.strip()
+                state["ui"] = confirmation_block(status="removed", title="Removed", rows=[{"label": s, "value": ""} for s in removed_summaries])
             else:
                 state["response"] = "Understood, but found no food items to log."
 
@@ -499,7 +541,22 @@ Return ONLY a valid JSON object matching the following structure (no other text 
                 }).execute()
                 ensure_supplements_for_meal(supabase, user_id, parsed_meal_time, meal_type)
             scale_note = f" (portion ×{meal.get('portion_multiplier', 1.0)})" if meal.get("portion_multiplier") not in (None, 1.0) else ""
-            state["response"] = f"Logged {meal.get('meal_name')}{scale_note}! Calories: {meal.get('calories')} kcal, P: {meal.get('protein')}g, C: {meal.get('carbs')}g, F: {meal.get('fats')}g, Caffeine: {meal.get('caffeine_mg') or 0}mg. Insight: {meal.get('ai_analysis')}"
+            macros = f"**{meal.get('calories')} kcal** · P {meal.get('protein')}g · C {meal.get('carbs')}g · F {meal.get('fats')}g"
+            if meal.get("caffeine_mg"):
+                macros += f" · Caffeine {meal.get('caffeine_mg')}mg"
+            insight = meal.get('ai_analysis')
+            state["response"] = f"**Logged:** {meal.get('meal_name')}{scale_note}\n{macros}" + (f"\n\n{insight}" if insight else "")
+            state["ui"] = confirmation_block(
+                status="logged",
+                title=f"{meal.get('meal_name')}{scale_note}",
+                rows=[
+                    {"label": "Calories", "value": f"{meal.get('calories') or 0} kcal"},
+                    {"label": "Protein", "value": f"{meal.get('protein') or 0}g"},
+                    {"label": "Carbs", "value": f"{meal.get('carbs') or 0}g"},
+                    {"label": "Fat", "value": f"{meal.get('fats') or 0}g"},
+                ] + ([{"label": "Caffeine", "value": f"{meal.get('caffeine_mg')}mg"}] if meal.get("caffeine_mg") else []),
+                insight=insight or None,
+            )
         else:
             state["response"] = "Could not parse nutrition data from the image."
     except Exception as e:
