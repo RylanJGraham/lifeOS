@@ -4,7 +4,39 @@
 
 ---
 
-## Latest change: Mobile app rebuilt to match the "Human Engine" Stitch design; chat reply formatting
+## Latest change: Fix meal ingestion losing multi-item meals to empty known-item match
+
+What's New:
+- **Known-item short-circuit no longer fires for items with 0/null calories** (`src/nodes/nutrition.py`): when a user logs a meal like "vicio burger with fries and a coke", if "vicio burger" matched a `known_items` row with null calories (saved without nutritional data), the known-item shortcut would skip web search, tell the LLM to use the known item's "EXACT values verbatim" (all zeros), override the LLM's estimates with 0s, and treat the entire message as one item — losing the fries and coke. Now: known items with 0/null calories don't short-circuit; the LLM estimates from web search normally.
+- **Per-item known-item override also checks for nutritional data**: the per-item override at line ~254 now requires `calories > 0` before replacing LLM estimates, so empty known items can't zero out good estimates.
+- **New known items are only learned if they have real nutritional data** (calories > 0): prevents the cycle from repeating.
+- **Data cleanup**: deleted the "Vicio burger with fries" known item (null calories, use_count 4) and 5 other known items with null calories that would have caused the same bug. Deleted 2 zero-calorie "Vicio burger with fries" meals that were logged by the bug.
+- **Missing `src/nodes/ui_blocks.py` committed**: was untracked locally, caused API startup failure on the VPS after deploy.
+
+Why: the user logged "i had a vicio burger with fries and a coke" and only got "Vicio burger with fries (0 kcal)" — the known item with no data short-circuited everything. The root cause was known items saved without nutritional data being treated as authoritative overrides.
+
+Files touched: `src/nodes/nutrition.py`, `src/nodes/ui_blocks.py` (new), `docs/CHANGES.md`.
+
+---
+
+## Previous: Mobile Ingest screen supports PDF file uploads (reuses /statements/upload)
+
+What's New:
+- **Mobile Ingest/chat screen now accepts PDF attachments** (`mobile/src/app/(app)/(tabs)/chat.tsx`): the attach action sheet adds a "Choose PDF" option (via `expo-document-picker`, `type: "application/pdf`) alongside the existing camera/library image picker. Picking a PDF shows a file-card preview (icon + filename) in the input bar and a file chip in the user's chat bubble. On send, the PDF is uploaded via the existing `POST /statements/upload` endpoint (which records it in `statement_uploads` and triggers the `pdf-statement-sync` pipeline), then a chat message is sent to `/api/chat` referencing the upload (filename + `upload_id`) so the agent knows what was just ingested and can answer follow-ups. Image attachments keep their existing base64 → `/api/chat` `image` field path unchanged.
+- **`uploadStatement()` return type widened** (`mobile/src/lib/api.ts`): now returns `{ status, message?, upload_id?, path? }` instead of just `{ message? }`, matching the actual backend response. The existing System screen caller still works (it only reads `message`).
+- **No backend code changes.** `POST /statements/upload` (`src/api.py`) already accepts PDFs, returns `upload_id`, and triggers `pdf-statement-sync`; `src/pipeline_service.py` already registers that pipeline. Verified both compile.
+
+Why: the user wanted to attach PDFs (e.g. bank/CC statements) from the Ingest chat flow on mobile, the same place they already log meals/workouts/trades via photos. Reusing the existing statement-upload endpoint (rather than adding a new chat-attachment endpoint) keeps a single ingest path for PDFs and lets the agent reason about the upload by reference.
+
+Files/modules touched:
+- `mobile/src/app/(app)/(tabs)/chat.tsx` — added `expo-document-picker` import, `Attachment` discriminated union (`image | file`), `pickFile()`, "Choose PDF" action-sheet option, file-aware `send()` (upload then chat), file chip in bubbles, file-card attachment preview, `uploading` state, new styles.
+- `mobile/src/lib/api.ts` — `uploadStatement()` return type widened; added `StatementUploadResponse` interface.
+
+Breaking changes / manual setup: none — no schema, API contract, or scheduled-task changes. The backend endpoint and pipeline are unchanged.
+
+---
+
+## Previous change: Mobile app rebuilt to match the "Human Engine" Stitch design; chat reply formatting
 
 What's New:
 - **Mobile app visual rebuild** (`mobile/`): all 9 screens (`Cockpit`, `Bio`/health, `Capital`, `Goals`, `Specialist Advisors`, `System`, `Settings` + its 4 sub-screens, `Ingest`/chat) restructured to match the Stitch "Human Engine Personal Cockpit" design. `src/components/ui.tsx` gained new shared primitives: `PacingBar` (segmented progress track), `AccentCard` (severity-tiered card with left accent stripe), `PodDetailed` (telemetry pod with a secondary metric "well"), `MetaRow`, and `FormattedText` (lightweight `**bold**` + paragraph-break renderer for backend reply text). `ScreenHeader` was reworked from an inline scrolling page title into a fixed, blurred top bar (`HEADER_BAR_HEIGHT` exported for screens to pad against), and `Surface`/`AccentCard` gained soft drop-shadow elevation to match the design's "Instrument Pod" spec. No data-fetching, routes, or business logic changed — this was a layout/composition pass; screens deliberately omit any Stitch widget with no real backing data (fake live clocks, invented uptime/runway figures, broker order-flow UI) rather than fabricating values.
