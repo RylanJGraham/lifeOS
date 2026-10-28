@@ -10,10 +10,71 @@ from nodes.shared import (
     GraphState, logger, llm_fast, llm_cloud, supabase, ZERO_UUID,
     MICRO_DV_GUIDE, fetch_openfoodfacts_by_barcode, search_openfoodfacts,
     check_supplement_overrides, _resolve_day_reference, _process_meal_removals,
-    _get_known_items, _get_frequent_items, _match_known_item,
-    _match_frequent_item_shortcut, web_search,
+    web_search,
 )
 from nodes.ui_blocks import confirmation_block
+
+
+def _count_likely_food_items(text: str) -> int:
+    """Very rough upper-bound count of distinct edible things in a message."""
+    lower = text.lower()
+    # Strip common connectors that are not food themselves
+    # and split by conjunctions / separators that usually separate items
+    parts = re.split(r"\b(?:and|with|plus|then|after that|followed by|,?\s+and\s+|,)\b", lower)
+    # Count parts that contain at least one food-looking token
+    count = 0
+    for p in parts:
+        tokens = re.findall(r"[a-z]{3,}", p)
+        if any(t in p for t in ("food", "ate", "had", "eat", "drank", "drink", "snack", "breakfast", "lunch", "dinner", "porridge", "burger", "pizza", "salad", "nuggets", "fries", "coke", "soda", "coffee", "tea", "water", "milk", "egg", "chicken", "beef", "rice", "pasta", "bread", "fruit", "vegetable", "apple", "banana", "honey", "sugar", "salt")):
+            count += 1
+    return max(1, count)
+
+
+def _reextract_if_incomplete(text: str, items: list, current_time: str, search_context: str) -> list:
+    """Re-run extraction if the LLM appears to have dropped items."""
+    if len(items) >= 3:
+        return items
+    expected = _count_likely_food_items(text)
+    if expected <= len(items):
+        return items
+    if expected - len(items) <= 1 and len(items) >= 2:
+        # Allow small uncertainty; only force re-check for big drops
+        return items
+
+    logger.info(f"Nutrition extraction looks incomplete: expected ~{expected} items, got {len(items)}. Re-checking.")
+    re_prompt = f"""
+The user sent this food log: "{text}".
+Current system time: {current_time}.
+
+Food database & web verification data:
+---
+{search_context if search_context else "No search context requested."}
+---
+
+A first pass extracted these items: {json.dumps([it.get("meal_name") for it in items])}.
+This looks incomplete — the user clearly mentioned more foods than were extracted.
+
+Your job now: return the COMPLETE list of every distinct food, drink, topping, or side the user mentioned. Use the same JSON schema as before, but be exhaustive.
+
+Examples you must follow:
+- "9 McDonald's nuggets and fries and a coke" MUST produce three items: "McDonald's chicken nuggets (9)", "fries", and "coke".
+- "Porridge with honey and bananas" MUST produce either one item named "Porridge with honey and bananas" with calories that include honey and bananas, OR three separate items for porridge, honey, and bananas. It must NOT produce a lone "Porridge" item that ignores the honey and bananas.
+
+Return ONLY a valid JSON object with the same structure (sufficient_data, clarification_question, items, removals). Always set sufficient_data to true here unless the input is genuinely not about food.
+"""
+    try:
+        re_res = llm_fast.invoke([HumanMessage(content=re_prompt)]).content
+        logger.info(f"Nutrition re-extraction raw response: {re_res[:2000]}")
+        re_match = re.search(r"\{{.*\}}", re_res, re.DOTALL)
+        if re_match:
+            re_m = json.loads(re_match.group(0))
+            re_items = re_m.get("items") or []
+            if len(re_items) > len(items):
+                logger.info(f"Nutrition re-extraction returned {len(re_items)} items: {[it.get('meal_name') for it in re_items]}")
+                return re_items
+    except Exception as e:
+        logger.warning(f"Nutrition re-extraction failed: {e}")
+    return items
 
 
 def handle_nutrition_text(state: GraphState) -> GraphState:
@@ -21,9 +82,8 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
     text = state["content"]
     current_time = datetime.now().astimezone().isoformat()
 
-    # Resolve user + known items up front (habit matching)
+    # Resolve user id for storing meals.
     user_id = ZERO_UUID
-    known_items, known_match = [], None
     if supabase:
         try:
             res_profile = supabase.table("user_profiles").select("user_id").limit(1).execute()
@@ -31,15 +91,13 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
                 user_id = res_profile.data[0]["user_id"]
         except Exception:
             pass
-        known_items = _get_known_items(supabase, user_id)
-        known_match = _match_known_item(text, known_items)
 
     # Step 1: Barcode shortcut — if the user sends digits that look like a
     # barcode/EAN, look it up directly in OpenFoodFacts before falling back
     # to the normal extraction flow.
     barcode_match = re.search(r"\b\d{8,13}\b", text)
     barcode_context = ""
-    if barcode_match and not known_match:
+    if barcode_match:
         barcode = barcode_match.group(0)
         product = fetch_openfoodfacts_by_barcode(barcode)
         if product:
@@ -59,33 +117,11 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
                     f"Use these values and scale to the portion eaten."
                 )
 
-    # Step 1b: Frequent-items shortcut. If the message matches one of the
-    # user's top 20 habit items, short-circuit to its canonical macros.
-    # BUT only short-circuit if the known item actually has nutritional data
-    # (calories > 0) — otherwise let the LLM estimate from web search.
-    frequent_items = _get_frequent_items(supabase, user_id, limit=20) if supabase else []
-    shortcut_match = _match_frequent_item_shortcut(text, frequent_items) if not known_match else known_match
-    if shortcut_match and not known_match:
-        # Only use the shortcut if the known item has real nutritional data
-        if (shortcut_match.get("calories") or 0) > 0:
-            known_match = shortcut_match
-            logger.info(f"Nutrition text matched frequent item '{shortcut_match.get('name')}' — using canonical macros.")
-        else:
-            logger.info(f"Nutrition text matched frequent item '{shortcut_match.get('name')}' but it has no nutritional data — falling through to LLM estimation.")
-
-    # If the known item has no nutritional data, don't use it as a shortcut
-    if known_match and not (known_match.get("calories") or 0) > 0:
-        logger.info(f"Known item '{known_match.get('name')}' has no nutritional data — not short-circuiting.")
-        known_match = None
-
     # Step 2: Query construction and web search for supplements or brand names
-    # (skipped entirely when the text matches a saved known item / frequent shortcut)
     search_context = ""
     search_query = ""
     if barcode_context:
         search_context = barcode_context
-    if known_match:
-        logger.info(f"Nutrition text matched known item '{known_match.get('name')}' — skipping web search.")
     else:
         search_query_prompt = f"""
     Analyze the user's food/supplement log: "{text}".
@@ -112,64 +148,36 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
         else:
             logger.info("Nutrition query is standard food or vague. Skipping web search.")
 
-    # Known/frequent items context: exact macros for the user's habit foods.
-    # Frequent items (top 20 by use_count) are shown first so shorthand like
-    # "usual breakfast" resolves without a web search.
-    if known_match:
-        known_block = (
-            f'MATCHED SAVED ITEM — use these EXACT values verbatim, do not estimate or ask for clarification:\n'
-            f'"{known_match.get("name")}": {known_match.get("calories") or 0} kcal, '
-            f'P {known_match.get("protein") or 0}g, C {known_match.get("carbs") or 0}g, F {known_match.get("fat") or 0}g'
-            + (f', micronutrients: {json.dumps(known_match.get("micronutrients"))}' if known_match.get("micronutrients") else "")
-        )
-    elif frequent_items:
-        freq_lines = [
-            f'- "{i.get("name")}" (aliases: {", ".join(i.get("aliases") or [])}): '
-            f'{i.get("calories") or 0} kcal, P {i.get("protein") or 0}g, C {i.get("carbs") or 0}g, F {i.get("fat") or 0}g'
-            for i in frequent_items[:20]
-        ]
-        other = [i for i in known_items if i["id"] not in {j["id"] for j in frequent_items[:20]}]
-        extra_lines = [
-            f'- "{i.get("name")}" (aliases: {", ".join(i.get("aliases") or [])}): '
-            f'{i.get("calories") or 0} kcal, P {i.get("protein") or 0}g, C {i.get("carbs") or 0}g, F {i.get("fat") or 0}g'
-            for i in other[:10]
-        ]
-        known_block = "The user's frequent items (if the text matches one, use its exact values):\n" + "\n".join(freq_lines)
-        if extra_lines:
-            known_block += "\nOther saved items:\n" + "\n".join(extra_lines)
-    else:
-        known_block = ""
-
     # Extract meal details and validate info
     ext_prompt = f"""
     Analyze the user's meal/supplement log text: "{text}".
     Current system time: {current_time}.
-    
+
     Food database & web verification data (use this to override/fill exact nutritional values for brands/supplements like Supradyn, Fage, etc.; OpenFoodFacts per-100g values must be scaled to the portion eaten):
     ---
     {search_context if search_context else "No search context requested."}
     ---
-    
-    Saved items context:
-    ---
-    {known_block if known_block else "None."}
-    ---
-   
+
     Determine if there is sufficient specific detail about the food, drink, or nutritional supplements (e.g. multivitamin, vitamin D, fish oil, zinc, protein shake) in the text to reasonably identify the items and estimate their nutritional values.
     - Specific foods and supplements like "apple", "banana", "chicken and rice", "egg sandwich", "multivitamin", "omega-3 capsule", "vitamin D capsule", "whey protein shake with whole milk", "a slice of pizza" have sufficient data.
     - Nutritional supplements (like a multivitamin) are fully valid nutrition inputs. They may have 0 or negligible calories/macros, but their micronutrients (e.g. vitamin_d_dv_pct, b12_dv_pct, zinc_dv_pct, iron_dv_pct, magnesium_dv_pct, potassium_mg, sodium_mg, etc.) should be estimated based on typical dosage/values, and their calories/macros set to 0. If web search verification data is present and contains specific amounts (e.g., 80mg magnesium, 10mg zinc), use those exact proportions.
-    
+
     - Micronutrients must be calculated and output EXCLUSIVELY as percentages of Daily Value (% DV, e.g. 0-120+). DO NOT put absolute milligram (mg) or microgram (mcg) values in the percentage columns! (sodium_mg and potassium_mg are the only exceptions — raw mg.)
       {MICRO_DV_GUIDE}
       CRITICAL: Double check your output using the table above! If data says "10mg Zinc", then "zinc_dv_pct" is 91 (10/11), NOT 10. If it says "80mg Magnesium", then "magnesium_dv_pct" is 20, NOT 80. If it says "14mg Iron", then "iron_dv_pct" is 175, NOT 14.
     - Estimate %DV for every nutrient the food plausibly provides (dairy -> calcium; red meat -> iron/zinc/b12; fish -> omega_3/vitamin D; fruit -> vitamin C; nuts/seeds -> magnesium/vitamin E; whole grains -> manganese/phosphorus; eggs -> biotin/selenium). Use null only when the food contains essentially none.
     - Vague descriptions like "lunch", "snack", "dinner", "eating something", or "food" do NOT have sufficient data.
-    
+
     If there is sufficient data:
     - ALWAYS output numeric estimates for calories/protein/carbs/fats/fiber/sugar — from the database/web data when available, otherwise from standard nutritional knowledge for a typical portion. A rough estimate is far more useful than a null; nulls are forbidden for these fields.
     - The user may log MULTIPLE foods across MULTIPLE days in one message. Return ONE item per distinct food/dish.
+      * CRITICAL: You MUST return every distinct food, drink, topping, side, or component the user mentions. NEVER silently drop items.
+        - "porridge with honey and bananas" is NOT just "Porridge". Either return one item named "Porridge with honey and bananas" whose calories INCLUDE the honey and bananas, OR return three separate items. The calories for "Porridge with honey and bananas" must be noticeably higher than plain porridge.
+        - "9 McDonald's nuggets and fries and a coke" must produce items for nuggets, fries, AND coke — never just one of them.
+        - Do not strip toppings (honey, bananas, sauce, cheese, etc.) or sides (fries, salad, rice, etc.) from a meal name or its calorie estimate.
       * Same food repeated over several days ("toast for the past tues-thurs") -> ONE item with several entries in its "meal_days".
       * Different foods on different days ("tuesday a burger, wednesday tacos") -> SEPARATE items, each with its own "meal_days" and macros. NEVER copy one day's food onto another day.
+    - If the saved-items context above lists an exact match for one of the items, use its exact macros for that item only. Do NOT let the saved-items context cause you to ignore the other items in the message.
     - For each item, report days EXACTLY as the user said them (no date math):
       * "meal_days": raw day references, e.g. ["today"], ["yesterday"], ["tuesday"], or per-day for a range: ["tuesday", "wednesday", "thursday"].
       * "meal_clock": the clock time "HH:MM" if mentioned for that item (e.g. "at 1pm" -> "13:00"), otherwise null. A time stated for all items applies to each.
@@ -234,8 +242,12 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
         removed_summaries = _process_meal_removals(supabase, m) if supabase else []
         if m.get("sufficient_data"):
             items = m.get("items") or []
+            logger.info(f"Nutrition extraction parsed {len(items)} items: {[it.get('meal_name') for it in items]}")
             if not items and m.get("meal_name"):
                 items = [m]  # backward compat with single-meal output
+            # If the user clearly listed multiple foods but we only got one or
+            # two items back, ask the LLM to re-check and list everything.
+            items = _reextract_if_incomplete(text, items, current_time, search_context)
             logged_summaries = []
             if supabase:
                 user_id = ZERO_UUID
@@ -247,31 +259,11 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
                     pass
 
                 for it in items:
-                    # Known-item override: a saved item's canonical values
-                    # win over LLM estimates — but only if the known item
-                    # actually has nutritional data (calories > 0). A known
-                    # item with 0/null values means it was saved without
-                    # nutrition info, so let the LLM estimates stand.
-                    it_name = it.get("meal_name") or ""
-                    it_match = known_match if (known_match and len(items) == 1) else _match_known_item(it_name, known_items)
-                    if it_match and (it_match.get("calories") or 0) > 0:
-                        for field in ("calories", "protein", "carbs"):
-                            if it_match.get(field) is not None:
-                                it[field] = it_match.get(field)
-                        if it_match.get("fat") is not None:
-                            it["fats"] = it_match.get("fat")
-                        it["meal_name"] = it_match.get("name")
-                    else:
-                        it_match = None  # don't use empty known item for micros either
-
-                    known_micros = (it_match or {}).get("micronutrients") or {}
                     micro_payload = {
-                        **known_micros,
-                        "fiber": it.get("fiber") or known_micros.get("fiber", 0),
-                        "sugar": it.get("sugar") or known_micros.get("sugar", 0),
+                        "fiber": it.get("fiber") or 0,
+                        "sugar": it.get("sugar") or 0,
                         "ai_analysis": it.get("ai_analysis") or "",
                         **{k: v for k, v in (it.get("micronutrients") or {}).items() if v is not None},
-                        **known_micros,  # canonical values win over LLM
                     }
 
                     # Resolve day references in Python (never trust LLM date math).
@@ -315,37 +307,10 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
                         }).execute()
                         ensure_supplements_for_meal(supabase, user_id, parsed_meal_time, meal_type)
 
-                    # Track habit usage: bump the matching known item, or
-                    # learn this item as a new known item for next time.
-                    # Only learn if the item has real nutritional data (calories > 0).
-                    try:
-                        it_name = it.get("meal_name") or ""
-                        it_match = known_match if (known_match and len(items) == 1) else _match_known_item(it_name, known_items)
-                        if it_match:
-                            supabase.table("known_items").update({
-                                "use_count": (it_match.get("use_count") or 0) + 1,
-                                "last_used_at": current_time
-                            }).eq("id", it_match["id"]).execute()
-                        elif it_name and (it.get("calories") or 0) > 0:
-                            supabase.table("known_items").insert({
-                                "user_id": user_id,
-                                "name": it_name,
-                                "calories": it.get("calories") or 0,
-                                "protein": it.get("protein") or 0,
-                                "carbs": it.get("carbs") or 0,
-                                "fat": it.get("fats") or 0,
-                                "micronutrients": micro_payload,
-                                "use_count": 1,
-                                "last_used_at": current_time
-                            }).execute()
-                    except Exception as e:
-                        logger.warning(f"known_items learn/bump failed: {e}")
-
                     day_part = f" × {len(times)}d ({times[0][:10]}→{times[-1][:10]})" if len(times) > 1 else f" {times[0][:10]} {times[0][11:16]}"
                     logged_summaries.append(f"{it.get('meal_name')} ({it.get('calories')} kcal{day_part})")
 
             search_info = f" (verified via search for '{search_query}')" if search_context else ""
-            known_info = " ✓ saved item" if known_match else ""
             removed_info = ("Removed " + ", ".join(removed_summaries) + ".\n") if removed_summaries else ""
             if len(logged_summaries) > 1:
                 state["response"] = removed_info + f"Logged {len(logged_summaries)} items{search_info}:\n" + "\n".join(f"• {s}" for s in logged_summaries)
@@ -360,12 +325,12 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
                 )
             elif logged_summaries:
                 insight = items[0].get('ai_analysis') if items else ''
-                state["response"] = removed_info + f"**Logged:** {logged_summaries[0]}{search_info}{known_info}" + (f"\n\n{insight}" if insight else "")
+                state["response"] = removed_info + f"**Logged:** {logged_summaries[0]}{search_info}" + (f"\n\n{insight}" if insight else "")
                 logged_item = items[0] if items else {}
                 state["ui"] = confirmation_block(
                     status="logged",
                     title=logged_item.get("meal_name") or "Meal",
-                    subtitle=(search_info or known_info or "").strip(" ()") or None,
+                    subtitle=search_info.strip(" ()") or None,
                     rows=[
                         {"label": "Calories", "value": f"{logged_item.get('calories') or 0} kcal"},
                         {"label": "Protein", "value": f"{logged_item.get('protein') or 0}g"},
@@ -398,19 +363,27 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
 
 def nutrition_node(state: GraphState) -> GraphState:
     logger.info("Executing Nutrition Node (Image)")
-    base64_image = state["content"]
-    
+    images = state.get("images") or []
+    if not images:
+        images = [state["content"]] if state.get("content") else []
+
     if not llm_cloud:
         state["response"] = "Error: OpenRouter API key not configured for Vision tasks."
         return state
-        
+
+    is_multi = len(images) > 1
+    intro_text = (
+        "Analyze these pictures of my food or supplement. Identify the meal/supplement, estimate the total calories, macronutrients (protein, carbs, fat in grams), fiber (grams), sugar (grams), and micronutrients (estimated as percentage of Daily Value, except sodium and potassium in milligrams)."
+        if is_multi
+        else "Analyze this picture of my food or supplement. Identify the meal/supplement, estimate the total calories, macronutrients (protein, carbs, fat in grams), fiber (grams), sugar (grams), and micronutrients (estimated as percentage of Daily Value, except sodium and potassium in milligrams)."
+    )
+
     prompt = [
         HumanMessage(
             content=[
                 {
-                    "type": "text", 
-                    "text": """Analyze this picture of my food or supplement. Identify the meal/supplement, estimate the total calories, macronutrients (protein, carbs, fat in grams), fiber (grams), sugar (grams), and micronutrients (estimated as percentage of Daily Value, except sodium and potassium in milligrams).
-Also provide a brief 1-2 sentence nutritional insight or athletic context about this meal (e.g. 'Excellent lean protein for recovery').
+                    "type": "text",
+                    "text": intro_text + """ Also provide a brief 1-2 sentence nutritional insight or athletic context about this meal (e.g. 'Excellent lean protein for recovery').
 
 Micronutrients must be calculated and output EXCLUSIVELY as percentages of Daily Value (% DV, e.g. 0-120+) based on standard European VRN/RDA or US DV. DO NOT put absolute milligram (mg) or microgram (mcg) values in the percentage columns!
 Use this Reference Conversion Guide for 100% Daily Value (adult male 19-50; mirror of MICRO_DV_GUIDE):
@@ -458,7 +431,7 @@ Return ONLY a valid JSON object matching the following structure (no other text 
 }
 """
                 },
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                *[{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}} for img in images]
             ]
         )
     ]

@@ -356,6 +356,16 @@ CREATE TABLE IF NOT EXISTS company_rsus (
     vesting_years INTEGER NOT NULL
 );
 
+-- Table: device_push_tokens
+CREATE TABLE IF NOT EXISTS device_push_tokens (
+    created_at TIMESTAMP WITH TIME ZONE,
+    expo_push_token TEXT NOT NULL,
+    id UUID NOT NULL,
+    last_seen_at TIMESTAMP WITH TIME ZONE,
+    platform TEXT,
+    user_id UUID NOT NULL
+);
+
 -- Table: exercise_muscles
 CREATE TABLE IF NOT EXISTS exercise_muscles (
     created_at TIMESTAMP WITH TIME ZONE,
@@ -402,6 +412,7 @@ CREATE TABLE IF NOT EXISTS goals (
     linked_metric TEXT,
     metric_basis JSONB,
     plan JSONB,
+    priority INTEGER NOT NULL,
     status TEXT,
     target_value NUMERIC,
     title TEXT NOT NULL,
@@ -606,6 +617,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 
 -- Table: worker_heartbeats
 CREATE TABLE IF NOT EXISTS worker_heartbeats (
+    created_at TIMESTAMP WITH TIME ZONE,
     error TEXT,
     id UUID NOT NULL,
     last_run_at TIMESTAMP WITH TIME ZONE NOT NULL,

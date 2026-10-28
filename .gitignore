@@ -3,7 +3,9 @@
 .env.local
 .env.development.local
 .env.test.local
+.env.production
 .env.production.local
+frontend/.env.ios
 venv/
 .venv/
 env/
@@ -45,3 +47,9 @@ docs/trading-bot-integration.md
 # TypeScript incremental build info
 frontend/tsconfig.tsbuildinfo
 *.tsbuildinfo
+
+# Capacitor iOS — native project is committed, build artifacts are not
+frontend/ios/App/Pods/
+frontend/ios/App/build/
+frontend/ios/App/App/public/
+frontend/ios/.gradle/

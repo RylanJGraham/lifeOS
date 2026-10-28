@@ -70,6 +70,10 @@ Register-LifeOSTask -Name "LifeOS-PDFStatementSync" -PipelineId "pdf-statement-s
     -Description "Parse bank/CC PDF statements and insert transactions via OpenRouter vision" `
     -Trigger (New-ScheduledTaskTrigger -Daily -At 8:00AM)
 
+Register-LifeOSTask -Name "LifeOS-GoalMetricSync" -PipelineId "goal-metric-sync" `
+    -Description "Update active financial goals current_value from bank_balance, net_worth, or portfolio_value" `
+    -Trigger (New-ScheduledTaskTrigger -Daily -At 8:30AM)
+
 # Weekday IBKR sync (before the market advisor daily run)
 Register-LifeOSTask -Name "LifeOS-IBKRFlexSync" -PipelineId "ibkr-flex-sync" `
     -Description "Pull positions and trades from IBKR before the market advisor daily run" `

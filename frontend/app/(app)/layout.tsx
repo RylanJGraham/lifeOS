@@ -65,7 +65,10 @@ export default function AppShell({
           }}
         >
           {/* Logo */}
-          <div className="flex items-center justify-between" style={{ padding: "20px 20px 16px", borderBottom: "1px solid var(--border-subtle)" }}>
+          <div
+            className="flex items-center justify-between safe-area-top"
+            style={{ padding: "20px 20px 16px", borderBottom: "1px solid var(--border-subtle)" }}
+          >
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <div
                 style={{
@@ -136,7 +139,7 @@ export default function AppShell({
           </nav>
 
           {/* Status Footer */}
-          <div style={{ padding: "12px", borderTop: "1px solid var(--border-subtle)" }}>
+          <div className="safe-area-bottom" style={{ padding: "12px", borderTop: "1px solid var(--border-subtle)" }}>
             <div
               style={{
                 display: "flex",

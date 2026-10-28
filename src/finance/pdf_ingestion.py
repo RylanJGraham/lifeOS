@@ -62,6 +62,7 @@ class PDFTransactionIngester:
             self.db.table("statement_uploads").update({"status": "processing"}).eq("id", upload_id).execute()
             transactions = self._parse_pdf(file_path)
             inserted, skipped = self._save_transactions(transactions, user_id)
+            self._update_bank_balance(transactions, user_id)
             self.db.table("statement_uploads").update({
                 "status": "done",
                 "processed_at": datetime.now().isoformat(),
@@ -85,6 +86,7 @@ class PDFTransactionIngester:
         logger.info(f"Processing statement: {pdf_path}")
         transactions = self._parse_pdf(pdf_path)
         inserted, skipped = self._save_transactions(transactions, user_id)
+        self._update_bank_balance(transactions, user_id)
         archive_dir = os.path.join(self.statement_dir, "archived")
         os.makedirs(archive_dir, exist_ok=True)
         filename = os.path.basename(pdf_path)
@@ -118,8 +120,9 @@ class PDFTransactionIngester:
 Each transaction must have:
 - transaction_date: ISO date (YYYY-MM-DD)
 - merchant_name: the payee or merchant
-- amount: numeric amount (negative for expenses, positive for income/refunds)
-- category: one of [Food, Transport, Shopping, Entertainment, Health, Utilities, Travel, Investment, Income, Other]
+- amount: numeric amount (negative for expenses, POSITIVE for income/refunds/deposits — never negative for income)
+- saldo: the running account balance (SALDO) shown for this row, if present. Use the absolute value as shown in the statement (e.g., 2300.45). If the column is missing, use null.
+- category: one of [Food & Dining, Transportation, Shopping & Goods, Entertainment & Subscriptions, Health & Fitness, Housing & Utilities, Education & Career, Personal Care, Income, Investment, Other]
 - confidence_score: 0.0-1.0
 
 Return ONLY a valid JSON array. Do not include markdown formatting or explanation.
@@ -141,8 +144,14 @@ Statement text:
                 t["confidence_score"] = float(t.get("confidence_score", 0.8))
                 t["transaction_date"] = self._normalize_date(t.get("transaction_date"))
                 t["amount"] = float(t.get("amount", 0))
+                t["saldo"] = float(t["saldo"]) if t.get("saldo") is not None else None
                 t["merchant_name"] = str(t.get("merchant_name", "")).strip()[:120]
-                t["category"] = str(t.get("category", "Other")).strip()
+                t["category"] = self._normalize_category(t.get("category"))
+                # Safety net: income must never be negative — flip if the LLM
+                # returned a salary deposit as a negative expense.
+                if t["category"] == "Income" and t["amount"] < 0:
+                    logger.warning(f"Flipping negative income: {t['merchant_name']} {t['amount']} -> {abs(t['amount'])}")
+                    t["amount"] = abs(t["amount"])
             logger.info(f"Parsed {len(transactions)} transactions from PDF")
             return transactions
         except Exception as e:
@@ -182,6 +191,24 @@ Statement text:
             except ValueError:
                 continue
         return datetime.now().strftime("%Y-%m-%d")
+
+    # Map short/LLM-common category names to the canonical names already in
+    # the transactions table. Keeps historical aggregations consistent.
+    _CATEGORY_ALIASES = {
+        "Food": "Food & Dining",
+        "Shopping": "Shopping & Goods",
+        "Health": "Health & Fitness",
+        "Utilities": "Housing & Utilities",
+        "Entertainment": "Entertainment & Subscriptions",
+        "Transport": "Transportation",
+        "Travel": "Transportation",
+    }
+
+    def _normalize_category(self, raw: str | None) -> str:
+        if not raw:
+            return "Other"
+        c = str(raw).strip()
+        return self._CATEGORY_ALIASES.get(c, c)
 
     def _resolve_user_id(self, fallback: str | None) -> str:
         if fallback:
@@ -224,6 +251,24 @@ Statement text:
                 logger.error(f"Failed to insert transaction: {e}")
         logger.info(f"Inserted {inserted} transactions; skipped {skipped} duplicates")
         return inserted, skipped
+
+    def _update_bank_balance(self, transactions: list, user_id: str | None = None):
+        """Update user_profiles.bank_balance from the latest saldo in the statement."""
+        dated = [t for t in transactions if t.get("transaction_date") and t.get("saldo") is not None]
+        if not dated:
+            return
+        latest = max(dated, key=lambda t: t["transaction_date"])
+        balance = latest["saldo"]
+        balance_date = latest["transaction_date"]
+        user_id = self._resolve_user_id(user_id)
+        try:
+            self.db.table("user_profiles").update({
+                "bank_balance": balance,
+                "bank_balance_updated_at": balance_date,
+            }).eq("user_id", user_id).execute()
+            logger.info(f"Updated bank_balance to {balance} as of {balance_date}")
+        except Exception as e:
+            logger.error(f"Failed to update bank_balance: {e}")
 
 
 if __name__ == "__main__":

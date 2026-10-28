@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import NativeBridge from "./components/NativeBridge";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -12,6 +13,9 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  // Let content draw under the iPhone notch/home indicator so safe-area-inset-*
+  // (used below and in the app shell) has real values instead of 0.
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
@@ -30,6 +34,7 @@ export default function RootLayout({
           WebkitFontSmoothing: "antialiased",
         }}
       >
+        <NativeBridge />
         {children}
       </body>
     </html>

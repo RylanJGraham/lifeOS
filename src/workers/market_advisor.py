@@ -496,6 +496,46 @@ def propose_orders(sb, user_id: str, signals: list, positions_by_symbol: dict, c
 
 
 # ---------------------------------------------------------------------------
+# Step 6b: surface top actionable signals as Cockpit action items
+# ---------------------------------------------------------------------------
+
+def surface_advisor_actions(sb, user_id: str, signals: list):
+    """Insert the highest-confidence actionable signals into ai_insights so
+    they appear on the mobile Cockpit / frontend dashboard action queue."""
+    actionable = [
+        s for s in signals
+        if s.get("action") in ACTIONABLE and (s.get("confidence") or 0) >= ORDER_CONFIDENCE_THRESHOLD
+    ]
+    actionable.sort(key=lambda s: s.get("confidence") or 0, reverse=True)
+    for sig in actionable[:3]:
+        try:
+            text = f"{sig['action']} {sig['symbol']} — {sig.get('reasoning', 'Advisor swarm signal.')}"
+            if len(text) > 500:
+                text = text[:497] + "..."
+            existing = (
+                sb.table("ai_insights")
+                .select("id")
+                .eq("user_id", user_id)
+                .eq("domain", "advisor_action")
+                .ilike("insight_text", f"{sig['action']} {sig['symbol']}%")
+                .is_("resolved_at", "null")
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                continue
+            sb.table("ai_insights").insert({
+                "user_id": user_id,
+                "domain": "advisor_action",
+                "insight_text": text,
+                "action_item": f"Review in Capital → Intel. Confidence: {round((sig.get('confidence') or 0) * 100)}%",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to surface advisor action for {sig.get('symbol')}: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Step 7: portfolio snapshot, position history, daily report
 # ---------------------------------------------------------------------------
 
@@ -729,6 +769,7 @@ def run(user_id: str | None = None):
     signals = write_signals(sb, resolved_user_id, synthesized)
 
     propose_orders(sb, resolved_user_id, signals, positions_by_symbol, cycle_id)
+    surface_advisor_actions(sb, resolved_user_id, signals)
     orders_proposed = sum(1 for s in signals if s["action"] in ACTIONABLE and (s.get("confidence") or 0) >= ORDER_CONFIDENCE_THRESHOLD)
 
     try:

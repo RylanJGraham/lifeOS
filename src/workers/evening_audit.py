@@ -26,8 +26,8 @@ SUPABASE_URL = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL"
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 sb = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-from goal_checkin import send_telegram  # noqa: E402
-from action_items import insert_insight, has_insight_today  # noqa: E402
+from workers.goal_checkin import send_telegram  # noqa: E402
+from workers.action_items import insert_insight, has_insight_today  # noqa: E402
 
 ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 

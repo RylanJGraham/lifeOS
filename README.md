@@ -38,14 +38,19 @@ External systems:
 - **OpenRouter**: cloud LLM for routing, extraction, and reasoning (used for everything in production).
 - **Ollama**: optional local LLM; only `general` chat tries it, with OpenRouter fallback.
 - **IBKR**: broker read-only Flex Query sync for positions, trades, options, and dividends.
-- **Jarvis Advisor v3**: external cron advisor that reads/writes Supabase.
-- **Dead/legacy integrations**: Strava API, Xiaomi/Mi Fitness OAuth, Google Fit.
+- **Dead/legacy integrations**: Strava API, Xiaomi/Mi Fitness OAuth, Google Fit, Jarvis Advisor v3 (external advisor — removed; being replaced by an in-house `market_advisor.py`, see `docs/ARCHITECTURE.md` §3.3).
 
 ## Repository layout
 
 ```
 .
 ├── frontend/              # Next.js 14 + Tailwind dashboard
+│   ├── ios/               # Capacitor-generated Xcode project (superseded iOS wrapper)
+│   └── .env.ios.example   # Template for the Capacitor build's env (gitignored .env.ios)
+├── mobile/                # Native iOS app (Expo/React Native) — current mobile app
+│   ├── src/app/           # Expo Router screens
+│   ├── src/lib/           # Supabase/API clients, auth, push notifications
+│   └── .env.example       # Template for the app's env (gitignored .env)
 ├── src/                   # Python backend and workers
 │   ├── api.py             # FastAPI entry point
 │   ├── graph.py           # LangGraph orchestrator (routes to src/nodes/)
@@ -202,6 +207,26 @@ systemd + cron, Caddy HTTPS, no ngrok/Ollama); the dashboard deploys to Vercel.
 Full runbook: [`docs/deployment.md`](docs/deployment.md). Deploy new code with
 `ssh root@<droplet-ip> "bash /opt/lifeos/deploy/update.sh"`.
 
+## iOS app
+
+The primary iOS app is a native Expo/React Native rewrite at `mobile/` — own UI, same backend/Supabase contracts as the web dashboard, so chat and photo logging work the same way (`/api/chat`) without Telegram, plus push notifications (not possible from the web dashboard). See `docs/ARCHITECTURE.md` §3.7. Quick start:
+
+```
+cd mobile
+cp .env.example .env      # fill in real values — see §3.7
+npx expo run:ios          # builds + installs to the iOS Simulator (no Apple ID needed)
+npx expo run:ios --device "<name>"   # builds + installs to a physical iPhone (needs Xcode signing)
+```
+
+There is also an older Capacitor-based wrapper around the `frontend/` web code (`docs/ARCHITECTURE.md` §3.6) — superseded by the native app above, kept for reference:
+
+```
+cd frontend
+cp .env.ios.example .env.ios   # fill in real values — see §3.6
+npm run ios:sync               # static export + cap sync + pod install
+npm run ios:open               # opens Xcode — run to your device, or Archive for TestFlight
+```
+
 ## Investment / finance setup
 
 See detailed docs:
@@ -242,6 +267,9 @@ The backend exposes pipeline triggers via `/api/pipelines/{id}/run`. Current pip
 - `transaction-anomalies`
 - `price-refresh`
 - `pdf-statement-sync`
+- `goal-metric-sync`
+- `goal-checkin-daily`
+- `goal-checkin-weekly`
 - `open-banking-sync`
 
 You can also trigger a pipeline from the `/system` page in the dashboard.
@@ -256,7 +284,7 @@ You can also trigger a pipeline from the `/system` page in the dashboard.
 ## Testing
 
 ```powershell
-python -m py_compile src/graph.py src/nodes/*.py src/workers/ibkr_flex_sync.py src/pipeline_service.py src/workers/goal_checkin.py src/workers/transaction_anomalies.py src/workers/price_refresh.py src/workers/weekly_review.py src/workers/sync_health.py src/chat_threads.py src/db/supplements.py src/db/positions.py
+python -m py_compile src/graph.py src/nodes/*.py src/workers/ibkr_flex_sync.py src/pipeline_service.py src/workers/goal_checkin.py src/workers/transaction_anomalies.py src/workers/price_refresh.py src/workers/weekly_review.py src/workers/sync_health.py src/workers/goal_metric_sync.py src/chat_threads.py src/db/supplements.py src/db/positions.py
 
 cd frontend
 npm run build
@@ -265,5 +293,5 @@ npm run build
 ## Notes
 
 - Windows is the primary local runtime for scheduled tasks and the backend.
-- Jarvis v3 lives in a separate workspace/server and is not part of this repo.
-- Supabase is the single source of truth for positions; both LifeOS and Jarvis read/write it.
+- Jarvis v3 has been removed from the user's setup; see `docs/ARCHITECTURE.md` §3.3 for the in-house replacement plan (`market_advisor.py`, not yet built).
+- Supabase is the single source of truth for positions; LifeOS, the frontend, and the mobile app read/write it.

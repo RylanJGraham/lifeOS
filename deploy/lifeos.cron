@@ -10,29 +10,33 @@ LIFEOS=/opt/lifeos
 PY=/opt/lifeos/venv/bin/python
 LOG=/opt/lifeos/logs/cron.log
 
+# Helper to load env and run a pipeline
+RUN="cd $LIFEOS/src && set -a && . $LIFEOS/.env && set +a && $PY pipeline_service.py run"
+
 # Daily
-0 6 * * *   cd $LIFEOS/src && $PY pipeline_service.py run daily-analysis >> $LOG 2>&1
-0 7 * * *   cd $LIFEOS/src && $PY pipeline_service.py run morning-briefing >> $LOG 2>&1
-0 8 * * *   cd $LIFEOS/src && $PY pipeline_service.py run pdf-statement-sync >> $LOG 2>&1
-0 9 * * *   cd $LIFEOS/src && $PY pipeline_service.py run investment-notifier >> $LOG 2>&1
-0 10 * * *  cd $LIFEOS/src && $PY pipeline_service.py run price-refresh >> $LOG 2>&1
-0 15 * * *  cd $LIFEOS/src && $PY pipeline_service.py run fuel-pacing >> $LOG 2>&1
-0 20 * * *  cd $LIFEOS/src && $PY pipeline_service.py run goal-checkin-daily >> $LOG 2>&1
-15 21 * * * cd $LIFEOS/src && $PY pipeline_service.py run persona-insights >> $LOG 2>&1
-30 21 * * * cd $LIFEOS/src && $PY pipeline_service.py run evening-audit >> $LOG 2>&1
-30 23 * * * cd $LIFEOS/src && $PY pipeline_service.py run health-sync >> $LOG 2>&1
+0 6 * * *   $RUN daily-analysis >> $LOG 2>&1
+0 7 * * *   $RUN morning-briefing >> $LOG 2>&1
+0 8 * * *   $RUN pdf-statement-sync >> $LOG 2>&1
+30 8 * * *  $RUN goal-metric-sync >> $LOG 2>&1
+0 9 * * *   $RUN investment-notifier >> $LOG 2>&1
+0 10 * * *  $RUN price-refresh >> $LOG 2>&1
+0 15 * * *  $RUN fuel-pacing >> $LOG 2>&1
+0 20 * * *  $RUN goal-checkin-daily >> $LOG 2>&1
+15 21 * * * $RUN persona-insights >> $LOG 2>&1
+30 21 * * * $RUN evening-audit >> $LOG 2>&1
+30 23 * * * $RUN health-sync >> $LOG 2>&1
 
 # Weekdays (before the market advisor daily run)
-0 15 * * 1-5 cd $LIFEOS/src && $PY pipeline_service.py run ibkr-flex-sync >> $LOG 2>&1
+0 15 * * 1-5 $RUN ibkr-flex-sync >> $LOG 2>&1
 
 # Weekdays — market advisor (revalue + swarm signals), replaces Jarvis v3
-30 15 * * 1-5 cd $LIFEOS/src && $PY pipeline_service.py run market-advisor >> $LOG 2>&1
+30 15 * * 1-5 $RUN market-advisor >> $LOG 2>&1
 
 # Sunday
-0 10 * * 0  cd $LIFEOS/src && $PY pipeline_service.py run goal-checkin-weekly >> $LOG 2>&1
-0 10 * * 0  cd $LIFEOS/src && $PY pipeline_service.py run weekly-review >> $LOG 2>&1
-30 10 * * 0 cd $LIFEOS/src && $PY pipeline_service.py run transaction-anomalies >> $LOG 2>&1
-45 10 * * 0 cd $LIFEOS/src && $PY pipeline_service.py run open-banking-sync >> $LOG 2>&1
+0 10 * * 0  $RUN goal-checkin-weekly >> $LOG 2>&1
+0 10 * * 0  $RUN weekly-review >> $LOG 2>&1
+30 10 * * 0 $RUN transaction-anomalies >> $LOG 2>&1
+45 10 * * 0 $RUN open-banking-sync >> $LOG 2>&1
 
 # Monday
-0 6 * * 1   cd $LIFEOS/src && $PY pipeline_service.py run symptom-analysis >> $LOG 2>&1
+0 6 * * 1   $RUN symptom-analysis >> $LOG 2>&1

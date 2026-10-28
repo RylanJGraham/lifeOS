@@ -32,7 +32,7 @@ MICRO_KEYS = [
 
 LOOKUP_PROMPT = """You are a supplement nutrition database. The user will give you a supplement brand and name. Return ONLY a JSON object (no markdown, no prose) with the following fields:
 
-{
+{{
   "brand": "<brand name>",
   "product_name": "<full product name>",
   "description": "<short human-readable description, e.g. 'Supradyn Men Multivitamin'>",
@@ -41,19 +41,30 @@ LOOKUP_PROMPT = """You are a supplement nutrition database. The user will give y
   "protein": <number, grams>,
   "carbs": <number, grams>,
   "fat": <number, grams>,
-  "micronutrients": {
+  "micronutrients": {{
     "<key>_dv_pct": <number 0-100>,
     ...
-  },
+  }},
   "notes": "<optional short note about timing/absorption, e.g. 'take with fat for absorption'>"
-}
+}}
 
-Rules:
-- Use these micronutrient keys (suffix _dv_pct, value is % daily value 0-100, use 0 if unknown):
+CRITICAL RULES:
+- ALL nutrition values (calories, macros, micronutrients % DV) must be PER SINGLE SERVING (per 1 capsule/tablet/softgel), NOT per daily dose. If the label says "3 capsules daily = 300mg magnesium", then 1 capsule = 100mg magnesium = 27% DV (100/375).
+- The serving_size field should be "1 capsule" or "1 tablet" etc. — the smallest unit.
+- % DV is calculated using EU NRV (Nutrient Reference Values) per single serving:
+  vitamin_a=800mcg, vitamin_c=80mg, vitamin_d=5mcg, vitamin_e=12mg, vitamin_k=75mcg,
+  vitamin_b1=1.1mg, vitamin_b2=1.4mg, vitamin_b3=16mg, vitamin_b6=1.4mg, vitamin_b12=2.5mcg,
+  biotin=50mcg, folate=200mcg, pantothenic_acid=6mg, choline=425mg,
+  calcium=800mg, iron=14mg, magnesium=375mg, zinc=10mg, selenium=55mcg,
+  iodine=150mcg, copper=1mg, manganese=2mg, phosphorus=700mg, potassium=2000mg,
+  omega_3=250mg (EPA+DHA)
+- Example: if 1 capsule has 100mg magnesium, magnesium_dv_pct = round(100/375*100) = 27
+- Example: if 1 tablet has 800mcg vitamin A, vitamin_a_dv_pct = 100
+- Use these micronutrient keys (suffix _dv_pct, value is % DV 0-100, use 0 if the product does not contain it):
   {micro_keys}
 - If the product is a multivitamin, fill each vitamin/mineral it contains.
 - If it's a single nutrient (e.g. magnesium), fill that one and leave others at 0.
-- Calories/macros are per serving. Most supplements have 0-20 calories.
+- Calories/macros are per single serving. Most supplements have 0-20 calories.
 - Be accurate. If you don't know the brand, say so in 'notes' and provide best-guess nutrition for the named supplement type.
 - Return ONLY the JSON object, nothing else."""
 
@@ -75,7 +86,7 @@ def lookup_supplement(brand: str, name: str) -> dict[str, Any]:
     calories, protein, carbs, fat, micronutrients, notes.
     Raises RuntimeError if the LLM is unavailable or returns invalid JSON.
     """
-    from nodes.shared import llm_cloud, llm_fast
+    from nodes.shared import llm_cloud, llm_fast, web_search
 
     llm = llm_cloud or llm_fast
     if not llm:
@@ -85,7 +96,18 @@ def lookup_supplement(brand: str, name: str) -> dict[str, Any]:
         "{micro_keys}",
         ", ".join(MICRO_KEYS),
     )
-    user_msg = f"Brand: {brand}\nSupplement: {name}"
+
+    # Web search for the actual product label so the LLM has real data
+    search_query = f"{brand} {name} supplement nutrition facts per capsule serving size magnesium"
+    web_context = ""
+    try:
+        search_result = web_search(search_query)
+        if search_result and len(search_result) > 50:
+            web_context = f"\n\nWeb search results for this product:\n{search_result[:3000]}\n"
+    except Exception as e:
+        logger.warning(f"Web search failed for supplement lookup: {e}")
+
+    user_msg = f"Brand: {brand}\nSupplement: {name}{web_context}"
 
     try:
         resp = llm.invoke([
@@ -224,6 +246,7 @@ def add_supplement(supabase, item: dict[str, Any], time_of_day: str, hour: int) 
         "product_name": item.get("product_name", ""),
         "description": item.get("description", ""),
         "serving_size": item.get("serving_size", ""),
+        "servings_per_dose": item.get("servings_per_dose", 1),
         "calories": item.get("calories", 0),
         "protein": item.get("protein", 0),
         "carbs": item.get("carbs", 0),

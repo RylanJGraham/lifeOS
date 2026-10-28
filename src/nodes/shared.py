@@ -25,9 +25,11 @@ except Exception as e:
 
 
 class GraphState(TypedDict):
-    input_type: str  # "text", "image", "pdf"
-    content: str  # raw text, base64 image, or pdf text
+    input_type: str  # "text", "image", "multi_image", "pdf"
+    content: str  # raw text, base64 image, JSON list of images, or pdf text
+    images: Optional[list[str]]  # one or more base64 images (used by vision nodes)
     response: Optional[str]
+    ui: Optional[dict]  # optional structured block for UI clients — see nodes/ui_blocks.py
     caption: Optional[str]  # optional user text accompanying an image
     date_override: Optional[str]  # YYYY-MM-DD override for catch-up screenshots
     user_id: Optional[str]  # Supabase user id; ZERO_UUID fallback is allowed
@@ -578,64 +580,6 @@ def _cache_muscle_group(supabase_client, user_id: str, exercise_name: str, group
         ).execute()
     except Exception as e:
         logger.warning(f"exercise_muscles cache write failed: {e}")
-
-
-def _get_known_items(supabase_client, user_id) -> list:
-    """Fetch the user's saved habit foods/supplements (known_items table)."""
-    try:
-        res = _supabase_execute_with_timeout(
-            supabase_client.table("known_items").select("*").eq("user_id", user_id)
-        )
-        return res.data or []
-    except Exception:
-        return []
-
-
-def _get_frequent_items(supabase_client, user_id, limit=20) -> list:
-    """Fetch the user's most frequently logged known items."""
-    try:
-        res = _supabase_execute_with_timeout(
-            supabase_client.table("known_items")
-            .select("*")
-            .eq("user_id", user_id)
-            .order("use_count", desc=True)
-            .order("last_used_at", desc=True)
-            .limit(limit)
-        )
-        return res.data or []
-    except Exception:
-        return []
-
-
-def _match_known_item(text: str, items: list):
-    """Return the known item whose name/alias appears in the user's text.
-    Longest matching name wins ('magnesium bisglycinate' beats 'magnesium')."""
-    t = text.lower()
-    best, best_len = None, 0
-    for item in items:
-        names = [item.get("name", "")] + (item.get("aliases") or [])
-        for n in names:
-            n = (n or "").lower().strip()
-            if n and n in t and len(n) > best_len:
-                best, best_len = item, len(n)
-    return best
-
-
-def _match_frequent_item_shortcut(text: str, items: list):
-    """Short-circuit a frequent/saved item if the text exactly equals or starts
-    with one of the item names/aliases. Returns the matched item or None."""
-    t = text.strip().lower()
-    if not t:
-        return None
-    for item in items:
-        names = [item.get("name", "")] + (item.get("aliases") or [])
-        for n in names:
-            n = (n or "").lower().strip()
-            if not n:
-                continue
-            if t == n or t.startswith(n):
-                return item
-    return None
 
 
 def _match_workout_template(supabase_client, user_id: str, text: str):

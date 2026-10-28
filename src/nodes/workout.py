@@ -33,13 +33,16 @@ def handle_workout(state: GraphState) -> GraphState:
     Today is {datetime.now().astimezone().strftime("%A, %Y-%m-%d")}. If the user says when they did the workout, capture it EXACTLY as said (e.g. "monday", "yesterday", "last friday", or an explicit "2026-07-13") — do NOT convert it yourself.
     Also extract any dynamic modifications:
     1. "overrides": progressive overload bumps to existing exercises, including "new_reps" if they specify volume instead of weight (e.g. bodyweight exercises).
+       The user may state weight two ways — capture whichever they used, do NOT convert between them yourself (you don't know their current logged weight):
+       - An absolute number ("bench is 85kg now", "put incline curls at 35") → "new_weight".
+       - A relative change ("went up 3kg on bench", "added 5lbs", "down 2kg from last time") → "weight_delta" (signed: +3, -2). Never guess an absolute value for a relative phrase.
     2. "skipped_exercises": exercises they skipped today.
     3. "added_exercises": brand new exercises they added to the routine today.
     Return ONLY a valid JSON object:
     {{
       "workout_name": "the extracted workout template name",
       "workout_date": "the raw day reference exactly as the user said it, or null if not mentioned",
-      "overrides": [ {{"exercise_name": "incline curls", "new_weight": 35, "new_reps": 12}} ],
+      "overrides": [ {{"exercise_name": "incline curls", "new_weight": 35, "new_reps": 12}}, {{"exercise_name": "bench press", "weight_delta": 3}} ],
       "skipped_exercises": [ "bench press" ],
       "added_exercises": [ {{"exercise_name": "crunches", "sets": 3, "weight": 0, "reps": 50}} ]
     }}
@@ -109,15 +112,22 @@ def handle_workout(state: GraphState) -> GraphState:
                         # Check for overrides
                         for ov in overrides:
                             if ov.get("exercise_name") and ov.get("exercise_name").lower() in ex_name_lower:
-                                if "new_weight" in ov:
+                                weight_changed = False
+                                if "weight_delta" in ov:
+                                    # Relative phrase ("went up 3kg") — resolve against the
+                                    # template's current weight, which the LLM was never shown.
+                                    target_weight = (ex.get("weight") or 0) + ov.get("weight_delta")
+                                    weight_changed = True
+                                elif "new_weight" in ov:
                                     target_weight = ov.get("new_weight")
+                                    weight_changed = True
                                 if "new_reps" in ov:
                                     target_reps = ov.get("new_reps")
-                                
+
                                 supabase.table("workout_template_exercises").update({"weight": target_weight, "reps": target_reps}).eq("id", ex.get("id")).execute()
-                                
+
                                 bump_str = []
-                                if "new_weight" in ov: bump_str.append(f"{target_weight}lbs")
+                                if weight_changed: bump_str.append(f"{target_weight}lbs")
                                 if "new_reps" in ov: bump_str.append(f"{target_reps} reps")
                                 bumped_messages.append(f"{ex.get('exercise_name')} to {' '.join(bump_str)}")
                                 break

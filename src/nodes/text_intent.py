@@ -8,6 +8,7 @@ from nodes.trade import handle_trade
 from nodes.workout import handle_workout
 from nodes.weight import handle_weight
 from nodes.general import handle_general
+from nodes.query import handle_query_text
 
 
 def text_intent_node(state: GraphState) -> GraphState:
@@ -31,19 +32,25 @@ def text_intent_node(state: GraphState) -> GraphState:
     Is it a correction or removal of previously logged food (e.g. "remove the toast from monday", "for august 10th, instead of the salad it was tacos")? -> 'nutrition'
     Is it a body-weight log (e.g. "weighed 68.5 this morning", "weight: 68.2kg")? -> 'weight'
     Is it a workout log (logging a completed exercise routine, gym session, or workout template)? -> 'workout'
+    Is it a QUESTION about data that already exists — sleep, what/how much they've eaten, macros vs targets,
+    training load, cash/bank balance, portfolio, or goal progress (e.g. "how did I sleep", "what did I eat today",
+    "what's my macros", "how's my training load", "portfolio summary")? -> 'query'
     Or is it just general conversation? -> 'general'
 
     Workout logs can be terse and use gym slang, e.g.: "did push today", "pull session yesterday",
     "smashed legs this morning", "did pull on tuesday" — these are all 'workout', NOT 'general'.
 
-    Respond with ONLY ONE WORD: 'finance', 'trade', 'nutrition', 'workout', or 'general'.
+    A QUESTION asking about existing data is 'query', NOT 'general' — 'general' is only for chat that
+    isn't asking about their own logged data (e.g. small talk, advice unrelated to their numbers).
+
+    Respond with ONLY ONE WORD: 'finance', 'trade', 'nutrition', 'weight', 'workout', 'query', or 'general'.
 
     Text: "{text}"
     """
-    
+
     try:
         intent = llm_fast.invoke([HumanMessage(content=prompt)]).content.strip().lower()
-        
+
         if "trade" in intent:
             handle_trade(state)
         elif "finance" in intent:
@@ -54,6 +61,8 @@ def text_intent_node(state: GraphState) -> GraphState:
             handle_weight(state)
         elif "workout" in intent:
             handle_workout(state)
+        elif "query" in intent:
+            handle_query_text(state)
         else:
             handle_general(state)
                 

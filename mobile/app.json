@@ -1,0 +1,62 @@
+{
+  "expo": {
+    "name": "Human Engine OS",
+    "slug": "human-engine-os",
+    "scheme": "humanengineos",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#050810",
+    "ios": {
+      "bundleIdentifier": "com.humanengine.lifeos",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Human Engine OS uses your camera to log meals, workouts, and health data via chat.",
+        "NSPhotoLibraryUsageDescription": "Human Engine OS uses your photo library to attach images to chat for logging meals, workouts, and health data.",
+        "UIFileSharingEnabled": true,
+        "LSSupportsOpeningDocumentsInPlace": true
+      }
+    },
+    "android": {
+      "package": "com.humanengine.lifeos",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      "expo-secure-store",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#050810",
+          "image": "./assets/splash.png",
+          "imageWidth": 200,
+          "enableFullScreenImage_legacy": true,
+          "dark": {
+            "backgroundColor": "#050810",
+            "image": "./assets/splash.png"
+          }
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Human Engine OS uses your photo library to attach images to chat.",
+          "cameraPermission": "Human Engine OS uses your camera to log meals, workouts, and health data via chat."
+        }
+      ],
+      "expo-font",
+      "expo-splash-screen"
+    ]
+  }
+}

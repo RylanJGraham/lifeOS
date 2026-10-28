@@ -5,13 +5,23 @@ from nodes.shared import GraphState, logger, llm_fast
 
 def image_dispatcher_node(state: GraphState) -> GraphState:
     logger.info("Executing Image Dispatcher Node")
-    base64_image = state["content"]
+    images = state.get("images") or []
+    if not images:
+        images = [state["content"]] if state.get("content") else []
     caption = state.get("caption")
 
     if not llm_fast:
         state["response"] = "OpenRouter API Key not configured."
         return state
 
+    # For multiple images, default to nutrition (most common multi-image use
+    # case is a meal from several angles). Single-image classification still
+    # works as before.
+    if len(images) > 1:
+        state["input_type"] = "nutrition_image"
+        return state
+
+    base64_image = images[0] if images else state.get("content", "")
     caption_hint = f'\nThe user also says about this image: "{caption}"' if caption else ""
     prompt = [
         HumanMessage(
@@ -24,18 +34,18 @@ def image_dispatcher_node(state: GraphState) -> GraphState:
             ]
         )
     ]
-    
+
     try:
         classification = llm_fast.invoke(prompt).content.strip().lower()
         logger.info(f"Image classification: {classification}")
-        
+
         if "health" in classification:
             state["input_type"] = "health_image"
         else:
             state["input_type"] = "nutrition_image"
-            
+
     except Exception as e:
         logger.error(f"Image dispatch error: {e}")
         state["input_type"] = "nutrition_image"  # fallback
-        
+
     return state

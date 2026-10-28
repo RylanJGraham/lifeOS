@@ -12,7 +12,7 @@ def route_input(state: GraphState) -> str:
     input_type = state.get("input_type")
     if input_type == "pdf":
         return "finance_node"
-    elif input_type == "image":
+    elif input_type in ("image", "multi_image"):
         return "image_dispatcher_node"
     else:
         return "text_intent_node"

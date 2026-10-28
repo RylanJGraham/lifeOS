@@ -116,8 +116,8 @@ def _run_investment_notifier():
 
 
 def _run_morning_briefing():
-    from workers.morning_briefing import generate_and_send_briefing
-    asyncio.run(generate_and_send_briefing())
+    from workers.morning_briefing import main as run_morning_briefing
+    run_morning_briefing()
 
 
 def _run_ibkr_flex_sync():
@@ -184,6 +184,11 @@ def _run_pdf_statement_sync():
     from finance.pdf_ingestion import PDFTransactionIngester
     ingester = PDFTransactionIngester()
     ingester.process_directory()
+
+
+def _run_goal_metric_sync():
+    from workers.goal_metric_sync import run_sync
+    run_sync()
 
 
 PIPELINES = {
@@ -288,6 +293,12 @@ PIPELINES = {
         "description": "Send weekly financial goal progress / green-light updates via Telegram.",
         "schedule": "Sunday at 10:00 AM",
         "runner": _run_goal_checkin_weekly,
+    },
+    "goal-metric-sync": {
+        "name": "Goal Metric Sync",
+        "description": "Update active financial goals' current_value from bank_balance, net_worth, or portfolio_value.",
+        "schedule": "Daily at 8:30 AM",
+        "runner": _run_goal_metric_sync,
     },
 }
 

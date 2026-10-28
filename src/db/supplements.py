@@ -1,12 +1,10 @@
 """
 Auto-supplement logging.
 
-The user takes the same supplements every day:
-  - Morning (with breakfast): Supradyn Men multivitamin + Omega-3 D3 K2
-  - Evening (after dinner): Magnesium Bisglycinate
-
-When a meal is logged we use the meal_type / meal_time to decide which
-supplements to add for that day, idempotently (skip if already logged).
+Supplements are configured interactively in the mobile app under Bio → Supplements.
+Each item has a description, time_of_day (morning/evening/anytime), hour,
+and macros/micronutrients. When a meal is logged we add the matching
+supplements for that day, idempotently (skip if already logged).
 """
 from datetime import datetime, time
 from typing import Optional
@@ -15,60 +13,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 ZERO_UUID = "00000000-0000-0000-0000-000000000000"
-
-MORNING_SUPPS = [
-    {
-        "description": "Supradyn Men Multivitamin",
-        "calories": 0,
-        "protein": 0,
-        "carbs": 0,
-        "fat": 0,
-        "micronutrients": {
-            "vitamin_a_dv_pct": 100,
-            "vitamin_c_dv_pct": 100,
-            "vitamin_d_dv_pct": 100,
-            "vitamin_e_dv_pct": 100,
-            "vitamin_k_dv_pct": 100,
-            "vitamin_b6_dv_pct": 100,
-            "vitamin_b12_dv_pct": 100,
-            "biotin_dv_pct": 100,
-            "folate_dv_pct": 100,
-            "calcium_dv_pct": 15,
-            "iron_dv_pct": 100,
-            "magnesium_dv_pct": 25,
-            "zinc_dv_pct": 100,
-            "selenium_dv_pct": 100,
-            "iodine_dv_pct": 100,
-            "copper_dv_pct": 100,
-            "manganese_dv_pct": 100,
-        },
-    },
-    {
-        "description": "Omega-3 D3 K2 Supplement",
-        "calories": 20,
-        "protein": 0,
-        "carbs": 0,
-        "fat": 2,
-        "micronutrients": {
-            "omega_3_dv_pct": 100,
-            "vitamin_d_dv_pct": 100,
-            "vitamin_k_dv_pct": 100,
-        },
-    },
-]
-
-EVENING_SUPPS = [
-    {
-        "description": "Magnesium Bisglycinate",
-        "calories": 0,
-        "protein": 0,
-        "carbs": 0,
-        "fat": 0,
-        "micronutrients": {
-            "magnesium_dv_pct": 50,
-        },
-    },
-]
 
 
 def _normalize_user_id(supabase) -> str:
@@ -92,7 +36,7 @@ def _meal_type_from_time(meal_time: datetime) -> Optional[str]:
         return "breakfast"
     if 11 <= h < 15:
         return "lunch"
-    if 17 <= h < 23:
+    if 15 <= h < 23:
         return "dinner"
     return None
 
@@ -101,8 +45,7 @@ def _already_logged(supabase, user_id: str, day: str, description: str) -> bool:
     """Detect whether a supplement of this category is already logged for the day.
 
     We match by category keywords rather than exact name because the user may
-    log the same supplement under different descriptions (e.g. "Vitamin D3 K2",
-    "Fish Oil", or "Omega-3 D3 K2 Supplement").
+    log the same supplement under different descriptions.
     """
     category_keywords = {
         "Supradyn Men Multivitamin": ["multivitamin", "supradyn", "vitan", "vitans"],
@@ -138,11 +81,11 @@ def _insert_supplement(supabase, user_id: str, day: str, supp: dict, hour: int):
             "user_id": user_id,
             "meal_time": meal_time.isoformat(),
             "description": supp["description"],
-            "calories": supp["calories"],
-            "protein": supp["protein"],
-            "carbs": supp["carbs"],
-            "fat": supp["fat"],
-            "micronutrients": supp["micronutrients"],
+            "calories": supp.get("calories", 0),
+            "protein": supp.get("protein", 0),
+            "carbs": supp.get("carbs", 0),
+            "fat": supp.get("fat", 0),
+            "micronutrients": supp.get("micronutrients", {}),
             "caffeine_mg": 0,
         }).execute()
         logger.info(f"Auto-logged supplement {supp['description']} for {day}")
@@ -152,93 +95,26 @@ def _insert_supplement(supabase, user_id: str, day: str, supp: dict, hour: int):
         return False
 
 
-def _normalize_item(item: dict) -> dict:
-    """Ensure every supplement item carries the expected macro fields."""
-    if not item or not isinstance(item, dict):
-        return None
-    return {
-        "description": str(item.get("description") or "").strip(),
-        "calories": int(item.get("calories", 0) or 0),
-        "protein": int(item.get("protein", 0) or 0),
-        "carbs": int(item.get("carbs", 0) or 0),
-        "fat": int(item.get("fat", 0) or 0),
-        "micronutrients": item.get("micronutrients") if isinstance(item.get("micronutrients"), dict) else {},
-    }
-
-
-def _normalize_supplement_policy(policy: dict) -> dict:
-    """Return a fully populated policy dict, filling missing fields from defaults."""
-    if not policy or not isinstance(policy, dict):
-        policy = {}
-    defaults = {
-        "enabled": True,
-        "morning": MORNING_SUPPS,
-        "evening": EVENING_SUPPS,
-        "morning_hour": 8,
-        "evening_hour": 21,
-        "breakfast_trigger": True,
-        "dinner_trigger": True,
-    }
-    merged = {**defaults, **policy}
-
-    def norm_list(key: str):
-        arr = merged.get(key)
-        if not isinstance(arr, list):
-            arr = defaults[key]
-        return [it for it in (_normalize_item(it) for it in arr) if it and it["description"]]
-
-    return {
-        "enabled": bool(merged.get("enabled", True)),
-        "morning": norm_list("morning"),
-        "evening": norm_list("evening"),
-        "morning_hour": int(merged.get("morning_hour", defaults["morning_hour"]) or defaults["morning_hour"]),
-        "evening_hour": int(merged.get("evening_hour", defaults["evening_hour"]) or defaults["evening_hour"]),
-        "breakfast_trigger": bool(merged.get("breakfast_trigger", defaults["breakfast_trigger"])),
-        "dinner_trigger": bool(merged.get("dinner_trigger", defaults["dinner_trigger"])),
-    }
-
-
 def _load_supplement_policy(supabase, user_id: str) -> dict:
     """Load the user's supplement policy from user_profiles.supplements.
-    Falls back to hardcoded defaults if missing.
 
-    Supports two formats:
-    - New: { enabled, items: [{ description, time_of_day, hour, ... }] }
-    - Legacy: { enabled, morning: [...], evening: [...], morning_hour, evening_hour }
+    Expected format: { enabled: bool, items: [{ description, time_of_day, hour, ... }] }
     """
     try:
         res = supabase.table("user_profiles").select("supplements").eq("user_id", user_id).limit(1).execute()
         if res.data and res.data[0].get("supplements"):
             policy = res.data[0]["supplements"]
-            # New items format
-            if "items" in policy and isinstance(policy["items"], list):
+            if isinstance(policy, dict) and "items" in policy and isinstance(policy["items"], list):
                 return {
                     "enabled": bool(policy.get("enabled", True)),
-                    "items": policy["items"],
+                    "items": [it for it in policy["items"] if it.get("description")],
                 }
-            # Legacy morning/evening format
-            normalized = _normalize_supplement_policy(policy)
-            if normalized["enabled"] and (normalized["morning"] or normalized["evening"]):
-                return normalized
     except Exception as e:
         logger.warning(f"Failed to load supplement policy: {e}")
-    return _normalize_supplement_policy({})
+    return {"enabled": True, "items": []}
 
 
-def _policy_items(policy: dict) -> list[tuple[dict, int]]:
-    """Return [(supplement, hour)] pairs from either policy format."""
-    if "items" in policy:
-        return [(item, int(item.get("hour", 8))) for item in policy["items"] if item.get("description")]
-    # Legacy format
-    result = []
-    for supp in policy.get("morning", []):
-        result.append((supp, policy.get("morning_hour", 8)))
-    for supp in policy.get("evening", []):
-        result.append((supp, policy.get("evening_hour", 21)))
-    return result
-
-
-def _item_triggers_at(supp: dict, hour: int, meal_type: str) -> bool:
+def _item_triggers_at(supp: dict, meal_type: str) -> bool:
     """Whether a supplement should be logged when a meal of this type is logged."""
     tod = supp.get("time_of_day", "")
     if tod == "anytime":
@@ -246,11 +122,6 @@ def _item_triggers_at(supp: dict, hour: int, meal_type: str) -> bool:
     if tod == "morning":
         return meal_type == "breakfast"
     if tod == "evening":
-        return meal_type == "dinner"
-    # Legacy: no time_of_day field — use hour-based heuristic
-    if 4 <= hour < 12:
-        return meal_type == "breakfast"
-    if 17 <= hour < 23:
         return meal_type == "dinner"
     return False
 
@@ -262,7 +133,7 @@ def ensure_supplements_for_meal(
     meal_type: Optional[str] = None,
 ) -> list[str]:
     """
-    After a meal is logged, ensure the day's mandatory supplements are present.
+    After a meal is logged, ensure the day's matching supplements are present.
     Returns a list of descriptions that were added.
     """
     if not supabase:
@@ -278,19 +149,20 @@ def ensure_supplements_for_meal(
         return []
     added = []
 
-    for supp, hour in _policy_items(policy):
-        if not _item_triggers_at(supp, hour, effective_type):
+    for item in policy.get("items", []):
+        if not _item_triggers_at(item, effective_type):
             continue
-        if not _already_logged(supabase, user_id, day, supp["description"]):
-            if _insert_supplement(supabase, user_id, day, supp, hour):
-                added.append(supp["description"])
+        if not _already_logged(supabase, user_id, day, item["description"]):
+            hour = int(item.get("hour", 8))
+            if _insert_supplement(supabase, user_id, day, item, hour):
+                added.append(item["description"])
 
     return added
 
 
 def backfill_supplements(supabase, start_date: str, end_date: str) -> dict:
     """
-    Backfill mandatory supplements for all days in [start_date, end_date]
+    Backfill matching supplements for all days in [start_date, end_date]
     that already have meals logged. Returns a summary of added rows.
     """
     if not supabase:
@@ -332,12 +204,13 @@ def backfill_supplements(supabase, start_date: str, end_date: str) -> dict:
         if mt:
             days_with_meals.setdefault(day, set()).add(mt)
 
-    for supp, hour in _policy_items(policy):
+    for item in policy.get("items", []):
+        hour = int(item.get("hour", 8))
         for day, meal_types in days_with_meals.items():
-            if not any(_item_triggers_at(supp, hour, mt) for mt in meal_types):
+            if not any(_item_triggers_at(item, mt) for mt in meal_types):
                 continue
-            if not _already_logged(supabase, user_id, day, supp["description"]):
-                if _insert_supplement(supabase, user_id, day, supp, hour):
+            if not _already_logged(supabase, user_id, day, item["description"]):
+                if _insert_supplement(supabase, user_id, day, item, hour):
                     added_total += 1
 
     return {"added": added_total, "errors": errors}

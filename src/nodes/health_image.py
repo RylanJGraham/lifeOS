@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from langchain_core.messages import HumanMessage
 
@@ -14,19 +14,23 @@ from nodes.shared import (
 
 def health_image_node(state: GraphState) -> GraphState:
     logger.info("Executing Health Image Node")
-    base64_image = state["content"]
+    images = state.get("images") or []
+    if not images:
+        images = [state["content"]] if state.get("content") else []
     caption = state.get("caption")
-    
+
     if not llm_cloud:
         state["response"] = "Error: OpenRouter API key not configured for Vision tasks."
         return state
-        
+
+    intro_text = "Analyze this health/fitness app screenshot (e.g. Mi Fitness, Apple Health)." if len(images) == 1 else "Analyze these health/fitness app screenshots (e.g. Mi Fitness, Apple Health)."
+
     prompt = [
         HumanMessage(
             content=[
                 {
                     "type": "text",
-                    "text": """Analyze this health/fitness app screenshot (e.g. Mi Fitness, Apple Health).
+                    "text": intro_text + """
 
 First decide the screenshot type:
 - "workout": a single workout/activity summary (shows one session with duration, calories, avg/max heart rate, HR zones, sport name like "Strength Training" or "Outdoor Running")
@@ -84,7 +88,7 @@ Return ONLY a valid JSON object (null for values not found):
                     (f'The user says about this image: "{caption}". If they say when it was (e.g. "on thursday", "yesterday", "last monday"), that overrides the screenshot date — resolve it relative to today and use it as "date". If they name the workout type, use it as the workout name.' if caption else "")
                 )
                 },
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                *[{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}} for img in images]
             ]
         )
     ]
@@ -324,9 +328,81 @@ Return ONLY a valid JSON object (null for values not found):
                     except Exception as e:
                         logger.warning(f"Failed to resolve evening_audit action item: {e}")
 
+                # ── Handle "duplicate for X date" / "same for the Nth" captions ──
+                # The user can say things like "duplicate it for the 27th as well",
+                # "do the same for the 27th", "also for oct 27", "copy to yesterday".
+                # We parse additional dates from the caption and insert copies.
+                additional_dates: list[str] = []
+                if caption and supabase:
+                    today = datetime.now().date()
+                    # "the 27th", "the 27", "for 27th"
+                    for m in re.finditer(r'\b(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b', caption.lower()):
+                        day = int(m.group(1))
+                        if 1 <= day <= 31:
+                            # Try current month first, then previous month
+                            for ref_date in [today, today.replace(day=1) - timedelta(days=1)]:
+                                try:
+                                    candidate = ref_date.replace(day=day)
+                                    if (today - candidate).days <= 45 and candidate <= today:
+                                        additional_dates.append(candidate.isoformat())
+                                        break
+                                except ValueError:
+                                    continue
+                    # "oct 27", "october 27", "27 oct"
+                    for m in re.finditer(r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b', caption.lower()):
+                        day = int(m.group(1))
+                        month_map = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12}
+                        month = month_map[m.group(2)]
+                        try:
+                            candidate = today.replace(month=month, day=day)
+                            if (today - candidate).days <= 45 and candidate <= today:
+                                ds = candidate.isoformat()
+                                if ds not in additional_dates and ds != date_str:
+                                    additional_dates.append(ds)
+                        except ValueError:
+                            pass
+                    for m in re.finditer(r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?\b', caption.lower()):
+                        month_map = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12}
+                        month = month_map[m.group(1)]
+                        day = int(m.group(2))
+                        try:
+                            candidate = today.replace(month=month, day=day)
+                            if (today - candidate).days <= 45 and candidate <= today:
+                                ds = candidate.isoformat()
+                                if ds not in additional_dates and ds != date_str:
+                                    additional_dates.append(ds)
+                        except ValueError:
+                            pass
+                    # "yesterday" → today - 1
+                    if re.search(r'\byesterday\b', caption.lower()):
+                        ds = (today - timedelta(days=1)).isoformat()
+                        if ds not in additional_dates and ds != date_str:
+                            additional_dates.append(ds)
+
+                # Filter out the primary date itself and already-logged dates
+                additional_dates = [d for d in additional_dates if d != date_str]
+
+                duplicated_count = 0
+                for dup_date in additional_dates:
+                    try:
+                        # Check if already exists
+                        dup_check = supabase.table("health_metrics").select("id").eq("user_id", user_id).eq("recorded_at", dup_date).execute()
+                        if dup_check.data:
+                            logger.info(f"Duplicate date {dup_date} already has a row — skipping")
+                            continue
+                        dup_payload = {k: v for k, v in payload.items() if v is not None}
+                        dup_payload["recorded_at"] = dup_date
+                        dup_payload["notes"] = f"Health screenshot import (duplicated from {date_str}):\n" + "\n".join(notes_list)
+                        supabase.table("health_metrics").insert(dup_payload).execute()
+                        duplicated_count += 1
+                        logger.info(f"Duplicated health metrics to {dup_date}")
+                    except Exception as e:
+                        logger.warning(f"Failed to duplicate metrics to {dup_date}: {e}")
+
             # Format success message
             parsed_summary = ", ".join(notes_list) if notes_list else "no metrics found"
-            state["response"] = f"Processed health screenshot. Logged metrics: {parsed_summary}."
+            dup_note = f" Also duplicated to {', '.join(additional_dates[:3])}." if additional_dates else ""
+            state["response"] = f"Processed health screenshot. Logged metrics: {parsed_summary}.{dup_note}"
         else:
             state["response"] = "Could not extract structured health metrics from the screenshot."
     except Exception as e:
