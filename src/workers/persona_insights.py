@@ -31,7 +31,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 sb = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 from workers.goal_checkin import send_telegram  # noqa: E402
-from services.persona_service import CONTEXT_BUILDERS, PERSONAS, ZERO_UUID  # noqa: E402
+from persona_service import CONTEXT_BUILDERS, PERSONAS, ZERO_UUID  # noqa: E402
 
 CADENCE_PERSONAS = {
     "daily": ["doctor", "nutritionist", "pt"],
