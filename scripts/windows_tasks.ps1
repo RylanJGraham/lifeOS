@@ -30,10 +30,6 @@ function Register-LifeOSTask {
 }
 
 # Daily pipelines
-Register-LifeOSTask -Name "LifeOS-DailyAnalysis" -PipelineId "daily-analysis" `
-    -Description "Generate health/wealth insights with the local Ollama model" `
-    -Trigger (New-ScheduledTaskTrigger -Daily -At 6:00AM)
-
 Register-LifeOSTask -Name "LifeOS-MorningBriefing" -PipelineId "morning-briefing" `
     -Description "Generate and send the daily morning briefing to Telegram" `
     -Trigger (New-ScheduledTaskTrigger -Daily -At 7:00AM)

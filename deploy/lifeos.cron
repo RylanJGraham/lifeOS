@@ -14,7 +14,6 @@ LOG=/opt/lifeos/logs/cron.log
 RUN="cd $LIFEOS/src && set -a && . $LIFEOS/.env && set +a && $PY pipeline_service.py run"
 
 # Daily
-0 6 * * *   $RUN daily-analysis >> $LOG 2>&1
 0 7 * * *   $RUN morning-briefing >> $LOG 2>&1
 0 8 * * *   $RUN pdf-statement-sync >> $LOG 2>&1
 30 8 * * *  $RUN goal-metric-sync >> $LOG 2>&1

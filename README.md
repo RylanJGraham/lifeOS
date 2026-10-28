@@ -255,7 +255,6 @@ Quick summary:
 The backend exposes pipeline triggers via `/api/pipelines/{id}/run`. Current pipelines:
 
 - `health-sync`
-- `daily-analysis`
 - `investment-notifier`
 - `morning-briefing`
 - `ibkr-flex-sync`

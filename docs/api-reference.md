@@ -147,7 +147,6 @@ Lists available data-ingest pipelines and their run status.
   - `xiaomi-sleep-sync`
   - `mifitness-sync`
   - `health-sync`
-  - `daily-analysis`
   - `investment-notifier`
   - `morning-briefing`
   - `ibkr-flex-sync`

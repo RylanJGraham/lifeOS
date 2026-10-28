@@ -101,11 +101,6 @@ def _run_health_sync():
     run_health_sync()
 
 
-def _run_daily_analysis():
-    from workers.daily_analyzer import run_daily_analysis
-    run_daily_analysis()
-
-
 def _run_investment_notifier():
     # The one-shot logic lives in the script's __main__ (NOTIFIER_MODE=once).
     env = dict(os.environ, NOTIFIER_MODE="once")
@@ -197,12 +192,6 @@ PIPELINES = {
         "description": "Nightly aggregate of health metrics, meals, and workouts; writes a health summary to ai_insights.",
         "schedule": "Daily at 11:30 PM",
         "runner": _run_health_sync,
-    },
-    "daily-analysis": {
-        "name": "Daily AI Analysis",
-        "description": "Generate health/wealth insights with the OpenRouter cloud model.",
-        "schedule": "Daily at 6:00 AM",
-        "runner": _run_daily_analysis,
     },
     "investment-notifier": {
         "name": "Investment Notifier",
