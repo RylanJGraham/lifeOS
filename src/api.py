@@ -491,13 +491,17 @@ async def get_system_stream(limit: int = 20):
 
 class ChatRequest(BaseModel):
     message: str = ""
-    image: str | None = None  # optional base64-encoded image (no data: prefix)
+    image: str | None = None  # deprecated: single base64-encoded image (no data: prefix)
+    images: list[str] | None = None  # multiple base64-encoded images (no data: prefix)
     session_id: str | None = None  # optional web session id for persistent threads
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest, _=Depends(require_api_key)):
-    """Send a text message (optionally with an image) to the LangGraph agent."""
-    if not (req.message or "").strip() and not (req.image or "").strip():
+    """Send a text message (optionally with one or more images) to the LangGraph agent."""
+    images = list(req.images or [])
+    if req.image:
+        images.insert(0, req.image)
+    if not (req.message or "").strip() and not images:
         raise HTTPException(status_code=400, detail="Message or image is required.")
     from fastapi.concurrency import run_in_threadpool
     try:
@@ -510,7 +514,7 @@ async def chat(req: ChatRequest, _=Depends(require_api_key)):
         return await run_in_threadpool(
             handle_chat,
             req.message,
-            req.image,
+            images=images,
             user_id=user_id,
             source="web",
             external_id=session_id,
@@ -798,6 +802,63 @@ async def upload_statement(
         "upload_id": upload_id,
         "path": dest_path,
     })
+
+
+# ─── Supplements ───────────────────────────────────────────────
+class SupplementLookupRequest(BaseModel):
+    brand: str
+    name: str
+
+class SupplementAddRequest(BaseModel):
+    item: dict  # the looked-up supplement dict
+    time_of_day: str  # "morning" | "evening" | "anytime"
+    hour: int  # 0-23
+
+class SupplementRemoveRequest(BaseModel):
+    item_id: str
+
+@app.post("/api/supplements/lookup")
+async def supplement_lookup(req: SupplementLookupRequest, _=Depends(require_api_key)):
+    """Use the LLM to look up a supplement's nutrition info by brand + name."""
+    from supplement_service import lookup_supplement
+    try:
+        result = lookup_supplement(req.brand, req.name)
+        return JSONResponse(content={"status": "success", "supplement": result})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/supplements")
+async def supplement_list(_=Depends(require_api_key)):
+    """List the user's current supplement schedule."""
+    from supplement_service import list_supplements
+    from nodes.shared import supabase
+    try:
+        policy = list_supplements(supabase)
+        return JSONResponse(content={"status": "success", "policy": policy})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/supplements")
+async def supplement_add(req: SupplementAddRequest, _=Depends(require_api_key)):
+    """Add a supplement to the user's schedule."""
+    from supplement_service import add_supplement
+    from nodes.shared import supabase
+    try:
+        entry = add_supplement(supabase, req.item, req.time_of_day, req.hour)
+        return JSONResponse(content={"status": "success", "supplement": entry})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/supplements")
+async def supplement_remove(req: SupplementRemoveRequest, _=Depends(require_api_key)):
+    """Remove a supplement from the user's schedule."""
+    from supplement_service import remove_supplement
+    from nodes.shared import supabase
+    try:
+        ok = remove_supplement(supabase, req.item_id)
+        return JSONResponse(content={"status": "success" if ok else "not_found"})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

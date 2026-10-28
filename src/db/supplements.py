@@ -200,17 +200,59 @@ def _normalize_supplement_policy(policy: dict) -> dict:
 
 def _load_supplement_policy(supabase, user_id: str) -> dict:
     """Load the user's supplement policy from user_profiles.supplements.
-    Falls back to hardcoded defaults if missing."""
+    Falls back to hardcoded defaults if missing.
+
+    Supports two formats:
+    - New: { enabled, items: [{ description, time_of_day, hour, ... }] }
+    - Legacy: { enabled, morning: [...], evening: [...], morning_hour, evening_hour }
+    """
     try:
         res = supabase.table("user_profiles").select("supplements").eq("user_id", user_id).limit(1).execute()
         if res.data and res.data[0].get("supplements"):
             policy = res.data[0]["supplements"]
+            # New items format
+            if "items" in policy and isinstance(policy["items"], list):
+                return {
+                    "enabled": bool(policy.get("enabled", True)),
+                    "items": policy["items"],
+                }
+            # Legacy morning/evening format
             normalized = _normalize_supplement_policy(policy)
             if normalized["enabled"] and (normalized["morning"] or normalized["evening"]):
                 return normalized
     except Exception as e:
         logger.warning(f"Failed to load supplement policy: {e}")
     return _normalize_supplement_policy({})
+
+
+def _policy_items(policy: dict) -> list[tuple[dict, int]]:
+    """Return [(supplement, hour)] pairs from either policy format."""
+    if "items" in policy:
+        return [(item, int(item.get("hour", 8))) for item in policy["items"] if item.get("description")]
+    # Legacy format
+    result = []
+    for supp in policy.get("morning", []):
+        result.append((supp, policy.get("morning_hour", 8)))
+    for supp in policy.get("evening", []):
+        result.append((supp, policy.get("evening_hour", 21)))
+    return result
+
+
+def _item_triggers_at(supp: dict, hour: int, meal_type: str) -> bool:
+    """Whether a supplement should be logged when a meal of this type is logged."""
+    tod = supp.get("time_of_day", "")
+    if tod == "anytime":
+        return True
+    if tod == "morning":
+        return meal_type == "breakfast"
+    if tod == "evening":
+        return meal_type == "dinner"
+    # Legacy: no time_of_day field — use hour-based heuristic
+    if 4 <= hour < 12:
+        return meal_type == "breakfast"
+    if 17 <= hour < 23:
+        return meal_type == "dinner"
+    return False
 
 
 def ensure_supplements_for_meal(
@@ -232,24 +274,16 @@ def ensure_supplements_for_meal(
 
     day = _iso_day(meal_time)
     effective_type = meal_type or _meal_type_from_time(meal_time)
+    if not effective_type:
+        return []
     added = []
 
-    morning = policy.get("morning", MORNING_SUPPS)
-    evening = policy.get("evening", EVENING_SUPPS)
-    morning_hour = policy.get("morning_hour", 8)
-    evening_hour = policy.get("evening_hour", 21)
-
-    if effective_type == "breakfast" and policy.get("breakfast_trigger", True):
-        for supp in morning:
-            if not _already_logged(supabase, user_id, day, supp["description"]):
-                if _insert_supplement(supabase, user_id, day, supp, morning_hour):
-                    added.append(supp["description"])
-
-    if effective_type == "dinner" and policy.get("dinner_trigger", True):
-        for supp in evening:
-            if not _already_logged(supabase, user_id, day, supp["description"]):
-                if _insert_supplement(supabase, user_id, day, supp, evening_hour):
-                    added.append(supp["description"])
+    for supp, hour in _policy_items(policy):
+        if not _item_triggers_at(supp, hour, effective_type):
+            continue
+        if not _already_logged(supabase, user_id, day, supp["description"]):
+            if _insert_supplement(supabase, user_id, day, supp, hour):
+                added.append(supp["description"])
 
     return added
 
@@ -283,9 +317,8 @@ def backfill_supplements(supabase, start_date: str, end_date: str) -> dict:
     if not policy.get("enabled", True):
         return {"added": 0, "errors": ["Supplement auto-logging is disabled"]}
 
-    days_with_breakfast = set()
-    days_with_dinner = set()
-
+    # Map day -> set of meal types logged that day
+    days_with_meals: dict[str, set[str]] = {}
     for m in meals:
         ts = m.get("meal_time")
         if not ts:
@@ -296,28 +329,15 @@ def backfill_supplements(supabase, start_date: str, end_date: str) -> dict:
             continue
         day = _iso_day(dt)
         mt = m.get("meal_type") or _meal_type_from_time(dt)
-        if mt == "breakfast":
-            days_with_breakfast.add(day)
-        if mt == "dinner":
-            days_with_dinner.add(day)
+        if mt:
+            days_with_meals.setdefault(day, set()).add(mt)
 
-    morning = policy.get("morning", MORNING_SUPPS)
-    evening = policy.get("evening", EVENING_SUPPS)
-    morning_hour = policy.get("morning_hour", 8)
-    evening_hour = policy.get("evening_hour", 21)
-
-    for day in sorted(days_with_breakfast):
-        if policy.get("breakfast_trigger", True):
-            for supp in morning:
-                if not _already_logged(supabase, user_id, day, supp["description"]):
-                    if _insert_supplement(supabase, user_id, day, supp, morning_hour):
-                        added_total += 1
-
-    for day in sorted(days_with_dinner):
-        if policy.get("dinner_trigger", True):
-            for supp in evening:
-                if not _already_logged(supabase, user_id, day, supp["description"]):
-                    if _insert_supplement(supabase, user_id, day, supp, evening_hour):
-                        added_total += 1
+    for supp, hour in _policy_items(policy):
+        for day, meal_types in days_with_meals.items():
+            if not any(_item_triggers_at(supp, hour, mt) for mt in meal_types):
+                continue
+            if not _already_logged(supabase, user_id, day, supp["description"]):
+                if _insert_supplement(supabase, user_id, day, supp, hour):
+                    added_total += 1
 
     return {"added": added_total, "errors": errors}

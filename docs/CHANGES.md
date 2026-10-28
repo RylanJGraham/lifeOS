@@ -4,7 +4,309 @@
 
 ---
 
-## Latest change: Fix meal ingestion losing multi-item meals to empty known-item match
+## Latest change: Supplement manager with LLM brand lookup + add/remove flow
+
+What's New:
+- **Interactive supplement manager** on the Bio tab (`mobile/src/app/(app)/(tabs)/health.tsx`):
+  - Replaced the static morning/evening supplement list with an add/remove manager.
+  - **Add flow**: tap "Add supplement" → enter brand + name + time of day + hour → "Look up supplement" calls the backend LLM to fetch the product's nutrition info (calories, macros, micronutrients, serving size, notes) → review the looked-up info → "Confirm & add" saves it to the schedule.
+  - **Remove flow**: tap the trash icon on any supplement row to remove it.
+  - Supplements are stored in `user_profiles.supplements` in a new `items` array format (each item has `id`, `brand`, `product_name`, `description`, `serving_size`, `calories`, `protein`, `carbs`, `fat`, `micronutrients`, `notes`, `time_of_day`, `hour`).
+  - Legacy `morning`/`evening` array format is auto-migrated to `items` on first add.
+- **New backend supplement service** (`src/supplement_service.py`):
+  - `lookup_supplement(brand, name)` — uses GPT-4o via OpenRouter to look up a supplement's nutrition info and returns structured JSON.
+  - `list_supplements`, `add_supplement`, `remove_supplement` — manage the user's policy in `user_profiles.supplements`.
+- **New API endpoints** (`src/api.py`):
+  - `POST /api/supplements/lookup` — LLM lookup by brand + name.
+  - `GET /api/supplements` — list the user's current schedule.
+  - `POST /api/supplements` — add a supplement to the schedule.
+  - `DELETE /api/supplements` — remove a supplement by id.
+- **Auto-logging updated** (`src/db/supplements.py`):
+  - `ensure_supplements_for_meal` and `backfill_supplements` now support both the new `items` format and the legacy `morning`/`evening` format.
+  - Each item's `time_of_day` (morning/evening/anytime) and `hour` control when it auto-logs.
+
+Why: the user wanted to add/remove supplements from the mobile app (not the web dashboard), with LLM-powered brand lookup so the nutrition data is accurate without manual entry.
+
+Files/modules touched:
+- `src/supplement_service.py` — new service (LLM lookup + policy management).
+- `src/api.py` — 4 new supplement endpoints.
+- `src/db/supplements.py` — auto-logging supports new `items` format + legacy format.
+- `mobile/src/lib/api.ts` — `lookupSupplement`, `listSupplements`, `addSupplement`, `removeSupplement` + `SupplementItem`/`SupplementPolicy` types.
+- `mobile/src/app/(app)/(tabs)/health.tsx` — interactive supplement manager UI with add modal.
+- `docs/CHANGES.md` — this entry.
+
+Breaking changes / manual setup: none. The old `morning`/`evening` format still works for auto-logging. The new `items` format is used when adding via the mobile app. Run `cd mobile && npx tsc --noEmit && npx expo lint` and `python3 -m py_compile src/supplement_service.py src/api.py src/db/supplements.py` to verify.
+
+---
+
+## Previous: Budget vs. actual, recurring subscriptions, health recommendations, haptics, dark mode selector, empty-state CTAs
+
+What's New:
+- **Budget vs. actual by category** on Capital → Cash tab (`mobile/src/app/(app)/(tabs)/capital.tsx`):
+  - Default category budgets derived from monthly income × typical percentages (Food 18%, Shopping 12%, Entertainment 5%, Health 4%, Other 6%).
+  - Each category row shows a progress ring (actual vs. budget), pacing bar, remaining amount, and status label (ON TRACK / PACING UP / OVER).
+  - Pacing compares actual spend % to month-elapsed %.
+- **Recurring subscriptions manager** on Capital → Cash tab:
+  - Summary card with monthly total, yearly projection, and merchant count.
+  - Per-merchant rows now show next expected charge date (last charge + 30 days) and frequency.
+- **Health recommendations** on Bio tab (`mobile/src/app/(app)/(tabs)/health.tsx`):
+  - Rule-based cards: sleep debt (<7h), low HRV (<30ms), elevated RHR (>65bpm), good recovery (≥80 score).
+  - Each card has severity color and actionable detail.
+- **Workout streak card** on Bio tab: shows consecutive days with a logged workout, with motivational detail.
+- **Haptics + press animations** across the app:
+  - `HapticPressable` reusable component added to `mobile/src/components/ui.tsx` (light/medium/selection haptic + scale-on-press).
+  - NavRow now has haptics (was missing).
+  - Cockpit nav cards and quick-log tile have scale-on-press animations.
+  - Chat attach/send buttons have haptics + scale.
+  - Goals priority badge has haptics + scale.
+  - Settings theme toggle has haptics + scale.
+- **Dark mode refinement** (`mobile/src/app/(app)/(tabs)/settings/index.tsx`):
+  - 3-way theme selector (System / Light / Dark) with chips, replacing the single toggle.
+  - Removed duplicate "05 // APPEARANCE" header.
+- **Better empty states with log-first CTAs** on Capital tab:
+  - Budget empty state: "Upload statement" CTA → routes to Ingest.
+  - Portfolio empty state: "Log a trade" CTA → routes to Ingest.
+- **Health image duplicate-date handling** (`src/nodes/health_image.py`):
+  - Captions like "duplicate it for the 27th", "do the same for the 27th", "also for oct 27", "copy to yesterday" now parse extra dates and insert copies of the metrics.
+  - Skips dates that already have data.
+
+Why: the user wanted budget pacing visibility, recurring spend management, health recommendations, and more tactile feedback across the app.
+
+Files/modules touched:
+- `mobile/src/app/(app)/(tabs)/capital.tsx` — budget vs. actual, recurring subscriptions, empty-state CTAs.
+- `mobile/src/app/(app)/(tabs)/health.tsx` — recommendations, workout streak card.
+- `mobile/src/app/(app)/(tabs)/index.tsx` — press animations on nav cards and quick-log tile.
+- `mobile/src/app/(app)/(tabs)/chat.tsx` — haptics + scale on attach/send buttons.
+- `mobile/src/app/(app)/goals.tsx` — haptics + scale on priority badge.
+- `mobile/src/app/(app)/(tabs)/settings/index.tsx` — 3-way theme selector, haptics.
+- `mobile/src/components/ui.tsx` — `HapticPressable` reusable component, NavRow haptics.
+- `src/nodes/health_image.py` — duplicate-date caption parsing.
+- `docs/CHANGES.md` — this entry.
+
+Breaking changes / manual setup: none. Run `cd mobile && npx tsc --noEmit && npx expo lint` to verify.
+
+---
+
+## Previous: Multi-image/PDF attachments in Ingest chat + backend multi-image support
+
+What's New:
+- **Multi-image and multi-PDF selection** in Ingest chat (`mobile/src/app/(app)/(tabs)/chat.tsx`):
+  - Image library picker now allows `allowsMultipleSelection`.
+  - Document picker now allows `multiple: true` for PDFs.
+  - Attachments are stored as an array; each preview has its own remove button in a horizontal scroll.
+- **Multiple images per chat prompt** flow through the backend:
+  - `mobile/src/lib/api.ts` `sendChat` now sends `images?: string[]`.
+  - `/api/chat` accepts `images` (list) while keeping backward-compatible `image` (single).
+  - `chat_service.handle_chat` accepts `images` and passes them into the graph state.
+  - `GraphState` gains an `images` field.
+  - `graph.route_input` routes `"multi_image"` to the image dispatcher.
+  - `image_dispatcher_node` defaults multi-image prompts to nutrition and uses single-image classification otherwise.
+  - `nutrition_node` now passes all images to the vision prompt (useful for multi-angle meal photos).
+  - `health_image_node` supports multiple screenshots as well.
+- **Multiple PDFs per prompt**: mobile uploads each PDF via `/statements/upload` in parallel, collects upload references, and includes them all in the chat message text.
+- **PDF statements now update `user_profiles.bank_balance` from the statement's `saldo` column**: after parsing transactions, the latest running balance (saldo) is written back to the profile so net worth reflects the actual account balance.
+- **New `goal-metric-sync` pipeline** (`src/workers/goal_metric_sync.py`): runs daily at 8:30 AM to update active financial goals' `current_value` from their `linked_metric` (`bank_balance`, `net_worth`, or `portfolio_value`). Registered in `src/pipeline_service.py`, `deploy/lifeos.cron`, and `scripts/windows_tasks.ps1`.
+- **Mobile Capital Portfolio tab upgrade** (`mobile/src/app/(app)/(tabs)/capital.tsx`):
+  - Portfolio summary grid: total value, total P&L, cash, invested, position count, currencies.
+  - Asset-class allocation bar + list.
+  - Sector allocation bar + list (when sector data exists).
+  - Top gainers / top losers cards.
+  - Risk flags from the latest `advisor_portfolio_snapshots`.
+- **Mobile Capital Intel tab upgrade** (`mobile/src/app/(app)/(tabs)/capital.tsx`):
+  - Market regime card with latest report summary, VIX, and portfolio value.
+  - Report archive list (last 6 briefings).
+  - Tap any report card or archive row to open the new **report detail screen** (`mobile/src/app/(app)/report/[id].tsx`) with full HTML briefing text and actionable signals.
+  - Live signals grouped by symbol.
+  - Candidate radar cards with thesis and latest-signal metadata.
+- **Mobile query support** (`mobile/src/lib/queries.ts`): added `useLatestSnapshot`, extended `Position` with `current_price`, `sector`, `asset_class`, and added `byField`/`topMovers` aggregation helpers.
+- **Chat UI fixes from previous iteration kept**: keyboard offset `0`, input bar margin `insets.bottom + 56`, reduced input padding.
+
+Why: the user couldn't see attachment previews clearly and wanted to send several images or PDFs in one prompt (e.g., a meal from multiple angles or multiple statement pages).
+
+Files/modules touched:
+- `mobile/src/app/(app)/(tabs)/chat.tsx` — attachments array, pickers, preview row, send logic.
+- `mobile/src/lib/api.ts` — `sendChat` signature updated to `images?: string[]`.
+- `src/api.py` — `ChatRequest` accepts `images`.
+- `src/chat_service.py` — `handle_chat` accepts `images`.
+- `src/nodes/shared.py` — `GraphState.images` added.
+- `src/graph.py` — route `"multi_image"`.
+- `src/nodes/image_dispatcher.py`, `src/nodes/nutrition.py`, `src/nodes/health_image.py` — multi-image handling.
+- `src/finance/pdf_ingestion.py` — parse statement `saldo` column and update `user_profiles.bank_balance`.
+- `src/workers/goal_metric_sync.py` — new daily worker.
+- `src/pipeline_service.py` — registered `goal-metric-sync` pipeline.
+- `deploy/lifeos.cron` and `scripts/windows_tasks.ps1` — daily 8:30 AM schedule.
+- `mobile/src/app/(app)/(tabs)/capital.tsx` — Portfolio/Intel tab upgrades.
+- `mobile/app.json` — new app icon (`assets/icon.png`) and splash screen (`assets/splash.png`) matching the dark blue "Human Engine" brand.
+- `mobile/src/app/(app)/report/[id].tsx` — report detail screen.
+- `src/workers/market_advisor.py` — top 3 actionable advisor signals are now inserted as `ai_insights` with `domain = 'advisor_action'` so they surface on the Cockpit action queue.
+- `mobile/src/app/(app)/(tabs)/index.tsx` — added `advisor_action` to Cockpit insight domains.
+- `src/workers/morning_briefing.py`, `evening_audit.py`, `fuel_pacing.py`, `persona_insights.py`, `weekly_review.py` — fixed relative imports (`workers.*` instead of bare module names) so daily pipelines stop failing.
+- `src/pipeline_service.py` — corrected `morning-briefing` runner to call the existing `main()` function.
+- `mobile/src/app/(app)/goals.tsx` — added monthly free-funds card: income minus detected recurring spend, plus suggested proportional allocation across active financial goals.
+- `docs/supabase-migrations/026-goals-priority.sql` — migration to add `priority INTEGER DEFAULT 3` to `goals` (applied via Supabase SQL Editor).
+- `mobile/src/app/(app)/goals.tsx` — priority badges on goals, tap to cycle P1–P5, priority-weighted free-fund allocation.
+- `mobile/src/app/(app)/(tabs)/index.tsx` — Cockpit now shows:
+  - Daily market briefing card that opens the report.
+  - "Left to spend this month" widget based on income, savings target, and actual spend.
+  - Inline "DONE" button on compact insight rows to resolve them.
+- `mobile/src/lib/queries.ts` — new hooks and aggregation helpers.
+- `docs/CHANGES.md` — this entry.
+
+Breaking changes / manual setup: none for existing flows. Single-image messages still work exactly as before. Run `cd mobile && npx tsc --noEmit && npx expo lint` and `python3 -m py_compile src/graph.py src/nodes/shared.py src/nodes/image_dispatcher.py src/nodes/nutrition.py src/nodes/health_image.py src/chat_service.py src/api.py src/finance/pdf_ingestion.py` to verify.
+
+---
+
+## Previous: Physical iPhone install via Xcode personal team; push notifications temporarily disabled
+
+What's New:
+- **Removed Push Notifications capability** from the iOS build (`mobile/app.json`, `mobile/ios/*` regenerated via `npx expo prebuild --clean`). This was required so the app can be signed and installed with a free Apple Developer personal team (`Rylan Graham (Personal Team)`); paid Apple Developer Program membership is required for push.
+- **Removed the push opt-in row** from Settings (`mobile/src/app/(app)/(tabs)/settings/index.tsx`) and the automatic token registration in the root layout (`mobile/src/app/_layout.tsx`).
+- **Kept `mobile/src/lib/notifications.ts`** as a stub so push can be re-enabled later by reverting these changes and re-adding the `expo-notifications` plugin to `app.json`.
+- **Verified the build** with `npx tsc --noEmit && npx expo lint`, regenerated the iOS project, and installed on a physical iPhone via Xcode automatic signing after registering the device.
+
+Why: the user wanted the app on a real iPhone via Xcode without EAS. Free personal teams cannot use Push Notifications, so the capability and related UI were removed for now.
+
+Files/modules touched:
+- `mobile/app.json` — removed `expo-notifications` plugin.
+- `mobile/src/app/(app)/(tabs)/settings/index.tsx` — removed 04 // Notifications row and related state.
+- `mobile/src/app/_layout.tsx` — removed `registerForPushNotifications` call and import.
+- `mobile/ios/*` — regenerated by `npx expo prebuild --clean`.
+- `docs/CHANGES.md` — this entry.
+
+Breaking changes / manual setup: none for the user-facing app; push notifications are simply unavailable until the paid Apple Developer Program is active. No schema or API changes.
+
+---
+
+## Previous: Health date-range switches are now instant (no loading flash)
+
+What's New:
+- **Fetch once, filter client-side** (`mobile/src/app/(app)/(tabs)/health.tsx`): the Health screen now fetches the full YTD dataset once for health metrics, workouts, and meals. Switching between Today / 7D / Month / YTD filters the already-loaded data in JavaScript, so the charts and lists update instantly with no network request and no spinner flash.
+- **`filterByDays` helper** added to slice the YTD arrays by the selected number of days while preserving sort order.
+- **Removed `useTodayMeals`** and the "Updating…" pill; all ranges now share the same data source and update synchronously.
+- **Hero/latest metric stays absolute**: the top vital-signs hero and recovery score still use the most recent metric regardless of selected range.
+- **Calendar strip stays fixed**: the 7-day activity dots still look at the last 7 days independent of the selected range.
+
+Why: the user reported that tapping a different date range flashed the full loading spinner. The first fix removed the spinner but still fired a new Supabase query on every switch; this follow-up makes the switch truly instantaneous.
+
+Files/modules touched:
+- `mobile/src/app/(app)/(tabs)/health.tsx` — YTD fetches, `filterByDays`, filtered datasets, removed `useTodayMeals`, removed updating pill.
+- `docs/CHANGES.md` — this entry.
+
+Breaking changes / manual setup: none — no schema, API contract, or scheduled-task changes. Run `cd mobile && npx tsc --noEmit && npx expo lint` to verify.
+
+---
+
+## Previous: Fix multi-item meal extraction dropping toppings and sides
+
+What's New:
+- **Meal extraction now logs every distinct food/drink/topping/side** (`src/nodes/nutrition.py`): previously, messages like "porridge with honey and bananas" and "9 McDonald's nuggets and fries and a coke" were being collapsed into one or two items because the saved-items context biased the LLM, and the per-item known-item override was matching on substring (so a saved "Porridge" overrode "Porridge with honey and bananas" down to plain porridge calories).
+- **Prompt tightened** to explicitly forbid dropping toppings/sides and to require combined dishes to include all components in both the name and calorie total.
+- **Saved-items context changed to reference-only names** (no calorie values shown to the LLM), removing the calorie-estimate bias.
+- **Known-item override made exact-match only**: a saved item now only overrides an extracted item if the extracted name matches the saved name exactly (case-insensitive). "Porridge with honey and bananas" no longer gets replaced by a plain "Porridge" known item.
+- **Re-extraction fallback added** (`_reextract_if_incomplete`): if the LLM returns suspiciously few items for a message that clearly lists multiple foods, a second pass explicitly asks for the complete item list.
+- **Verbose extraction logging added** so future meal-extraction issues can be diagnosed from the backend logs.
+- **Deployed to production VPS** and verified with the exact message from the bug report. The same input now logs 4 items: "porridge with honey and bananas", "McDonald's Chicken McNuggets (9 pieces)", "Fries", and "Coke". Test duplicates created during verification were cleaned up.
+
+Why: a user logged a multi-item meal via chat and only 2 of 4+ items were recorded. The root cause was the saved-items shortcut dominating the LLM extraction plus a too-loose substring override, not an inability of the LLM to parse the sentence.
+
+Files/modules touched:
+- `src/nodes/nutrition.py` — extraction prompt, reference-only saved-items context, exact-match override guard, `_reextract_if_incomplete`, `_count_likely_food_items`.
+- `docs/CHANGES.md` — this entry.
+
+Breaking changes / manual setup: none — no schema, API contract, or scheduled-task changes. The fix is live on the production droplet; `systemctl restart lifeos-api` applied.
+
+---
+
+## Previous: Mobile feature batch #2 — system status, push opt-in, insight resolve, subscriptions, readiness, body trend, photo log, briefing, supplements, correlations
+
+What's New:
+- **System status strip on Cockpit** (`mobile/src/app/(app)/(tabs)/index.tsx`): surfaces backend services health (`getBackendStatus`) and pipeline errors (`getPipelines`), with a tap-to-open System screen. New hooks: `useBackendStatus`, `usePipelines`, `useSystemLogs`.
+- **Push notification opt-in** (`mobile/src/app/(app)/(tabs)/settings/index.tsx`): new 04 // Notifications row shows current permission status and lets the user request/refresh the Expo push token. `mobile/src/lib/notifications.ts` gained `getPushPermissionStatus()`; root `_layout.tsx` already registers the token on sign-in.
+- **Resolve AI insights from mobile** (`mobile/src/app/(app)/(tabs)/index.tsx` + `specialist.tsx`): top action-queue insights and Specialist cards now have a "Mark resolved" button that writes `resolved_at` to `ai_insights`. New `resolveInsight()` helper in `queries.ts`; `Insight` interface now includes `resolved_at`.
+- **Recurring/subscription spend card in Capital** (`mobile/src/app/(app)/(tabs)/capital.tsx`): estimates monthly recurring merchants from transaction patterns and lists average amount + frequency.
+- **Readiness score on Cockpit hero**: composite 0-100 score from sleep, HRV, and resting HR, shown as an "RDY XX" pill next to the status badge.
+- **Body composition trend card in Health** (`mobile/src/app/(app)/(tabs)/health.tsx`): shows current weight, 7-day change, 30-day change, and distance to target from `health_metrics.body_weight_kg` + `profile.target_weight_kg`.
+- **Photo-first logging shortcut** (`mobile/src/app/(app)/(tabs)/index.tsx` + `chat.tsx`): new "Log photo" quick-action tile on Cockpit opens the Ingest tab and auto-launches the camera (`camera=1` param). Useful for one-tap meal/workout logging.
+- **Daily briefing teaser on Cockpit**: latest `advisor_daily_report` surfaced as a card that opens Capital Intel.
+- **Supplements schedule card in Health** (`mobile/src/app/(app)/(tabs)/health.tsx`): reads `user_profiles.supplements` JSONB and lists morning/evening supplements with empty-state CTA.
+- **Correlation / pattern card on Cockpit**: shows the latest unresolved `domain = 'correlations'` insight with a tap-to-open Specialist action.
+
+Why: the previous batch covered advisor data, anomalies, goals, training, and theme/haptics. This batch continues surfacing underused backend state (system health, correlations, daily reports, supplement schedule) and adds mobile-native UX (push opt-in, photo shortcut, insight resolution, readiness score) while staying read-only except for insight resolution and goal check-ins.
+
+Files/modules touched:
+- `mobile/src/lib/queries.ts` — `useBackendStatus`, `usePipelines`, `useSystemLogs`, `resolveInsight`, `Insight.resolved_at`, `Profile.supplements`.
+- `mobile/src/lib/notifications.ts` — `getPushPermissionStatus()`.
+- `mobile/src/app/(app)/(tabs)/index.tsx` — system status strip, readiness score, daily briefing teaser, correlation card, photo log shortcut, insight resolve button.
+- `mobile/src/app/(app)/(tabs)/capital.tsx` — recurring/subscription spend card.
+- `mobile/src/app/(app)/(tabs)/health.tsx` — body composition trend card, supplements schedule card.
+- `mobile/src/app/(app)/(tabs)/chat.tsx` — auto-open camera from `camera=1` param.
+- `mobile/src/app/(app)/(tabs)/settings/index.tsx` — push notifications row.
+- `mobile/src/app/(app)/specialist.tsx` — insight resolve button.
+- `docs/CHANGES.md` — this entry.
+
+Breaking changes / manual setup: none — no schema, API contract, or scheduled-task changes. Run `cd mobile && npx tsc --noEmit && npx expo lint && npx expo-doctor` to verify.
+
+---
+
+## Previous: Mobile feature batch — Capital Intelligence, goal check-ins, training insights, dark mode, haptics, empty-state CTAs
+
+What's New:
+- **Capital Intelligence tab** (`mobile/src/app/(app)/(tabs)/capital.tsx`): new "Intel" segmented tab surfaces `advisor_daily_reports` (latest market briefing), `advisor_signals` + `advisor_signal_performance` (live signals with win-rate), and `advisor_watchlist` (Scout candidates by conviction). Adds `useDailyReports`, `useSignals`, `useSignalPerformance`, `useWatchlist` to `mobile/src/lib/queries.ts`.
+- **Transaction anomaly card** in Capital: queries `ai_insights` where `domain = 'finance_anomaly'` (output of `src/workers/transaction_anomalies.py`) and renders duplicates, subscription price changes, and unusual amounts with severity badges. New `useTransactionAnomalies` + `parseAnomaly` helpers in `queries.ts`.
+- **Goal check-ins in Cockpit action queue** (`mobile/src/app/(app)/(tabs)/index.tsx`): queries active `goals` and `goal_checkins`, surfaces pending daily/weekly habit check-ins above telemetry, and lets the user log "Yes"/"No" directly (writes to `goal_checkins`, bumps `goals.current_value`). New hooks: `useGoals`, `useGoalCheckins`, helpers `isCheckinPending`, `logGoalCheckin`, `updateGoalCurrentValue`.
+- **Health training insights** (`mobile/src/app/(app)/(tabs)/health.tsx`): computes workout streak and muscle-group set volume from `exercise_muscles` + workouts, rendered as a new "Training insights" row with streak counter and top muscle groups.
+- **Branded empty states + CTAs**: `EmptyState` in `mobile/src/components/ui.tsx` now accepts `icon` and `action` props. Applied to Goals (focus chat input), Specialist insights/memories, and the new Capital Intelligence empty states.
+- **Consistent haptics**: tab bar tab presses use `Haptics.selectionAsync`; Cockpit nav cards and goal check-in buttons use impact/notification feedback; Ingest quick-prompt chips and `EmptyState` action buttons also trigger haptics.
+- **Dark mode foundation** (`mobile/src/theme/ThemeProvider.tsx`, `mobile/src/theme/index.ts`): system or manual light/dark theme via `useTheme`, persisted in `AsyncStorage`. `app.json` `userInterfaceStyle` set to `automatic`; root `StatusBar`, tab bar `BlurView` tint, `ScreenHeader` blur tint, and the main tab screens (Cockpit, Bio, Capital, Ingest, Settings) plus shared `Surface`/`ScreenHeader` colors now react to the selected theme. Settings has a new 04 // Appearance "Dark mode" toggle.
+
+Why: the diagnosis surfaced several high-impact data-underuse opportunities (advisor output, anomaly insights, goal check-ins, workout muscle mapping) and UI/UX gaps (plain empty states, missing haptics, no dark mode). This batch turns existing backend data into actionable mobile UI without changing schemas or scheduled tasks.
+
+Files/modules touched:
+- `mobile/src/lib/queries.ts` — `useDailyReports`, `useSignals`, `useSignalPerformance`, `useWatchlist`, `useTransactionAnomalies`, `useGoals`, `useGoalCheckins`, `useExerciseMuscles`, `isCheckinPending`, `logGoalCheckin`, `updateGoalCurrentValue`, `parseAnomaly`.
+- `mobile/src/app/(app)/(tabs)/capital.tsx` — Capital Intelligence tab + anomaly card.
+- `mobile/src/app/(app)/(tabs)/index.tsx` — pending goal check-ins in action queue.
+- `mobile/src/app/(app)/(tabs)/health.tsx` — training insights (streak + muscle volume).
+- `mobile/src/app/(app)/(tabs)/chat.tsx` — haptics on quick prompts.
+- `mobile/src/app/(app)/(tabs)/_layout.tsx` — tab bar haptics + dynamic blur tint.
+- `mobile/src/app/(app)/(tabs)/settings/index.tsx` — dark mode toggle.
+- `mobile/src/app/(app)/goals.tsx` + `mobile/src/app/(app)/specialist.tsx` — branded `EmptyState` usage.
+- `mobile/src/components/ui.tsx` — enhanced `EmptyState`, theme-aware `Surface` + `ScreenHeader`.
+- `mobile/src/app/_layout.tsx` — `ThemeProvider`, dynamic `StatusBar`.
+- `mobile/src/theme/index.ts` — `ThemeColors` type + `darkColors` palette.
+- `mobile/src/theme/ThemeProvider.tsx` — new.
+- `mobile/app.json` — `userInterfaceStyle: "automatic"`.
+- `docs/CHANGES.md` — this entry.
+
+Breaking changes / manual setup: none — all changes are read-only except goal check-in writes (which use the existing `goal_checkins`/`goals` tables and match the Telegram webhook format `mobile:<yes|no>`). Run `cd mobile && npx tsc --noEmit && npx expo lint && npx expo-doctor` to verify.
+
+---
+
+## Previous: Mobile app lint hygiene, Expo SDK patch upgrade, useAsync refactor
+
+What's New:
+- **All `mobile/` lint errors and warnings fixed** — `npx expo lint` now exits clean. Removed unused imports/variables across `capital.tsx`, `health.tsx`, `index.tsx`, `settings/index.tsx`, and `components/ui.tsx`. Escaped unescaped quotes in the Capital recommendations hint. Imported `AndroidImportance` directly from `expo-notifications` instead of accessing it as a namespace property.
+- **Expo SDK patch versions aligned** — upgraded `expo`, `expo-blur`, `expo-font`, and `expo-router` to the versions expected by SDK 58. `npx expo-doctor` now passes all 20 checks.
+- **`useAsync` hook refactored** (`mobile/src/lib/queries.ts`): replaced the non-literal `useCallback` dependency array and synchronous `setState` calls inside the effect body. The hook now keeps the latest fetcher in a ref, uses a stable `run` callback, defers the initial fetch one tick to satisfy the `set-state-in-effect` rule, and returns a memoized stable object so consuming screens can safely depend on it in `useCallback`.
+- **Fixed ref-during-render in Cockpit and Health** (`mobile/src/app/(app)/(tabs)/index.tsx`, `health.tsx`): moved the `refetchAll.current = onRefresh` assignment into a `useEffect`, and wrapped `onRefresh` in `useCallback` with stable hook-object dependencies thanks to the `useAsync` memoization.
+
+Why: the mobile build pipeline was blocked by lint errors and Expo SDK patch mismatches. The `useAsync` hook was also using React patterns that the stricter hooks lint rules flagged as risky (non-literal deps, setState in effect, unstable return object), which made focus-based refetch and screen-level `useCallback`s unreliable.
+
+Files/modules touched:
+- `mobile/src/lib/queries.ts` — `useAsync` refactor.
+- `mobile/src/lib/notifications.ts` — direct `AndroidImportance` import.
+- `mobile/src/components/ui.tsx` — removed unused `Line` import.
+- `mobile/src/app/(app)/(tabs)/index.tsx` — ref-during-render fix, removed unused imports/vars, `onRefresh` memoized.
+- `mobile/src/app/(app)/(tabs)/health.tsx` — ref-during-render fix, removed unused imports/vars, restored `totalWorkouts`/`totalMeals` counts used in JSX, `onRefresh` memoized.
+- `mobile/src/app/(app)/(tabs)/capital.tsx` — removed unused imports, escaped quotes.
+- `mobile/src/app/(app)/(tabs)/settings/index.tsx` — removed unused `Surface` import.
+- `mobile/package.json` / `package-lock.json` — Expo patch upgrades.
+- `docs/CHANGES.md` — this entry.
+
+Breaking changes / manual setup: none — no schema, API contract, or scheduled-task changes. Run `cd mobile && npx expo-doctor && npx expo lint && npx tsc --noEmit` to verify.
+
+---
+
+## Previous: Fix meal ingestion losing multi-item meals to empty known-item match
 
 What's New:
 - **Known-item short-circuit no longer fires for items with 0/null calories** (`src/nodes/nutrition.py`): when a user logs a meal like "vicio burger with fries and a coke", if "vicio burger" matched a `known_items` row with null calories (saved without nutritional data), the known-item shortcut would skip web search, tell the LLM to use the known item's "EXACT values verbatim" (all zeros), override the LLM's estimates with 0s, and treat the entire message as one item — losing the fries and coke. Now: known items with 0/null calories don't short-circuit; the LLM estimates from web search normally.
