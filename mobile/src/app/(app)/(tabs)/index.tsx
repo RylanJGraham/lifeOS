@@ -503,7 +503,11 @@ export default function CockpitScreen() {
         ) : null}
 
         {/* ─── Action Queue: hero card + rest ─── */}
-        <SectionLabel title="Action queue" subtitle={attentionFeed.length === 0 ? "All clear" : `${attentionFeed.length} item${attentionFeed.length > 1 ? "s" : ""}`} />
+        <SectionLabel
+          title="Action queue"
+          subtitle={attentionFeed.length === 0 ? "All clear" : `${attentionFeed.length} item${attentionFeed.length > 1 ? "s" : ""}`}
+          action={{ label: "See all", onPress: () => router.push("/inbox") }}
+        />
         {attentionFeed.length === 0 ? (
           <Surface style={styles.allClearCard}>
             <Dot color={colors.good} size={10} />
