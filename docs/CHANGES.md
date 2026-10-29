@@ -4,7 +4,43 @@
 
 ---
 
-## Latest change: Supplement manager with LLM brand lookup + add/remove flow
+## Latest change: Confirm-before-save chat, Fuel Live Activity, habit streaks
+
+What's New:
+- **Confirm-before-save in chat** (`mobile/src/app/(app)/(tabs)/chat.tsx`, `src/api.py`, `src/chat_service.py`, `src/nodes/nutrition.py`, `src/nodes/ui_blocks.py`):
+  - `/api/chat` now supports `dry_run=true`. The backend parses nutrition messages but does not persist them.
+  - The mobile chat shows a preview card with parsed items and **Confirm / Edit / Cancel** buttons.
+  - Confirm re-sends the message with `dry_run=false` to actually log the meal. Edit repopulates the input. Cancel discards the preview.
+  - Prevents another "plain porridge at 150 kcal" bug by surfacing the parsed result before writing.
+- **Fuel Live Activity** (`mobile/src/widgets/FuelActivity.tsx`, `mobile/src/hooks/useFuelActivity.ts`, `mobile/app.json`):
+  - Added `expo-widgets` + `@expo/ui` Live Activity that shows today's calories/protein vs. targets on the iOS Lock Screen and Dynamic Island.
+  - Starts automatically from the Cockpit screen when nutrition targets are set; updates as meals change.
+- **Habit streaks + yes/no check-ins** (`src/workers/goal_checkin.py`, `src/workers/action_items.py`, `src/api.py`, `mobile/src/app/(app)/inbox.tsx`, `mobile/src/app/(app)/goals.tsx`):
+  - `goal_checkin.py` now writes a `goals` domain `ai_insights` row for each habit check-in (even when Telegram is not configured), with `[yesno:<goal_id>]` in `action_item`.
+  - New endpoint `POST /api/goals/checkin` records yes/no, updates streak (`current_value`), and optionally resolves the insight.
+  - Inbox cards for habit goals show **Yes / No** buttons.
+  - Goals screen shows a flame streak badge on habit cards.
+- **Schema migration** (`docs/supabase-migrations/028-ai-insights-metadata.sql`):
+  - Adds `metadata JSONB` to `ai_insights` for future structured actions. The current fallback uses the `action_item` prefix so the feature works before the migration is applied.
+
+Why: the user wanted higher-leverage UX improvements — prevent logging errors, keep fuel pacing visible without opening the app, and turn habit goals into an active yes/no streak loop instead of passive progress reports.
+
+Files/modules touched:
+- `src/api.py` — `dry_run` on `/api/chat`; new `POST /api/goals/checkin`.
+- `src/chat_service.py`, `src/nodes/shared.py`, `src/nodes/nutrition.py`, `src/nodes/ui_blocks.py` — dry-run preview flow.
+- `src/workers/goal_checkin.py`, `src/workers/action_items.py` — Inbox-facing habit check-ins; optional per-insight resolution.
+- `mobile/src/app/(app)/(tabs)/chat.tsx`, `mobile/src/components/ui.tsx` — preview card + Confirm/Edit/Cancel.
+- `mobile/src/widgets/FuelActivity.tsx`, `mobile/src/hooks/useFuelActivity.ts`, `mobile/src/app/(app)/(tabs)/index.tsx`, `mobile/app.json` — Live Activity.
+- `mobile/src/app/(app)/inbox.tsx`, `mobile/src/app/(app)/goals.tsx`, `mobile/src/lib/api.ts`, `mobile/src/lib/queries.ts` — yes/no check-ins + streak display.
+- `docs/api-reference.md`, `docs/ARCHITECTURE.md`, `docs/CHANGES.md`, `docs/supabase-migrations/028-ai-insights-metadata.sql` — docs/schema.
+
+Breaking changes / manual setup:
+- Apply migration `docs/supabase-migrations/028-ai-insights-metadata.sql` in the Supabase SQL Editor to enable the `metadata` column fallback-free path. Without it, the app falls back to parsing `action_item`.
+- Live Activity requires a **development/release build**; it does not run in Expo Go. iOS 16.1+ required.
+
+---
+
+## Previous: Supplement manager with LLM brand lookup + add/remove flow
 
 What's New:
 - **Interactive supplement manager** on the Bio tab (`mobile/src/app/(app)/(tabs)/health.tsx`):

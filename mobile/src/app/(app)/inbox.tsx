@@ -26,6 +26,7 @@ import * as Haptics from "expo-haptics";
 import { useTheme } from "@/theme/ThemeProvider";
 import { spacing, fonts, radius } from "@/theme";
 import { useInsights, resolveInsight, type Insight } from "@/lib/queries";
+import { goalCheckinAnswer } from "@/lib/api";
 import { ScreenHeader, Surface, ErrorBanner, LoadingState } from "@/components/ui";
 
 const ALL_DOMAINS = [
@@ -154,6 +155,21 @@ export default function InboxScreen() {
     [insights],
   );
 
+  const handleCheckin = useCallback(
+    async (insight: Insight, answer: "yes" | "no") => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      let goalId = insight.metadata?.goal_id;
+      if (!goalId && insight.action_item) {
+        const match = insight.action_item.match(/\[yesno:([^\]]+)\]/);
+        if (match) goalId = match[1];
+      }
+      if (!goalId) return;
+      await goalCheckinAnswer(goalId, answer, insight.id);
+      insights.refetch();
+    },
+    [insights],
+  );
+
   const handleNavigate = useCallback(
     (domain: string) => {
       router.push(routeForDomain(domain) as never);
@@ -188,6 +204,9 @@ export default function InboxScreen() {
               <Text style={[styles.groupLabel, { color: colors.textSecondary }]}>{group}</Text>
               {grouped.get(group)!.map((insight) => {
                 const Icon = DOMAIN_ICON[insight.domain] ?? Flag;
+                const isYesNo =
+                  insight.metadata?.action === "yes_no" ||
+                  (insight.action_item?.includes("[yesno:") ?? false);
                 return (
                   <Surface key={insight.id} style={styles.card}>
                     <View style={styles.cardHeader}>
@@ -198,26 +217,45 @@ export default function InboxScreen() {
                         </Text>
                         <Text style={[styles.date, { color: colors.textTertiary }]}>{relativeDate(insight.generated_at)}</Text>
                       </View>
-                      <Pressable
-                        onPress={() => handleResolve(insight.id)}
-                        hitSlop={8}
-                        style={[styles.doneButton, { backgroundColor: colors.surface2 }]}
-                      >
-                        <Check size={16} color={colors.good} />
-                      </Pressable>
+                      {!isYesNo ? (
+                        <Pressable
+                          onPress={() => handleResolve(insight.id)}
+                          hitSlop={8}
+                          style={[styles.doneButton, { backgroundColor: colors.surface2 }]}
+                        >
+                          <Check size={16} color={colors.good} />
+                        </Pressable>
+                      ) : null}
                     </View>
                     <Text style={[styles.insightText, { color: colors.textPrimary }]} numberOfLines={4}>
                       {insight.insight_text}
                     </Text>
                     {insight.action_item ? (
                       <Text style={[styles.actionItem, { color: colors.focus }]} numberOfLines={2}>
-                        → {insight.action_item}
+                        → {insight.action_item.replace(/\[yesno:[^\]]*\]\s*/, "")}
                       </Text>
                     ) : null}
-                    <Pressable onPress={() => handleNavigate(insight.domain)} style={styles.goRow}>
-                      <Text style={[styles.goText, { color: colors.textSecondary }]}>Go to {routeForDomain(insight.domain).replace("/", "")}</Text>
-                      <ChevronRight size={14} color={colors.textTertiary} />
-                    </Pressable>
+                    {isYesNo ? (
+                      <View style={styles.yesNoRow}>
+                        <Pressable
+                          onPress={() => handleCheckin(insight, "no")}
+                          style={[styles.yesNoBtn, { backgroundColor: colors.surface2 }]}
+                        >
+                          <Text style={[styles.yesNoText, { color: colors.textSecondary }]}>No</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => handleCheckin(insight, "yes")}
+                          style={[styles.yesNoBtn, { backgroundColor: colors.good }]}
+                        >
+                          <Text style={[styles.yesNoText, { color: colors.bg }]}>Yes</Text>
+                        </Pressable>
+                      </View>
+                    ) : (
+                      <Pressable onPress={() => handleNavigate(insight.domain)} style={styles.goRow}>
+                        <Text style={[styles.goText, { color: colors.textSecondary }]}>Go to {routeForDomain(insight.domain).replace("/", "")}</Text>
+                        <ChevronRight size={14} color={colors.textTertiary} />
+                      </Pressable>
+                    )}
                   </Surface>
                 );
               })}
@@ -293,6 +331,21 @@ const styles = StyleSheet.create({
   },
   goText: {
     fontFamily: fonts.geistRegular,
+    fontSize: 13,
+  },
+  yesNoRow: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  yesNoBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: radius.sm,
+    alignItems: "center",
+  },
+  yesNoText: {
+    fontFamily: fonts.spaceGroteskSemiBold,
     fontSize: 13,
   },
   emptyCard: {

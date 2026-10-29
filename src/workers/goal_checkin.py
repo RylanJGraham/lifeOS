@@ -293,21 +293,37 @@ def checkin_habit_goal(goal: dict):
         {"text": "❌ Slipped", "callback_data": f"goal_checkin:{goal['id']}:no"},
     ]]}
 
-    if send_telegram(text, reply_markup=keyboard):
-        _log_auto_checkin(goal, f"auto:{goal.get('checkin_cadence')} question sent")
+    sent = send_telegram(text, reply_markup=keyboard)
+    _log_auto_checkin(goal, f"auto:{goal.get('checkin_cadence')} question sent")
+    _log_goal_insight(
+        goal,
+        text.split("\n\n", 1)[-1] if "\n\n" in text else text,
+        action_item=f"[yesno:{goal['id']}] Did you stay on track {period}?",
+        metadata={
+            "action": "yes_no",
+            "goal_id": goal["id"],
+            "cadence": goal.get("checkin_cadence"),
+        },
+    )
+    if sent:
         logger.info(f"Sent habit check-in for goal '{title}'")
+    else:
+        logger.info(f"Logged habit check-in insight for goal '{title}' (Telegram not configured)")
 
 
-def _log_goal_insight(goal: dict, insight_text: str, action_item: str | None = None):
-    """Mirror a financial-goal update into ai_insights (domain 'goals') so the
-    Nexus action-items panel can surface it."""
+def _log_goal_insight(goal: dict, insight_text: str, action_item: str | None = None, metadata: dict | None = None):
+    """Mirror a goal update into ai_insights (domain 'goals') so the Inbox can
+    surface it. Optional metadata carries structured UI actions."""
     try:
-        sb.table("ai_insights").insert({
+        row = {
             "user_id": goal.get("user_id"),
             "domain": "goals",
             "insight_text": insight_text,
             "action_item": action_item,
-        }).execute()
+        }
+        if metadata:
+            row["metadata"] = metadata
+        sb.table("ai_insights").insert(row).execute()
     except Exception as e:
         logger.warning(f"Failed to log goal insight: {e}")
 

@@ -35,6 +35,7 @@ class GraphState(TypedDict):
     user_id: Optional[str]  # Supabase user id; ZERO_UUID fallback is allowed
     thread_source: Optional[str]  # 'telegram' | 'web'
     thread_external_id: Optional[str]  # telegram chat_id or web session id
+    dry_run: Optional[bool]  # if true, parse but do not persist (preview mode)
 
 
 ZERO_UUID = "00000000-0000-0000-0000-000000000000"

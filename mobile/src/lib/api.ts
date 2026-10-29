@@ -28,11 +28,12 @@ export interface BackendStatus {
 // a question about existing data it could ground in real rows.
 export interface ConfirmationBlock {
   type: "confirmation";
-  status: "logged" | "removed" | "error";
+  status: "logged" | "removed" | "error" | "preview";
   title: string;
   subtitle?: string | null;
   rows: { label: string; value: string }[];
   insight?: string | null;
+  metadata?: Record<string, any> | null;
 }
 
 export interface StatGridBlock {
@@ -66,6 +67,7 @@ export async function sendChat(
   message: string,
   images?: string[],
   sessionId?: string,
+  dryRun = false,
 ): Promise<{ reply: string; ui?: UIBlock | null }> {
   const res = await fetch(`${API_URL}/api/chat`, {
     method: "POST",
@@ -75,6 +77,7 @@ export async function sendChat(
       // base64-encoded images WITHOUT the data: prefix
       ...(images && images.length > 0 ? { images } : {}),
       ...(sessionId ? { session_id: sessionId } : {}),
+      dry_run: dryRun,
     }),
   });
   if (!res.ok) throw await parseError(res, "Chat request failed");
@@ -285,5 +288,19 @@ export async function uploadStatement(
     body: form,
   });
   if (!res.ok) throw await parseError(res, "Statement upload failed");
+  return res.json();
+}
+
+export async function goalCheckinAnswer(
+  goalId: string,
+  answer: "yes" | "no",
+  insightId?: string,
+): Promise<{ streak: number; achieved: boolean }> {
+  const res = await fetch(`${API_URL}/api/goals/checkin`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ goal_id: goalId, answer, insight_id: insightId }),
+  });
+  if (!res.ok) throw await parseError(res, "Check-in failed");
   return res.json();
 }

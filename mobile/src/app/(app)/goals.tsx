@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, RefreshControl, TextInput, Pressabl
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
-import { SendHorizonal, BrainCircuit, Gauge, Calendar, Check, ChevronDown, Flag, Wallet } from "lucide-react-native";
+import { SendHorizonal, BrainCircuit, Gauge, Calendar, Check, ChevronDown, Flag, Wallet, Flame } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { supabase } from "@/lib/supabase";
 import { sendGoalsChat } from "@/lib/api";
@@ -21,6 +21,7 @@ interface Goal {
   unit: string | null;
   deadline: string | null;
   priority: number;
+  checkin_cadence: string | null;
   created_at: string;
   updated_at: string | null;
 }
@@ -182,12 +183,15 @@ function GoalCard({ goal, onChangePriority }: { goal: Goal; onChangePriority?: (
         </View>
       }
       footer={
-        runRate || deadline ? (
-          <View style={styles.metaBar}>
-            {runRate ? <MetaBarItem icon={<Gauge size={13} color={colors.textTertiary} />} label={runRate} /> : <View />}
-            {deadline ? <MetaBarItem icon={<Calendar size={13} color={colors.textTertiary} />} label={deadline} /> : <View />}
-          </View>
-        ) : undefined
+        <View style={styles.metaBar}>
+          {goal.category === "habit" && goal.current_value != null ? (
+            <MetaBarItem icon={<Flame size={13} color={colors.kinematic} />} label={`${Math.round(goal.current_value)} ${goal.unit ?? "days"} streak`} />
+          ) : (
+            <View />
+          )}
+          {runRate ? <MetaBarItem icon={<Gauge size={13} color={colors.textTertiary} />} label={runRate} /> : <View />}
+          {deadline ? <MetaBarItem icon={<Calendar size={13} color={colors.textTertiary} />} label={deadline} /> : <View />}
+        </View>
       }
     />
   );

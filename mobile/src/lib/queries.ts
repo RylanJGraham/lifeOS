@@ -87,13 +87,14 @@ export interface Insight {
   action_item: string | null;
   generated_at: string;
   resolved_at: string | null;
+  metadata: Record<string, any> | null;
 }
 
 export function useInsights(domains: string[], limit = 100) {
   return useAsync(async () => {
     const { data, error } = await supabase
       .from("ai_insights")
-      .select("id, domain, insight_text, action_item, generated_at, resolved_at")
+      .select("id, domain, insight_text, action_item, generated_at, resolved_at, metadata")
       .in("domain", domains)
       .order("generated_at", { ascending: false })
       .limit(limit);

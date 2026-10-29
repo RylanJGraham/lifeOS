@@ -29,17 +29,49 @@ Sends a text message to the LangGraph agent (same pipeline as Telegram) and retu
   {
     "message": "What did I eat today?",
     "image": null,
-    "session_id": "web-123..."
+    "session_id": "web-123...",
+    "dry_run": false
   }
   ```
 - `session_id` is optional. When provided, the conversation is persisted to `chat_threads` and loaded as context on the next turn.
+- `dry_run` (optional, default `false`) runs the intent/parser but does **not** persist nutrition/workout/health entries. When `true` and the backend recognizes a logging intent, the response `ui` block has `status: "preview"` with parsed rows and a `metadata.intent` field. The client should render a confirmation card and re-send with `dry_run: false` to commit.
 - **Returns**:
   ```json
   {
-    "reply": "..."
+    "reply": "...",
+    "ui": {
+      "type": "confirmation",
+      "status": "preview",
+      "title": "Log 1 item?",
+      "rows": [{"label": "Porridge", "value": "350 kcal"}],
+      "metadata": {"intent": "confirm_nutrition", "items": [...]}
+    }
   }
   ```
 - **Errors**: `400` empty message, `500` agent failure.
+
+### `POST /api/goals/checkin`
+
+Records a Yes/No answer for a habit goal and updates its streak.
+
+- **Payload**:
+  ```json
+  {
+    "goal_id": "...",
+    "answer": "yes",
+    "insight_id": "..."
+  }
+  ```
+- `insight_id` is optional; when provided, the matching `ai_insights` row is marked resolved.
+- **Returns**:
+  ```json
+  {
+    "status": "success",
+    "streak": 12,
+    "achieved": false
+  }
+  ```
+- **Errors**: `400` invalid answer, `404` goal not found, `500` database failure.
 
 ### `POST /api/goals/chat`
 

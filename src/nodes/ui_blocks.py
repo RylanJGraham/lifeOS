@@ -22,19 +22,21 @@ class ConfirmationRow(TypedDict):
 
 class ConfirmationBlock(TypedDict):
     type: Literal["confirmation"]
-    status: Literal["logged", "removed", "error"]
+    status: Literal["logged", "removed", "error", "preview"]
     title: str
     subtitle: Optional[str]
     rows: list[ConfirmationRow]
     insight: Optional[str]
+    metadata: Optional[dict]  # extra payload for UI actions (e.g. dry-run parsed items)
 
 
 def confirmation_block(
-    status: Literal["logged", "removed", "error"],
+    status: Literal["logged", "removed", "error", "preview"],
     title: str,
     rows: list[ConfirmationRow],
     subtitle: str | None = None,
     insight: str | None = None,
+    metadata: dict | None = None,
 ) -> ConfirmationBlock:
     return {
         "type": "confirmation",
@@ -43,6 +45,7 @@ def confirmation_block(
         "subtitle": subtitle,
         "rows": rows,
         "insight": insight,
+        "metadata": metadata,
     }
 
 

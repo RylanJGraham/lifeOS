@@ -490,9 +490,26 @@ export function PodDetailed({
 // Renders a chat reply's structured block (see src/lib/api.ts UIBlock /
 // src/nodes/ui_blocks.py) — a logging confirmation or a data-query answer.
 // Sits inside a chat bubble, so it's compact rather than full Surface padding.
-export function ChatBlock({ block }: { block: import("@/lib/api").UIBlock }) {
+export function ChatBlock({
+  block,
+  onConfirm,
+  onEdit,
+  onCancel,
+}: {
+  block: import("@/lib/api").UIBlock;
+  onConfirm?: () => void;
+  onEdit?: () => void;
+  onCancel?: () => void;
+}) {
   if (block.type === "confirmation") {
-    const color = block.status === "error" ? colors.bad : block.status === "removed" ? colors.textTertiary : colors.good;
+    const color =
+      block.status === "error"
+        ? colors.bad
+        : block.status === "removed"
+          ? colors.textTertiary
+          : block.status === "preview"
+            ? colors.kinematic
+            : colors.good;
     return (
       <View style={[styles.chatBlock, { borderColor: withAlpha(color, 0.3) }]}>
         <View style={styles.chatBlockHeader}>
@@ -510,6 +527,25 @@ export function ChatBlock({ block }: { block: import("@/lib/api").UIBlock }) {
           </View>
         ) : null}
         {block.insight ? <Text style={styles.chatBlockInsight}>{block.insight}</Text> : null}
+        {block.status === "preview" && (onConfirm || onEdit || onCancel) ? (
+          <View style={styles.previewActions}>
+            {onCancel ? (
+              <Pressable onPress={onCancel} style={[styles.previewBtn, { backgroundColor: colors.surface2 }]}>
+                <Text style={[styles.previewBtnText, { color: colors.textSecondary }]}>Cancel</Text>
+              </Pressable>
+            ) : null}
+            {onEdit ? (
+              <Pressable onPress={onEdit} style={[styles.previewBtn, { backgroundColor: colors.surface2 }]}>
+                <Text style={[styles.previewBtnText, { color: colors.textPrimary }]}>Edit</Text>
+              </Pressable>
+            ) : null}
+            {onConfirm ? (
+              <Pressable onPress={onConfirm} style={[styles.previewBtn, { backgroundColor: colors.good }]}>
+                <Text style={[styles.previewBtnText, { color: colors.bg }]}>Confirm</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
       </View>
     );
   }
@@ -885,6 +921,9 @@ const styles = StyleSheet.create({
   chatBlockSubtitle: { ...type.caption, color: colors.textTertiary, marginTop: 2 },
   chatBlockWell: { marginTop: spacing.sm, backgroundColor: colors.surface2, borderRadius: radius.sm, padding: spacing.xs },
   chatBlockInsight: { ...type.caption, color: colors.textSecondary, marginTop: spacing.sm, lineHeight: 17 },
+  previewActions: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.md },
+  previewBtn: { flex: 1, paddingVertical: 8, borderRadius: radius.sm, alignItems: "center" },
+  previewBtnText: { fontFamily: fonts.spaceGroteskSemiBold, fontSize: 13 },
   chatBlockEyebrow: { fontFamily: fonts.monoSemiBold, fontSize: 9.5, color: colors.textTertiary, letterSpacing: 0.6, marginBottom: spacing.sm },
   chatStatGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   chatStat: { minWidth: "44%", flexGrow: 1, backgroundColor: colors.surface2, borderRadius: radius.sm, padding: spacing.sm },

@@ -15,7 +15,9 @@
         "NSCameraUsageDescription": "Human Engine OS uses your camera to log meals, workouts, and health data via chat.",
         "NSPhotoLibraryUsageDescription": "Human Engine OS uses your photo library to attach images to chat for logging meals, workouts, and health data.",
         "UIFileSharingEnabled": true,
-        "LSSupportsOpeningDocumentsInPlace": true
+        "LSSupportsOpeningDocumentsInPlace": true,
+        "NSSupportsLiveActivities": true,
+        "NSSupportsLiveActivitiesFrequentUpdates": true
       }
     },
     "android": {
@@ -56,7 +58,8 @@
         }
       ],
       "expo-font",
-      "expo-splash-screen"
+      "expo-splash-screen",
+      "expo-widgets"
     ]
   }
 }

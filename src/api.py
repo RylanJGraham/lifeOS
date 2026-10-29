@@ -494,6 +494,7 @@ class ChatRequest(BaseModel):
     image: str | None = None  # deprecated: single base64-encoded image (no data: prefix)
     images: list[str] | None = None  # multiple base64-encoded images (no data: prefix)
     session_id: str | None = None  # optional web session id for persistent threads
+    dry_run: bool = False  # if true, parse but do not persist (preview mode)
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest, _=Depends(require_api_key)):
@@ -518,6 +519,7 @@ async def chat(req: ChatRequest, _=Depends(require_api_key)):
             user_id=user_id,
             source="web",
             external_id=session_id,
+            dry_run=req.dry_run,
         )
     except Exception as e:
         SupabaseLogger.error("web-chat", f"Chat request failed: {e}")
@@ -538,6 +540,69 @@ async def goals_chat(req: GoalsChatRequest, _=Depends(require_api_key)):
         return await run_in_threadpool(handle_goals_chat, req.message, (req.history or [])[-20:])
     except Exception as e:
         SupabaseLogger.error("goals-chat", f"Goals chat request failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class GoalCheckinRequest(BaseModel):
+    goal_id: str
+    answer: str  # "yes" or "no"
+    insight_id: str | None = None
+
+
+@app.post("/api/goals/checkin")
+async def goals_checkin(req: GoalCheckinRequest, _=Depends(require_api_key)):
+    """Record a Yes/No habit check-in and update the goal streak."""
+    from datetime import datetime, timezone
+    from workers.action_items import mark_resolved
+    if req.answer not in ("yes", "no"):
+        raise HTTPException(status_code=400, detail="answer must be 'yes' or 'no'.")
+    try:
+        sb_url = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
+        sb_key = os.getenv("SUPABASE_SERVICE_KEY")
+        if not sb_url or not sb_key:
+            raise HTTPException(status_code=500, detail="Supabase not configured")
+        from supabase import create_client
+        sb = create_client(sb_url, sb_key)
+
+        res = sb.table("goals").select("*").eq("id", req.goal_id).limit(1).execute()
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Goal not found")
+        goal = res.data[0]
+
+        stayed_on_track = req.answer == "yes"
+        current = float(goal.get("current_value") or 0)
+        new_value = current + 1 if stayed_on_track else 0
+        note = (
+            f"Check-in ({goal.get('checkin_cadence') or 'manual'}): "
+            f"stayed on track (streak {new_value:g})" if stayed_on_track
+            else f"Check-in ({goal.get('checkin_cadence') or 'manual'}): slipped — streak reset"
+        )
+
+        sb.table("goal_checkins").insert({
+            "goal_id": req.goal_id,
+            "user_id": goal.get("user_id"),
+            "note": note,
+            "value": new_value,
+        }).execute()
+
+        update_fields = {"current_value": new_value, "updated_at": datetime.now(timezone.utc).isoformat()}
+        target = goal.get("target_value")
+        achieved = stayed_on_track and target is not None and new_value >= float(target)
+        if achieved:
+            update_fields["status"] = "achieved"
+        sb.table("goals").update(update_fields).eq("id", req.goal_id).execute()
+
+        if req.insight_id:
+            try:
+                mark_resolved("goals", "Check-in answered", insight_id=req.insight_id)
+            except Exception:
+                pass
+
+        return {"status": "success", "streak": new_value, "achieved": achieved}
+    except HTTPException:
+        raise
+    except Exception as e:
+        SupabaseLogger.error("goals-checkin", f"Goal check-in failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

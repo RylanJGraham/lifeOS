@@ -64,6 +64,7 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [pending, setPending] = useState<{ text: string; images: string[]; files: Attachment[]; ui: UIBlock } | null>(null);
   const sessionIdRef = useRef<string>("");
   const listRef = useRef<FlatList<ChatMessage>>(null);
 
@@ -143,7 +144,7 @@ export default function ChatScreen() {
   const send = async () => {
     const text = input.trim();
     if (!text && attachments.length === 0) return;
-    if (uploading) return;
+    if (uploading || sending) return;
 
     const currentAttachments = attachments;
     const imageUris = currentAttachments.filter((a) => a.kind === "image").map((a) => a.uri);
@@ -199,8 +200,14 @@ export default function ChatScreen() {
         }
       }
 
-      const res = await sendChat(messageText, imagesToSend.length > 0 ? imagesToSend : undefined, sessionIdRef.current);
-      setMessages((prev) => [...prev, { role: "agent", text: res.reply, ts: Date.now(), ui: res.ui }]);
+      const res = await sendChat(messageText, imagesToSend.length > 0 ? imagesToSend : undefined, sessionIdRef.current, true);
+      if (res.ui && res.ui.type === "confirmation" && res.ui.status === "preview") {
+        const previewTs = Date.now();
+        setPending({ text: messageText, images: imagesToSend, files: currentAttachments, ui: res.ui });
+        setMessages((prev) => [...prev, { role: "agent", text: res.reply, ts: previewTs, ui: res.ui }]);
+      } else {
+        setMessages((prev) => [...prev, { role: "agent", text: res.reply, ts: Date.now(), ui: res.ui }]);
+      }
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -210,6 +217,44 @@ export default function ChatScreen() {
       setSending(false);
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
     }
+  };
+
+  const confirmPending = async () => {
+    if (!pending || sending) return;
+    setSending(true);
+    const previewTs = messages.find((m) => m.ui === pending.ui)?.ts;
+    try {
+      const imagesToSend = pending.images.length > 0 ? pending.images : undefined;
+      const res = await sendChat(pending.text, imagesToSend, sessionIdRef.current, false);
+      setMessages((prev) => {
+        const filtered = previewTs ? prev.filter((m) => m.ts !== previewTs) : prev;
+        return [...filtered, { role: "agent", text: res.reply, ts: Date.now(), ui: res.ui }];
+      });
+      setPending(null);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "error", text: err instanceof Error ? err.message : "Confirm failed", ts: Date.now() },
+      ]);
+    } finally {
+      setSending(false);
+      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+    }
+  };
+
+  const cancelPending = () => {
+    if (!pending) return;
+    const previewTs = messages.find((m) => m.ui === pending.ui)?.ts;
+    if (previewTs) {
+      setMessages((prev) => prev.filter((m) => m.ts !== previewTs));
+    }
+    setPending(null);
+  };
+
+  const editPending = () => {
+    if (!pending) return;
+    setInput(pending.text);
+    cancelPending();
   };
 
   return (
@@ -254,9 +299,15 @@ export default function ChatScreen() {
               // prose bubble — the block already carries any insight text,
               // so showing both would just repeat the same numbers twice.
               if (item.ui && !isUser) {
+                const isPreview = item.ui.type === "confirmation" && item.ui.status === "preview";
                 return (
                   <View style={styles.blockWrap}>
-                    <ChatBlock block={item.ui} />
+                    <ChatBlock
+                      block={item.ui}
+                      onConfirm={isPreview ? confirmPending : undefined}
+                      onEdit={isPreview ? editPending : undefined}
+                      onCancel={isPreview ? cancelPending : undefined}
+                    />
                     <Text style={styles.bubbleTime}>{formatTime(item.ts)}</Text>
                   </View>
                 );

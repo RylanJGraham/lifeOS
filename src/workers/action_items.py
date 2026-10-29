@@ -43,8 +43,11 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def mark_resolved(domain: str, resolution: str) -> int:
-    """Mark all unresolved ai_insights rows for a domain as resolved.
+def mark_resolved(domain: str, resolution: str, insight_id: str | None = None) -> int:
+    """Mark unresolved ai_insights rows for a domain as resolved.
+
+    If insight_id is provided, only that row is resolved; otherwise all
+    unresolved rows for the domain are resolved.
 
     Returns the number of rows resolved.
     """
@@ -52,13 +55,15 @@ def mark_resolved(domain: str, resolution: str) -> int:
         logger.warning(f"Cannot resolve {domain}: Supabase not configured")
         return 0
     try:
-        res = (
+        query = (
             sb.table("ai_insights")
             .update({"resolved_at": _now_iso(), "resolution": resolution})
             .is_("resolved_at", "null")
             .eq("domain", domain)
-            .execute()
         )
+        if insight_id:
+            query = query.eq("id", insight_id)
+        res = query.execute()
         # Supabase REST returns the updated rows in res.data
         data = getattr(res, "data", None) or res.get("data") if isinstance(res, dict) else []
         count = len(data) if isinstance(data, list) else 0

@@ -312,6 +312,38 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
 
             search_info = f" (verified via search for '{search_query}')" if search_context else ""
             removed_info = ("Removed " + ", ".join(removed_summaries) + ".\n") if removed_summaries else ""
+
+            # Dry-run preview: show parsed items without persisting them.
+            if state.get("dry_run"):
+                preview_rows = [
+                    {"label": it.get("meal_name") or "Item", "value": f"{it.get('calories') or 0} kcal"}
+                    for it in items
+                ]
+                state["response"] = removed_info + f"Preview: {len(items)} item(s) ready to log."
+                state["ui"] = confirmation_block(
+                    status="preview",
+                    title=f"Log {len(items)} item{('s' if len(items) > 1 else '')}?",
+                    rows=preview_rows,
+                    subtitle=search_info.strip(" ()") or None,
+                    metadata={
+                        "intent": "confirm_nutrition",
+                        "items": [
+                            {
+                                "meal_name": it.get("meal_name"),
+                                "calories": it.get("calories") or 0,
+                                "protein": it.get("protein") or 0,
+                                "carbs": it.get("carbs") or 0,
+                                "fats": it.get("fats") or 0,
+                                "meal_time": it.get("meal_time") or current_time,
+                                "meal_type": it.get("meal_type"),
+                                "micronutrients": it.get("micronutrients") or {},
+                            }
+                            for it in items
+                        ],
+                    },
+                )
+                return state
+
             if len(logged_summaries) > 1:
                 state["response"] = removed_info + f"Logged {len(logged_summaries)} items{search_info}:\n" + "\n".join(f"• {s}" for s in logged_summaries)
                 state["ui"] = confirmation_block(

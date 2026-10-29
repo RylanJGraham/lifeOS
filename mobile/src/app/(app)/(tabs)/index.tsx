@@ -45,6 +45,8 @@ import {
   HEADER_BAR_HEIGHT,
 } from "@/components/ui";
 
+import { useFuelActivity } from "@/hooks/useFuelActivity";
+
 const HERO_RING_SIZE = 72;
 
 const INSIGHT_DOMAINS = [
@@ -120,6 +122,7 @@ export default function CockpitScreen() {
   const backendStatus = useBackendStatus();
   const systemLogs = useSystemLogs(5);
   const dailyReports = useDailyReports(1);
+  useFuelActivity();
 
   const loading = insights.loading || profile.loading || healthMetrics.loading || positions.loading || goals.loading;
   const refreshing = insights.refreshing || profile.refreshing || healthMetrics.refreshing || positions.refreshing || goals.refreshing || pipelines.refreshing || backendStatus.refreshing || systemLogs.refreshing || dailyReports.refreshing;
