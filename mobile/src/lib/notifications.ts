@@ -50,10 +50,16 @@ export async function registerForPushNotifications(): Promise<string | null> {
 
 /** Mount once under AuthProvider: registers the device after sign-in and
  * opens the screen named by a tapped notification's `deep_link`. */
+// Push needs the Apple push entitlement, which a free personal team cannot
+// provision. It is OFF unless EXPO_PUBLIC_ENABLE_PUSH=1 (and the
+// "expo-notifications" plugin is in app.json + a prebuild). Until then the
+// backend falls back to Telegram.
+const PUSH_ENABLED = process.env.EXPO_PUBLIC_ENABLE_PUSH === "1";
+
 export function usePushSetup() {
   const { session } = useAuth();
   const router = useRouter();
-  const userId = session?.user.id;
+  const userId = PUSH_ENABLED ? session?.user.id : undefined;
 
   useEffect(() => {
     if (!userId) return;

@@ -9,6 +9,7 @@
 What's New:
 - **Telegram as a temporary notification fallback** (`src/utils/telegram.py`, `utils/notify.py`): while no mobile build can receive push, `notify()` sends outbound-only Telegram when no device accepts the push (needs `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`; `push_status = "telegram"`). Quiet hours/toggles still apply. Inbound Telegram chat stays retired. Note: the droplet had no `TELEGRAM_CHAT_ID`, so Telegram sends had been silently skipped before this.
 - **Calendar**: edit events (mobile + web; editing a repeating event moves the whole series, duration preserved); subscribable iCal feed (`/calendar/feed/<token>.ics`, migration 032); estimated subscription-renewal and dividend events; today's agenda appended to the morning briefing.
+- Mobile push is gated off (`EXPO_PUBLIC_ENABLE_PUSH`) and the `expo-notifications` plugin removed from `app.json`, because the free Apple team can't sign the push entitlement; Telegram carries notifications meanwhile.
 - Tests: 113 total (new `tests/test_calendar_followups.py`).
 
 Also: `OWNER_AUTH_USER_ID` (see `docs/architecture.md` §3.9) maps the owner's login onto the legacy data owner id; found because all existing rows belong to the zero UUID while the login id differs.
