@@ -29,7 +29,7 @@ import {
   liveBankBalance,
   type Goal,
 } from "@/lib/queries";
-import { nutritionStatus, sleepStatus, detectPRs, dayFractionNow, type StatusItem, type Severity } from "@/lib/pacing";
+import { nutritionStatus, sleepStatus, detectPRs, dayFractionNow, isCurrentDay, type StatusItem, type Severity } from "@/lib/pacing";
 import { colors, colors as lightColors, radius, spacing, withAlpha, fonts } from "@/theme";
 import { useTheme } from "@/theme/ThemeProvider";
 import {
@@ -254,7 +254,7 @@ export default function CockpitScreen() {
 
   // Readiness score: sleep + HRV + RHR composite
   const readinessScore = useMemo(() => {
-    const latestMetric = healthMetrics.data?.[0];
+    const latestMetric = isCurrentDay(healthMetrics.data?.[0]?.recorded_at) ? healthMetrics.data?.[0] : undefined;
     const sleepHours = latestMetric?.sleep_duration_minutes ? latestMetric.sleep_duration_minutes / 60 : null;
     const sleepPctVal = sleepHours != null ? Math.min(100, (sleepHours / 8) * 100) : null;
     let score = 0;
@@ -267,7 +267,7 @@ export default function CockpitScreen() {
 
   if (loading) return <LoadingState label="Loading Cockpit…" />;
 
-  const latestMetric = healthMetrics.data?.[0];
+  const latestMetric = isCurrentDay(healthMetrics.data?.[0]?.recorded_at) ? healthMetrics.data?.[0] : undefined;
   const currencyTotals = preCurrencyTotals;
   const balance = preBalance;
   const todayCalories = (todayMeals.data ?? []).reduce((a, m) => a + (m.calories ?? 0), 0);

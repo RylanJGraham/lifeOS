@@ -1,7 +1,7 @@
 // Run: node --experimental-strip-types --test tests-node/calendarLayout.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { monthGrid, monthGridRange, startOfWeek, layoutDay, groupByDay, heatLevel, dayKey, addMonths } from "../src/lib/calendarLayout.ts";
+import { daysBetween, seriesStartForMove, monthGrid, monthGridRange, startOfWeek, layoutDay, groupByDay, heatLevel, dayKey, addMonths } from "../src/lib/calendarLayout.ts";
 
 const ev = (id: string, start: string, end: string | null = null, all_day = false) => ({
   occurrence_id: id, starts_at: new Date(start).toISOString(), ends_at: end ? new Date(end).toISOString() : null, all_day,
@@ -91,4 +91,30 @@ test("groupByDay buckets by local day, all-day first then by time", () => {
 
 test("heat levels", () => {
   assert.deepEqual([0, 1, 2, 3, 4, 6, 7, 20].map(heatLevel), [0, 1, 2, 2, 3, 3, 4, 4]);
+});
+
+test("daysBetween counts calendar days, across DST and year ends", () => {
+  assert.equal(daysBetween(new Date(2026, 9, 25, 23, 0), new Date(2026, 9, 26, 1, 0)), 1); // across the Oct DST change
+  assert.equal(daysBetween(new Date(2026, 11, 31), new Date(2027, 0, 2)), 2);
+  assert.equal(daysBetween(new Date(2026, 10, 5), new Date(2026, 10, 3)), -2);
+  assert.equal(daysBetween(new Date(2026, 10, 5, 9), new Date(2026, 10, 5, 23)), 0);
+});
+
+test("moving a single event keeps its time of day", () => {
+  const occ = new Date(2026, 10, 5, 15, 30).toISOString();
+  const moved = new Date(seriesStartForMove(occ, occ, new Date(2026, 10, 9)));
+  assert.deepEqual([moved.getDate(), moved.getHours(), moved.getMinutes()], [9, 15, 30]);
+});
+
+test("moving one occurrence of a weekly series shifts the whole series by the same days", () => {
+  const series = new Date(2026, 10, 2, 18, 0).toISOString(); // Mon 2 Nov
+  const occ = new Date(2026, 10, 16, 18, 0).toISOString();   // the 16 Nov occurrence, dragged to the 17th
+  const moved = new Date(seriesStartForMove(occ, series, new Date(2026, 10, 17)));
+  assert.deepEqual([moved.getMonth(), moved.getDate(), moved.getHours()], [10, 3, 18]); // series now starts Tue 3 Nov, still 18:00
+});
+
+test("moving across a DST change keeps the wall-clock hour", () => {
+  const occ = new Date(2026, 9, 24, 9, 0).toISOString(); // before EU DST ends (25 Oct)
+  const moved = new Date(seriesStartForMove(occ, occ, new Date(2026, 9, 27)));
+  assert.equal(moved.getHours(), 9);
 });

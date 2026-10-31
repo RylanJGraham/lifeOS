@@ -4,7 +4,15 @@
 
 ---
 
-## Latest change: Database lockdown, calendar views, privacy for linked calendars
+## Latest change: Stale sleep data fix, move/delete events
+
+What's New:
+- **Stale health data is no longer shown as today's.** The Bio hero rings, recovery score and recommendations, the Cockpit readiness score and "Low sleep last night" alert, and the **morning briefing** all used the newest health row regardless of age (a 3-day-old night showed as today's). They now use a record only if it is dated today; otherwise Bio says "No sleep logged today · last data 28 Oct (3d ago)" and the briefing says sleep hasn't been logged for N days instead of judging it (`mobile/src/lib/pacing.ts: isCurrentDay/daysOld`, `workers/morning_briefing.py: sleep_facts`, 5 new tests).
+- **Calendar: move and delete are now one tap away.** Every event of yours in a day's list shows **Move** and **Delete**; long-press an event on the Day timeline for Edit / Move / Delete; **Move** opens a date picker (keeps the time; a repeating series shifts by the same number of days); goal deadlines open Goals (where their date lives). Move logic is unit-tested (`seriesStartForMove`, 4 new Node tests).
+
+---
+
+## Previous: Database lockdown, calendar views, privacy for linked calendars
 
 What's New:
 - **Database lockdown (migration 035)**: every public table is now owner-only RLS (`auth.uid() = <owner login>`). Before, 35 tables allowed ANY signed-up user full read/write (Supabase sign-ups were open) and `company_rsus` / `chat_modes` were open to the unauthenticated `public` role. Verified: owner sees all rows; a stranger and the anon key see none; the service-key backend is unaffected. **New tables must use the same owner-only (or `user_id = auth.uid()`) policy — never `USING (true)`.** Turn off "Allow new users to sign up" in Supabase Auth as well.

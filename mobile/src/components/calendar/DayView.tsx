@@ -20,6 +20,7 @@ export function DayView({
   events,
   today,
   onPressEvent,
+  onLongPressEvent,
   refreshing,
   onRefresh,
 }: {
@@ -27,6 +28,7 @@ export function DayView({
   events: CalendarOccurrence[];
   today: Date;
   onPressEvent: (ev: CalendarOccurrence) => void;
+  onLongPressEvent: (ev: CalendarOccurrence) => void;
   refreshing: boolean;
   onRefresh: () => void;
 }) {
@@ -66,8 +68,9 @@ export function DayView({
               return (
                 <Pressable
                   key={ev.occurrence_id}
-                  disabled={ev.origin !== "user"}
+                  disabled={ev.origin !== "user" && ev.origin !== "goal"}
                   onPress={() => onPressEvent(ev)}
+                  onLongPress={() => onLongPressEvent(ev)}
                   style={[styles.allDayChip, { backgroundColor: withAlpha(c, 0.18), borderLeftColor: c }]}
                 >
                   <Text numberOfLines={1} style={[styles.allDayText, { color: colors.textPrimary }]}>{ev.title}</Text>
@@ -99,8 +102,9 @@ export function DayView({
             return (
               <Pressable
                 key={b.event.occurrence_id}
-                disabled={b.event.origin !== "user"}
+                disabled={b.event.origin !== "user" && b.event.origin !== "goal"}
                 onPress={() => onPressEvent(b.event)}
+                onLongPress={() => onLongPressEvent(b.event)}
                 accessibilityLabel={`${b.event.title}, ${fmt(b.event.starts_at)}`}
                 style={[
                   styles.event,

@@ -9,7 +9,7 @@ import {
   TrendingUp, TrendingDown, Zap, Target, Calendar, Pill, Plus, X, Trash2,
 } from "lucide-react-native";
 import { useHealthMetrics, useWorkouts, useMeals, useProfile, useExerciseMuscles } from "@/lib/queries";
-import { nutritionStatus, sleepStatus, detectPRs, dayFractionNow } from "@/lib/pacing";
+import { nutritionStatus, sleepStatus, detectPRs, dayFractionNow, isCurrentDay, daysOld } from "@/lib/pacing";
 import { colors, colors as lightColors, spacing, radius, fonts, withAlpha } from "@/theme";
 import { useTheme } from "@/theme/ThemeProvider";
 import {
@@ -347,7 +347,7 @@ export default function HealthScreen() {
   // (must be before the early return — hooks can't be conditional)
   const recoveryScore = useMemo(() => {
     const data = metrics.data ?? [];
-    const latestMetric = data[0];
+    const latestMetric = isCurrentDay(data[0]?.recorded_at) ? data[0] : undefined; // stale data must not count as today's
     const sleepHours = latestMetric?.sleep_duration_minutes ? latestMetric.sleep_duration_minutes / 60 : null;
     const sleepPctVal = sleepHours != null ? Math.min(100, (sleepHours / 8) * 100) : null;
     let score = 0;
@@ -393,7 +393,7 @@ export default function HealthScreen() {
   // workout streak at risk. Each has a title, detail, and severity color.
   const recommendations = useMemo(() => {
     const data = metrics.data ?? [];
-    const latestMetric = data[0];
+    const latestMetric = isCurrentDay(data[0]?.recorded_at) ? data[0] : undefined;
     const recs: { id: string; title: string; detail: string; color: string; severity: "warn" | "bad" | "good" }[] = [];
     if (!latestMetric) return recs;
 
@@ -450,7 +450,12 @@ export default function HealthScreen() {
 
   // ─── Computed values (after early return — no hooks here) ───
 
-  const latest = allMetrics?.[0]; // hero/recovery uses the absolute latest metric
+  const latestAny = allMetrics?.[0];
+  // Hero rings show today's record only. An older one is NOT presented as current; we say how old it is instead.
+  const latest = isCurrentDay(latestAny?.recorded_at) ? latestAny : undefined;
+  const staleSleepNote = latestAny && !latest
+    ? `No sleep logged today · last data ${new Date(latestAny.recorded_at).toLocaleDateString(undefined, { day: "numeric", month: "short" })} (${daysOld(latestAny.recorded_at)}d ago)`
+    : !latestAny ? "No sleep data yet" : null;
   const chronological = [...(filteredMetrics ?? [])].reverse();
 
   const sleepChartData = chronological
@@ -692,6 +697,7 @@ export default function HealthScreen() {
           })}
         </View>
 
+        {staleSleepNote ? <Text style={styles.heroStale}>{staleSleepNote}</Text> : null}
         {/* 4 vital rings */}
         <View style={styles.heroRingsRow}>
           <View style={styles.heroRingItem}>
@@ -1906,6 +1912,7 @@ function createStyles(colors: typeof lightColors) {
   calendarDotInner: { width: 5, height: 5, borderRadius: 2.5 },
 
   // ─── Hero rings ───
+  heroStale: { color: "rgba(255,255,255,0.75)", fontFamily: fonts.geistRegular, fontSize: 12, textAlign: "center", marginTop: spacing.xs },
   heroRingsRow: { flexDirection: "row", justifyContent: "space-around", paddingVertical: spacing.sm },
   heroRingItem: { alignItems: "center", gap: 4 },
   heroRingInner: { alignItems: "center", justifyContent: "center" },

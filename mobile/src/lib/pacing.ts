@@ -92,8 +92,23 @@ export function nutritionStatus(meals: TodayMeal[], profile: NutritionProfile | 
   return null;
 }
 
+/** Is this record dated today (local day)? Health rows are dated by the day you woke up. */
+export function isCurrentDay(iso: string | null | undefined, now: Date = new Date()): boolean {
+  if (!iso) return false;
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return iso.slice(0, 10) === today;
+}
+
+/** Whole days between the record's date and today (0 = today). */
+export function daysOld(iso: string, now: Date = new Date()): number {
+  const rec = new Date(`${iso.slice(0, 10)}T00:00:00`);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((today.getTime() - rec.getTime()) / 86400000);
+}
+
 export function sleepStatus(latest: HealthMetric | undefined, targetHours = 8): StatusItem | null {
-  if (!latest?.sleep_duration_minutes) return null;
+  // Only judge last night's sleep if it was actually logged today — never present an old night as current.
+  if (!latest?.sleep_duration_minutes || !isCurrentDay(latest.recorded_at)) return null;
   const hours = latest.sleep_duration_minutes / 60;
   if (hours >= targetHours * 0.9) return null; // close enough to target, not worth flagging
   const severity: Severity = hours >= targetHours * 0.75 ? "warn" : "bad";

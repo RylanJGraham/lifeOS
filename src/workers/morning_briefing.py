@@ -48,6 +48,29 @@ def _user_id() -> str:
     return ZERO_UUID
 
 
+def sleep_facts(sleep_rows: list[dict], today) -> dict:
+    """Sleep facts for the briefing. "Last night" is only claimed when a sleep record
+    dated today exists; an older record is reported as stale (with its age), never as
+    last night's sleep. Rows are newest-first."""
+    facts: dict = {}
+    if not sleep_rows:
+        return facts
+    last = sleep_rows[0]
+    last_day = datetime.fromisoformat(str(last["recorded_at"])[:10]).date()
+    age = (today - last_day).days
+    if age <= 0:
+        facts["last_sleep_h"] = round(last["sleep_duration_minutes"] / 60, 1)
+        facts["last_deep_min"] = last.get("sleep_deep_minutes")
+    else:
+        facts["sleep_not_logged_days"] = age  # newest sleep data is this many days old
+        facts["last_sleep_logged_on"] = last_day.isoformat()
+    week = sleep_rows[:7]
+    debt = sum(max(0, 480 - r["sleep_duration_minutes"]) for r in week)
+    facts["sleep_debt_h"] = round(debt / 60, 1)
+    facts["sleep_avg_h"] = round(sum(r["sleep_duration_minutes"] for r in week) / len(week) / 60, 1)
+    return facts
+
+
 def gather_facts() -> dict:
     facts = {}
     now = datetime.now()
@@ -64,14 +87,7 @@ def gather_facts() -> dict:
         ).data or []
         sleep_rows = [r for r in hm_rows if r.get("sleep_duration_minutes")]
         rhr_rows = [r for r in hm_rows if r.get("resting_heart_rate")]
-        if sleep_rows:
-            last = sleep_rows[0]
-            facts["last_sleep_h"] = round(last["sleep_duration_minutes"] / 60, 1)
-            facts["last_deep_min"] = last.get("sleep_deep_minutes")
-            week = sleep_rows[:7]
-            debt = sum(max(0, 480 - r["sleep_duration_minutes"]) for r in week)
-            facts["sleep_debt_h"] = round(debt / 60, 1)
-            facts["sleep_avg_h"] = round(sum(r["sleep_duration_minutes"] for r in week) / len(week) / 60, 1)
+        facts.update(sleep_facts(sleep_rows, now.date()))
         if rhr_rows:
             facts["rhr_latest"] = rhr_rows[0]["resting_heart_rate"]
             if len(rhr_rows) > 2:
@@ -170,7 +186,9 @@ push notification from these computed facts (JSON). Rules: 4-7 short lines, plai
 no headers, no markdown bullets with asterisks (use simple dashes), at most 2 emojis.
 Lead with the readiness verdict (green/yellow/red) and why. Include the training pick
 and yesterday's nutrition close-out when present. If illness_flag is true, be firm:
-no training today. Never invent numbers.
+no training today. Never invent numbers. If sleep_not_logged_days is present, say sleep has not been logged
+for that many days — do NOT describe it as last night's sleep and do not judge it.
+
 
 Facts: {json.dumps(facts)}"""
             return llm_fast.invoke([HumanMessage(content=prompt)]).content.strip(), action_item
@@ -180,6 +198,8 @@ Facts: {json.dumps(facts)}"""
     lines = [f"Readiness: {facts.get('readiness', '?').upper()}" + (f" ({'; '.join(facts['readiness_reasons'])})" if facts.get("readiness_reasons") else "")]
     if facts.get("last_sleep_h"):
         lines.append(f"Sleep: {facts['last_sleep_h']}h last night, {facts.get('sleep_debt_h', 0)}h debt this week")
+    elif facts.get("sleep_not_logged_days"):
+        lines.append(f"Sleep: not logged for {facts['sleep_not_logged_days']} days (last data {facts['last_sleep_logged_on']})")
     if action_item:
         lines.append(f"→ {action_item}")
     if facts.get("y_kcal") is not None:

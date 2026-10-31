@@ -130,3 +130,23 @@ export function heatLevel(count: number): 0 | 1 | 2 | 3 | 4 {
   if (count <= 6) return 3;
   return 4;
 }
+
+/** Whole calendar days from a to b (DST-safe: compares dates, not 24h blocks). */
+export function daysBetween(a: Date, b: Date): number {
+  return Math.round((Date.UTC(b.getFullYear(), b.getMonth(), b.getDate()) - Date.UTC(a.getFullYear(), a.getMonth(), a.getDate())) / 86400000);
+}
+
+/** ISO of `iso` moved `deltaDays` calendar days, keeping its local wall-clock time. */
+export function shiftIsoByDays(iso: string, deltaDays: number): string {
+  const d = new Date(iso);
+  d.setDate(d.getDate() + deltaDays);
+  return d.toISOString();
+}
+
+/**
+ * New `starts_at` for the event's SERIES when one occurrence is dragged to `targetDay`.
+ * The occurrence keeps its time of day; a repeating series moves by the same number of days.
+ */
+export function seriesStartForMove(occurrenceStartIso: string, seriesStartIso: string, targetDay: Date): string {
+  return shiftIsoByDays(seriesStartIso, daysBetween(new Date(occurrenceStartIso), targetDay));
+}

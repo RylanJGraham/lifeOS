@@ -25,6 +25,7 @@ import { MonthView } from "@/components/calendar/MonthView";
 import { DayView } from "@/components/calendar/DayView";
 import { YearView } from "@/components/calendar/YearView";
 import { DaySheet } from "@/components/calendar/DaySheet";
+import { MoveSheet } from "@/components/calendar/MoveSheet";
 
 type ViewKey = "day" | "month" | "year";
 const VIEWS: { key: ViewKey; label: string }[] = [
@@ -56,6 +57,7 @@ export default function CalendarScreen() {
   const [focus, setFocus] = useState<Date>(() => startOfDay(new Date())); // the day / month / year being looked at
   const [editing, setEditing] = useState<CalendarOccurrence | "new" | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
+  const [moving, setMoving] = useState<CalendarOccurrence | null>(null);
   const [sheetDay, setSheetDay] = useState<Date | null>(null); // day whose full event list is open
   const [picked, setPicked] = useState<Date | null>(null); // last tapped day (stays highlighted)
 
@@ -110,6 +112,30 @@ export default function CalendarScreen() {
       ]);
     },
     [events],
+  );
+
+  // Tapping an event: yours open for editing; a goal deadline jumps to Goals (where its date lives).
+  const openEvent = useCallback(
+    (ev: CalendarOccurrence) => {
+      if (ev.origin === "goal") router.push("/goals");
+      else if (ev.origin === "user") setEditing(ev);
+    },
+    [router],
+  );
+
+  // Long-press an event on the timeline: quick actions.
+  const eventActions = useCallback(
+    (ev: CalendarOccurrence) => {
+      if (ev.origin !== "user") return;
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+      Alert.alert(ev.title, undefined, [
+        { text: "Edit", onPress: () => setEditing(ev) },
+        { text: "Move to another day", onPress: () => setMoving(ev) },
+        { text: "Delete", style: "destructive", onPress: () => confirmDelete(ev) },
+        { text: "Cancel", style: "cancel" },
+      ]);
+    },
+    [confirmDelete],
   );
 
   const shareFeed = useCallback(async (rotate: boolean) => {
@@ -180,7 +206,8 @@ export default function CalendarScreen() {
           day={focus}
           events={list}
           today={today}
-          onPressEvent={setEditing}
+          onPressEvent={openEvent}
+          onLongPressEvent={eventActions}
           refreshing={events.refreshing}
           onRefresh={events.refetch}
         />
@@ -239,8 +266,13 @@ export default function CalendarScreen() {
         onClose={() => setSheetDay(null)}
         onEdit={(ev) => {
           setSheetDay(null);
-          setTimeout(() => setEditing(ev), 350); // let the sheet finish dismissing first (iOS can't stack two modals)
+          setTimeout(() => openEvent(ev), 350); // let the sheet finish dismissing first (iOS can't stack two modals)
         }}
+        onMove={(ev) => {
+          setSheetDay(null);
+          setTimeout(() => setMoving(ev), 350);
+        }}
+        onDelete={confirmDelete}
         onAdd={(d) => {
           setSheetDay(null);
           setFocus(d);
@@ -250,6 +282,15 @@ export default function CalendarScreen() {
           setSheetDay(null);
           setFocus(d);
           setView("day");
+        }}
+      />
+
+      <MoveSheet
+        event={moving}
+        onClose={() => setMoving(null)}
+        onMoved={() => {
+          setMoving(null);
+          events.refetch();
         }}
       />
 

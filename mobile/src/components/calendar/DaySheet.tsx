@@ -16,6 +16,8 @@ export function DaySheet({
   onEdit,
   onAdd,
   onTimeline,
+  onMove,
+  onDelete,
 }: {
   day: Date | null;
   events: CalendarOccurrence[];
@@ -24,6 +26,8 @@ export function DaySheet({
   onEdit: (ev: CalendarOccurrence) => void;
   onAdd: (day: Date) => void;
   onTimeline: (day: Date) => void;
+  onMove: (ev: CalendarOccurrence) => void;
+  onDelete: (ev: CalendarOccurrence) => void;
 }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -54,7 +58,7 @@ export function DaySheet({
                 <Text style={[styles.emptyText, { color: colors.textSecondary }]}>Nothing scheduled this day.</Text>
               </Surface>
             ) : (
-              <AgendaList events={events} onPress={onEdit} />
+              <AgendaList events={events} onPress={onEdit} onMove={onMove} onDelete={onDelete} />
             )}
 
             <View style={styles.actions}>
