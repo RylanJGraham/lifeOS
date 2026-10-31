@@ -14,11 +14,13 @@ export function YearView({
   events,
   today,
   onPickMonth,
+  onPickDay,
 }: {
   year: number;
   events: CalendarOccurrence[];
   today: Date;
   onPickMonth: (month: Date) => void;
+  onPickDay: (day: Date) => void;
 }) {
   const { colors } = useTheme();
   const byDay = groupByDay(events);
@@ -34,15 +36,19 @@ export function YearView({
           const month = new Date(year, m, 1);
           const isCurrent = today.getFullYear() === year && today.getMonth() === m;
           return (
-            <Pressable
+            <View
               key={m}
-              onPress={() => onPickMonth(month)}
-              accessibilityLabel={`${month.toLocaleDateString(undefined, { month: "long" })} ${year}`}
               style={[styles.month, { backgroundColor: colors.surface1, borderColor: isCurrent ? colors.focus : colors.hairline }]}
             >
-              <Text style={[styles.monthTitle, { color: isCurrent ? colors.focus : colors.textPrimary }]}>
-                {month.toLocaleDateString(undefined, { month: "short" })}
-              </Text>
+              <Pressable
+                onPress={() => onPickMonth(month)}
+                hitSlop={6}
+                accessibilityLabel={`Open ${month.toLocaleDateString(undefined, { month: "long" })} ${year}`}
+              >
+                <Text style={[styles.monthTitle, { color: isCurrent ? colors.focus : colors.textPrimary }]}>
+                  {month.toLocaleDateString(undefined, { month: "short" })} ›
+                </Text>
+              </Pressable>
               {monthGrid(month).map((week, wi) => (
                 <View key={wi} style={styles.week}>
                   {week.map((d) => {
@@ -50,8 +56,11 @@ export function YearView({
                     const level = heatLevel((byDay.get(dayKey(d)) ?? []).length);
                     const isToday = isSameDay(d, today);
                     return (
-                      <View
+                      <Pressable
                         key={dayKey(d)}
+                        onPress={() => onPickDay(d)}
+                        hitSlop={1}
+                        accessibilityLabel={`${d.toDateString()}, ${(byDay.get(dayKey(d)) ?? []).length} events`}
                         style={[
                           styles.day,
                           level > 0 && { backgroundColor: withAlpha(colors.focus, HEAT_ALPHA[level]) },
@@ -67,12 +76,12 @@ export function YearView({
                         >
                           {d.getDate()}
                         </Text>
-                      </View>
+                      </Pressable>
                     );
                   })}
                 </View>
               ))}
-            </Pressable>
+            </View>
           );
         })}
       </View>

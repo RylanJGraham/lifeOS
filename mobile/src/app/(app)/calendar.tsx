@@ -24,7 +24,7 @@ import { SyncModal } from "@/components/calendar/SyncModal";
 import { MonthView } from "@/components/calendar/MonthView";
 import { DayView } from "@/components/calendar/DayView";
 import { YearView } from "@/components/calendar/YearView";
-import { AgendaList } from "@/components/calendar/AgendaList";
+import { DaySheet } from "@/components/calendar/DaySheet";
 
 type ViewKey = "day" | "month" | "year";
 const VIEWS: { key: ViewKey; label: string }[] = [
@@ -56,6 +56,8 @@ export default function CalendarScreen() {
   const [focus, setFocus] = useState<Date>(() => startOfDay(new Date())); // the day / month / year being looked at
   const [editing, setEditing] = useState<CalendarOccurrence | "new" | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
+  const [sheetDay, setSheetDay] = useState<Date | null>(null); // day whose full event list is open
+  const [picked, setPicked] = useState<Date | null>(null); // last tapped day (stays highlighted)
 
   // What to fetch for each view.
   const range = useMemo(() => {
@@ -133,7 +135,6 @@ export default function CalendarScreen() {
   }, [focus, today]);
 
   const todayLong = today.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-  const selectedItems = byDay.get(dayKey(focus)) ?? [];
   const firstLoad = events.loading && !events.data;
 
   return (
@@ -190,23 +191,17 @@ export default function CalendarScreen() {
         >
           {view === "month" ? (
             <>
-              <MonthView month={focus} events={list} selected={focus} today={today} onSelect={setFocus} />
-              <View style={styles.dayHeader}>
-                <Text style={[styles.dayHeaderText, { color: isSameDay(focus, today) ? colors.focus : colors.textSecondary }]}>
-                  {isSameDay(focus, today) ? "Today · " : ""}
-                  {focus.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "short" })}
-                </Text>
-                <Pressable onPress={() => setView("day")} hitSlop={8}>
-                  <Text style={{ color: colors.focus, fontFamily: fonts.geistMedium, fontSize: 13 }}>Timeline ›</Text>
-                </Pressable>
-              </View>
-              {selectedItems.length === 0 ? (
-                <Surface style={styles.empty}>
-                  <Text style={[styles.emptyBody, { color: colors.textSecondary }]}>Nothing scheduled this day.</Text>
-                </Surface>
-              ) : (
-                <AgendaList events={selectedItems} onPress={setEditing} />
-              )}
+              <MonthView
+                month={focus}
+                events={list}
+                selected={picked ?? focus}
+                today={today}
+                onSelect={(d) => {
+                  setPicked(d);
+                  setSheetDay(d);
+                }}
+              />
+              <Text style={[styles.hint, { color: colors.textTertiary }]}>Tap a day to see everything on it.</Text>
             </>
           ) : (
             <YearView
@@ -216,6 +211,10 @@ export default function CalendarScreen() {
               onPickMonth={(m) => {
                 setFocus(m.getMonth() === today.getMonth() && m.getFullYear() === today.getFullYear() ? today : startOfMonth(m));
                 setView("month");
+              }}
+              onPickDay={(d) => {
+                setPicked(d);
+                setSheetDay(d);
               }}
             />
           )}
@@ -232,6 +231,27 @@ export default function CalendarScreen() {
       >
         <Plus size={26} color={colors.textInverse} />
       </Pressable>
+
+      <DaySheet
+        day={sheetDay}
+        events={sheetDay ? byDay.get(dayKey(sheetDay)) ?? [] : []}
+        today={today}
+        onClose={() => setSheetDay(null)}
+        onEdit={(ev) => {
+          setSheetDay(null);
+          setTimeout(() => setEditing(ev), 350); // let the sheet finish dismissing first (iOS can't stack two modals)
+        }}
+        onAdd={(d) => {
+          setSheetDay(null);
+          setFocus(d);
+          setTimeout(() => setEditing("new"), 350);
+        }}
+        onTimeline={(d) => {
+          setSheetDay(null);
+          setFocus(d);
+          setView("day");
+        }}
+      />
 
       <SyncModal visible={syncOpen} onClose={() => setSyncOpen(false)} onChanged={events.refetch} onShareFeed={shareFeed} />
 
@@ -259,10 +279,7 @@ const styles = StyleSheet.create({
   pill: { flexDirection: "row", alignItems: "center", gap: spacing.xs, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.full },
   pillText: { fontFamily: fonts.geistMedium, fontSize: 13 },
   scroll: { padding: spacing.md, paddingBottom: 140 },
-  dayHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: spacing.lg, marginBottom: spacing.sm, marginHorizontal: spacing.xs },
-  dayHeaderText: { fontFamily: fonts.spaceGroteskSemiBold, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.8 },
-  empty: { borderRadius: radius.lg, padding: spacing.lg, alignItems: "center" },
-  emptyBody: { fontFamily: fonts.geistRegular, fontSize: 14, textAlign: "center" },
+  hint: { fontFamily: fonts.geistRegular, fontSize: 12, textAlign: "center", marginTop: spacing.md },
   fab: {
     position: "absolute",
     right: spacing.lg,
