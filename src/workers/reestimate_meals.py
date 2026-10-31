@@ -99,10 +99,13 @@ Use a realistic portion for the stated quantity. Return ONLY JSON:
 
 
 def run(days: int, apply_file: str | None) -> str:
-    from nodes.shared import supabase, llm_cloud, web_search, search_openfoodfacts
+    from nodes.shared import supabase, llm_fast, web_search, search_openfoodfacts
 
-    if supabase is None or llm_cloud is None:
+    if supabase is None or llm_fast is None:
         raise SystemExit("Supabase or the LLM is not configured")
+    # Cheap model + a short answer cap: the whole week costs a couple of cents, and OpenRouter refuses requests
+    # whose *maximum* possible output could exceed the remaining balance.
+    llm = llm_fast.bind(max_tokens=300)
 
     if apply_file:
         return apply(supabase, apply_file)
@@ -122,7 +125,13 @@ def run(days: int, apply_file: str | None) -> str:
         r["when"] = str(r["meal_time"])[:16]
         if not is_target(r):
             continue
-        new = estimate(r, messages_text, llm_cloud, web_search, search_openfoodfacts)
+        try:
+            new = estimate(r, messages_text, llm, web_search, search_openfoodfacts)
+        except Exception as e:  # one failed item must not lose the rest
+            logger.error(f"{r['description'][:40]}: {e.__class__.__name__}")
+            proposals.append({"id": r["id"], "description": r["description"], "when": r["when"], "old": None, "new": None,
+                              "basis": None, "confidence": None, "used_search": None, "status": f"error: {e.__class__.__name__}"})
+            continue
         problem = sanity(new)
         old = {k: float(r[k] or 0) for k in ("calories", "protein", "carbs", "fat")}
         status = problem or ("unchanged" if change_pct(old["calories"], float(new["calories"])) < MIN_CHANGE_PCT else "change")
