@@ -9,6 +9,7 @@ def image_dispatcher_node(state: GraphState) -> GraphState:
     if not images:
         images = [state["content"]] if state.get("content") else []
     caption = state.get("caption")
+    logger.info(f"Image dispatch: {len(images)} image(s), caption={'yes' if caption else 'no'}")
 
     if not llm_fast:
         state["response"] = "OpenRouter API Key not configured."

@@ -99,6 +99,7 @@ Return ONLY a valid JSON object (null for values not found):
         json_match = re.search(r'\{.*\}', raw_json, re.DOTALL)
         if json_match:
             data = json.loads(json_match.group(0))
+            logger.info("Health image parsed: type=%s, fields found=%s", data.get("screenshot_type"), sorted(k for k, v in data.items() if v not in (None, {}, [], "")))
             
             # Resolve user and date once for both tables.
             user_id = ZERO_UUID
@@ -404,6 +405,7 @@ Return ONLY a valid JSON object (null for values not found):
             dup_note = f" Also duplicated to {', '.join(additional_dates[:3])}." if additional_dates else ""
             state["response"] = f"Processed health screenshot. Logged metrics: {parsed_summary}.{dup_note}"
         else:
+            logger.warning("Health image: model reply contained no JSON: %r", (raw_json or "")[:300])
             state["response"] = "Could not extract structured health metrics from the screenshot."
     except Exception as e:
         logger.error(f"Health Image Node Error: {e}")

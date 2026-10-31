@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import json
@@ -18,6 +19,12 @@ from workers.action_items import mark_resolved
 
 # Load environment variables
 load_dotenv()
+
+# Make the app's own INFO logs (image routing, parsing decisions) visible in journald,
+# while keeping HTTP-client chatter quiet.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+for _noisy in ("httpx", "httpcore", "hpack", "urllib3", "openai", "langsmith", "supabase", "postgrest"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 app = FastAPI(title="Life-OS Backend")
 
