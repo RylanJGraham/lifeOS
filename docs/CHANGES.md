@@ -4,7 +4,14 @@
 
 ---
 
-## Latest change: PDF import signs/duplicates/status, Capital categories
+## Latest change: Meal re-estimation with web search
+
+What's New:
+- `src/workers/reestimate_meals.py`: re-estimates recent meals' calories/macros using Serper web search + OpenFoodFacts and the user's ORIGINAL chat messages for portions (meal rows only keep a short name, e.g. "KFC Chicken Breasts…", so "5 breasts" is only in the chat history). Dry run by default (`--days 7` writes `logs/reestimate_<ts>.json` with old and new values = the undo record); `--apply <file>` applies only `status: change` rows. Skips supplements/water/coffee/tea, rejects implausible numbers (kcal must match 4P+4C+9F within 30%), leaves changes under 8% alone. Server now has `SERPER_API_KEY` set. 6 tests.
+
+---
+
+## Previous: PDF import signs/duplicates/status, Capital categories
 
 What's New:
 - **Statement PDF import stored spending as income.** The model sometimes returned expenses as POSITIVE amounts (a whole statement: 50 rows), and the only safety net covered salary. `_repair_signs` now fixes signs deterministically: the running balance (SALDO) decides each row's sign (either statement order), with a category rule for the unverifiable edge row and a fallback when nothing is negative. Also: de-duplication is now **count-aware** (two identical same-day purchases are both kept; re-importing a statement adds nothing), merchant names are matched literally (no `_`/`%` wildcards), and an unreadable PDF is a visible **failure** (moved to `failed/`) instead of a silent "done".
