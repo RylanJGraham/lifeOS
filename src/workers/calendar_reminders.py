@@ -71,6 +71,9 @@ def run(now: datetime | None = None) -> int:
                 start = datetime.fromisoformat(occ["starts_at"]).astimezone(tz)
                 when = start.strftime("%a %d %b") if occ["all_day"] else start.strftime("%H:%M")
                 body = when + (f" · {occ['location']}" if occ.get("location") else "")
+                # Meetings synced from another calendar (e.g. work) never leave in clear text:
+                # Telegram/push get a generic reminder, the Inbox keeps the real one.
+                external = (f"Meeting {_human_offset(offset)}", when) if occ["origin"] == "import" else None
                 if notify(
                     "calendar",
                     f"{occ['title']} {_human_offset(offset)}",
@@ -78,6 +81,7 @@ def run(now: datetime | None = None) -> int:
                     deep_link="/calendar",
                     dedupe_key=f"cal:{occ['occurrence_id']}:{offset}",
                     user_id=user_id,
+                    external=external,
                 ):
                     sent += 1
         except Exception as e:

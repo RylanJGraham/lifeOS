@@ -253,9 +253,10 @@ class TestSync:
         ci.sync_subscription(sub, MADRID)
         sent = []
         monkeypatch.setattr(cr, "get_supabase", lambda: fake_sb)
-        monkeypatch.setattr(cr, "notify", lambda *a, **k: sent.append(a[1]) or True)
+        monkeypatch.setattr(cr, "notify", lambda *a, **k: sent.append((a[1], k.get("external"))) or True)
         assert cr.run(datetime(2026, 11, 5, 14, 45, tzinfo=UTC)) == 1
-        assert sent == ["Standup in 15 min"]
+        # Inbox gets the real title; Telegram/push get a generic one.
+        assert sent == [("Standup in 15 min", ("Meeting in 15 min", "16:00"))]
 
 
 class TestEndpoints:
@@ -332,3 +333,13 @@ class TestBulkAndLegacy:
         stored = fake_sb.rows("calendar_subscriptions")[0]["url"]
         assert stored.startswith("enc:v1:") and "SECRET" not in stored
         assert ci.encrypt_legacy_links(fake_sb) == 0  # idempotent
+
+
+def test_briefing_agenda_redacts_only_imported(fake_sb, owner_id):
+    from zoneinfo import ZoneInfo
+    occ = [
+        {"title": "Dentist", "all_day": False, "starts_at": "2026-11-05T15:00:00+00:00", "origin": "user"},
+        {"title": "Layoff planning", "all_day": False, "starts_at": "2026-11-05T09:00:00+00:00", "origin": "import"},
+    ]
+    assert cal.format_agenda(occ, ZoneInfo("UTC"), redact_imported=True) == ["- 09:00 Work meeting", "- 15:00 Dentist"]
+    assert cal.format_agenda(occ, ZoneInfo("UTC")) == ["- 09:00 Layoff planning", "- 15:00 Dentist"]

@@ -187,11 +187,11 @@ Facts: {json.dumps(facts)}"""
     return "\n".join(lines), action_item
 
 
-def _todays_agenda() -> list[str]:
+def _todays_agenda(redact_imported: bool = False) -> list[str]:
     """Calendar lines for today. Appended verbatim (not passed through the LLM)."""
     try:
         import calendar_service
-        return calendar_service.todays_agenda(_user_id())
+        return calendar_service.todays_agenda(_user_id(), redact_imported=redact_imported)
     except Exception as e:
         logger.warning(f"Could not load today's agenda: {e}")
         return []
@@ -209,7 +209,11 @@ def main():
     text, action_item = compose(facts)
     agenda = _todays_agenda()
     message = text + (("\n\nToday:\n" + "\n".join(agenda)) if agenda else "")
-    send_message("briefing", f"Morning briefing\n{message}", dedupe_key=f"briefing:{datetime.now().date()}")
+    # Telegram/push get work-meeting titles redacted; the Inbox keeps the full agenda.
+    agenda_ext = _todays_agenda(redact_imported=True)
+    message_ext = text + (("\n\nToday:\n" + "\n".join(agenda_ext)) if agenda_ext else "")
+    send_message("briefing", f"Morning briefing\n{message}", external_text=f"Morning briefing\n{message_ext}",
+                 dedupe_key=f"briefing:{datetime.now().date()}")
     try:
         insight = text if len(text) < 500 else text[:497] + "..."
         from workers.action_items import insert_insight

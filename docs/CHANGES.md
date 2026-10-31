@@ -4,7 +4,18 @@
 
 ---
 
-## Latest change: Telegram fallback for notifications + calendar follow-ups
+## Latest change: Database lockdown, calendar views, privacy for linked calendars
+
+What's New:
+- **Database lockdown (migration 035)**: every public table is now owner-only RLS (`auth.uid() = <owner login>`). Before, 35 tables allowed ANY signed-up user full read/write (Supabase sign-ups were open) and `company_rsus` / `chat_modes` were open to the unauthenticated `public` role. Verified: owner sees all rows; a stranger and the anon key see none; the service-key backend is unaffected. **New tables must use the same owner-only (or `user_id = auth.uid()`) policy — never `USING (true)`.** Turn off "Allow new users to sign up" in Supabase Auth as well.
+- **Calendar views**: Day (24h timeline with overlap columns and a live "now" line), Month (Mon–Sun grid with coloured event blocks), Year (12 mini-months, busy-day heat tint); today is highlighted everywhere, a Today button jumps back, the header always shows today's date. Layout logic in `mobile/src/lib/calendarLayout.ts` (13 Node tests: `node --experimental-strip-types --test mobile/tests-node/`). Components in `mobile/src/components/calendar/`. Events can be deleted from the edit sheet.
+- **Linked-calendar privacy**: Telegram/push never carry titles of events synced from another calendar (`notify(..., external=...)`; briefing agenda shows "Work meeting"); logs never include meeting titles. The Inbox keeps full text.
+- fail2ban installed on the droplet (sshd jail, 5 tries / 10 min → 1 h ban).
+- Tests: 171 backend.
+
+---
+
+## Previous: Telegram fallback for notifications + calendar follow-ups
 
 What's New:
 - **Telegram as a temporary notification fallback** (`src/utils/telegram.py`, `utils/notify.py`): while no mobile build can receive push, `notify()` sends outbound-only Telegram when no device accepts the push (needs `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`; `push_status = "telegram"`). Quiet hours/toggles still apply. Inbound Telegram chat stays retired. Note: the droplet had no `TELEGRAM_CHAT_ID`, so Telegram sends had been silently skipped before this.

@@ -52,7 +52,7 @@ All secrets live in `.env`. The template is `.env.example`. Never commit `.env`.
 ### Database
 
 - Use `IF NOT EXISTS` in migrations to make them idempotent.
-- Add RLS policies for authenticated access.
+- Add RLS policies that are **owner-only** (`auth.uid() = <owner login>` or `user_id = auth.uid()`), as in migration 035. Never `USING (true)`, and never a policy for the `public`/`anon` role — that exposes the table to the whole internet through the public anon key.
 - Numeric columns should be `NUMERIC`, not `FLOAT`.
 - Dates in the database are ISO strings or `TIMESTAMP WITH TIME ZONE`.
 

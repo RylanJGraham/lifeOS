@@ -14,5 +14,8 @@
     "src",
     "**/*.ts",
     "**/*.tsx"
+  ],
+  "exclude": [
+    "tests-node"
   ]
 }

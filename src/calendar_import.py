@@ -237,7 +237,7 @@ def expand(events: list[dict], default_tz: ZoneInfo, window_start: datetime, win
                 rule = rrulestr(_fix_rrule(ev["rrule"], all_day, True), dtstart=local_start)
                 starts = rule.between(window_start, window_end, inc=True)[:MAX_OCCURRENCES_PER_EVENT]
             except Exception as e:
-                logger.warning(f"RRULE not expandable ({ev.get('summary')!r}): {e}")
+                logger.warning(f"RRULE not expandable ({e.__class__.__name__}); using the first occurrence only")  # never log meeting titles
                 starts = [start]
             skip = {x.astimezone(timezone.utc) for x in ev["exdates"]}
             for s in starts:

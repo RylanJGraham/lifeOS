@@ -121,3 +121,22 @@ class TestDueReminders:
 
     def test_no_offsets_never_fires(self):
         assert due_reminders([self.occ(at(15), [])], self.NOW) == []
+
+
+class TestExternalRedaction:
+    def test_telegram_and_push_get_generic_text_but_inbox_keeps_real_text(self, fake_sb, monkeypatch):
+        tg, pushed = [], []
+        monkeypatch.setattr(notify_mod, "send_push", lambda t, b, d=None, user_id=None: pushed.append((t, b)) or 0)
+        monkeypatch.setattr(notify_mod, "send_telegram", lambda t: tg.append(t) or True)
+        notify("calendar", "Layoff planning in 15 min", "14:00 · Boardroom 4", external=("Meeting in 15 min", "14:00"))
+        assert pushed == [("Meeting in 15 min", "14:00")] and tg == ["Meeting in 15 min\n14:00"]
+        row = fake_sb.rows("notifications")[0]
+        assert row["title"] == "Layoff planning in 15 min" and "Boardroom" in row["body"]
+
+    def test_send_message_external_text(self, fake_sb, monkeypatch):
+        tg = []
+        monkeypatch.setattr(notify_mod, "send_push", lambda *a, **k: 0)
+        monkeypatch.setattr(notify_mod, "send_telegram", lambda t: tg.append(t) or True)
+        send_message("briefing", "Morning briefing\nToday:\n- 14:00 Layoff planning", external_text="Morning briefing\nToday:\n- 14:00 Work meeting")
+        assert "Layoff" not in tg[0] and "Work meeting" in tg[0]
+        assert "Layoff planning" in fake_sb.rows("notifications")[0]["body"]

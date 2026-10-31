@@ -411,21 +411,23 @@ Message: "{text}"
 # ─── Agenda text (morning briefing) ──────────────────────────────────────
 
 
-def format_agenda(occurrences: list[dict], tz: ZoneInfo) -> list[str]:
-    """One line per occurrence: all-day first, then by time."""
+def format_agenda(occurrences: list[dict], tz: ZoneInfo, redact_imported: bool = False) -> list[str]:
+    """One line per occurrence: all-day first, then by time. With redact_imported,
+    events synced from another calendar show as "Work meeting" (for Telegram/push)."""
     lines = []
     for o in sorted(occurrences, key=lambda o: (not o["all_day"], o["starts_at"])):
         when = "All day" if o["all_day"] else datetime.fromisoformat(o["starts_at"]).astimezone(tz).strftime("%H:%M")
-        lines.append(f"- {when} {o['title']}")
+        title = "Work meeting" if redact_imported and o.get("origin") == "import" else o["title"]
+        lines.append(f"- {when} {title}")
     return lines
 
 
-def todays_agenda(user_id: str, now: datetime | None = None) -> list[str]:
+def todays_agenda(user_id: str, now: datetime | None = None, redact_imported: bool = False) -> list[str]:
     tz = local_tz()
     now_local = (now or datetime.now(timezone.utc)).astimezone(tz)
     day_start = datetime.combine(now_local.date(), time.min, tzinfo=tz)
     items = list_events(user_id, day_start, day_start + timedelta(days=1) - timedelta(seconds=1))
-    return format_agenda(items, tz)
+    return format_agenda(items, tz, redact_imported)
 
 
 # ─── iCal feed ───────────────────────────────────────────────────────────

@@ -125,6 +125,8 @@ Migrations live in `docs/supabase-migrations/`. They are applied manually in the
 
 ### Row Level Security
 
+**Current state (migration 035):** every table has a single `"owner only"` policy (`auth.uid() = <the one Supabase login>`); nothing is open to `anon`/`public`. The backend's service key bypasses RLS. Sign-ups should also be disabled in Supabase Auth. Any new table must get the same policy. The history below is how it got there:
+
 - All data tables have RLS enabled.
 - `006-rls-authenticated-lockdown.sql` dropped all old policies and recreated one `authenticated full access` policy per table.
 - The Python backend uses `SUPABASE_SERVICE_KEY`, which bypasses RLS.

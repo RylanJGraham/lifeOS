@@ -1,127 +1,111 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  Pressable,
-  RefreshControl,
-  Modal,
-  TextInput,
-  Alert,
-  Share,
-  Switch,
-  KeyboardAvoidingView,
-  Platform,
-} from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl, Alert, Share } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
-import DateTimePicker from "@react-native-community/datetimepicker";
 import * as Haptics from "expo-haptics";
-import { ChevronLeft, ChevronRight, Plus, Trash2, MapPin, Repeat, Flag, Coins, Link2, CreditCard, TrendingUp } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, Plus, Link2 } from "lucide-react-native";
 import { useTheme } from "@/theme/ThemeProvider";
 import { spacing, fonts, radius } from "@/theme";
 import { useCalendarEvents } from "@/lib/queries";
+import { fetchCalendarFeedUrl, rotateCalendarFeedUrl, deleteCalendarEvent, type CalendarOccurrence } from "@/lib/api";
+import { HEADER_BAR_HEIGHT, ScreenHeader, Surface, ErrorBanner, LoadingState, SegmentedControl } from "@/components/ui";
 import {
-  createCalendarEvent,
-  updateCalendarEvent,
-  fetchCalendarFeedUrl,
-  fetchCalendarSubscriptions,
-  addCalendarSubscription,
-  syncCalendarSubscription,
-  deleteCalendarSubscription,
-  type CalendarSubscription,
-  rotateCalendarFeedUrl,
-  deleteCalendarEvent,
-  type CalendarEventInput,
-  type CalendarKind,
-  type CalendarOccurrence,
-  type Recurrence,
-} from "@/lib/api";
-import { HEADER_BAR_HEIGHT, ScreenHeader, Surface, ErrorBanner, LoadingState, SegmentedControl, PrimaryButton } from "@/components/ui";
+  addDays,
+  addMonths,
+  dayKey,
+  groupByDay,
+  isSameDay,
+  monthGridRange,
+  startOfDay,
+  startOfMonth,
+} from "@/lib/calendarLayout";
+import { EventModal } from "@/components/calendar/EventModal";
+import { SyncModal } from "@/components/calendar/SyncModal";
+import { MonthView } from "@/components/calendar/MonthView";
+import { DayView } from "@/components/calendar/DayView";
+import { YearView } from "@/components/calendar/YearView";
+import { AgendaList } from "@/components/calendar/AgendaList";
 
-const KINDS: { key: CalendarKind; label: string }[] = [
-  { key: "event", label: "Event" },
-  { key: "appointment", label: "Appt" },
-  { key: "bill", label: "Bill" },
-  { key: "reminder", label: "Remind" },
+type ViewKey = "day" | "month" | "year";
+const VIEWS: { key: ViewKey; label: string }[] = [
+  { key: "day", label: "Day" },
+  { key: "month", label: "Month" },
+  { key: "year", label: "Year" },
 ];
 
-const REPEATS: { key: Recurrence; label: string }[] = [
-  { key: "none", label: "Once" },
-  { key: "weekly", label: "Weekly" },
-  { key: "monthly", label: "Monthly" },
-  { key: "yearly", label: "Yearly" },
-];
-
-const REMINDERS: { key: string; label: string; minutes: number[] }[] = [
-  { key: "none", label: "None", minutes: [] },
-  { key: "30", label: "30 min", minutes: [30] },
-  { key: "60", label: "1 hour", minutes: [60] },
-  { key: "1440", label: "1 day", minutes: [1440] },
-];
-
-function dayKey(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function startOfMonth(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-}
-
-function formatTime(ev: CalendarOccurrence): string {
-  if (ev.all_day) return "All day";
-  const t = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  return ev.ends_at ? `${t(ev.starts_at)} – ${t(ev.ends_at)}` : t(ev.starts_at);
+function useToday(): Date {
+  const [today, setToday] = useState(() => startOfDay(new Date()));
+  useEffect(() => {
+    // Roll over at midnight (and when the app comes back after a long time).
+    const t = setInterval(() => {
+      const now = startOfDay(new Date());
+      setToday((cur) => (isSameDay(cur, now) ? cur : now));
+    }, 30_000);
+    return () => clearInterval(t);
+  }, []);
+  return today;
 }
 
 export default function CalendarScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
+  const today = useToday();
 
-  const [month, setMonth] = useState(() => startOfMonth(new Date()));
-  const rangeEnd = useMemo(() => new Date(month.getFullYear(), month.getMonth() + 1, 1), [month]);
-  const events = useCalendarEvents(month, rangeEnd);
-  const [editing, setEditing] = useState<CalendarOccurrence | 'new' | null>(null);
+  const [view, setView] = useState<ViewKey>("month");
+  const [focus, setFocus] = useState<Date>(() => startOfDay(new Date())); // the day / month / year being looked at
+  const [editing, setEditing] = useState<CalendarOccurrence | "new" | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
 
-  const byDay = useMemo(() => {
-    const map = new Map<string, CalendarOccurrence[]>();
-    for (const ev of events.data ?? []) {
-      const key = dayKey(new Date(ev.starts_at));
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(ev);
-    }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [events.data]);
+  // What to fetch for each view.
+  const range = useMemo(() => {
+    if (view === "day") return { start: startOfDay(focus), end: addDays(startOfDay(focus), 1) };
+    if (view === "year") return { start: new Date(focus.getFullYear(), 0, 1), end: new Date(focus.getFullYear() + 1, 0, 1) };
+    return monthGridRange(focus);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, dayKey(focus), focus.getFullYear(), focus.getMonth()]);
+  const events = useCalendarEvents(range.start, range.end);
+  const list = events.data ?? [];
+  const byDay = useMemo(() => groupByDay(list), [list]);
 
-  const shiftMonth = (delta: number) => {
+  const step = (dir: -1 | 1) => {
     Haptics.selectionAsync().catch(() => {});
-    setMonth((m) => new Date(m.getFullYear(), m.getMonth() + delta, 1));
+    setFocus((f) =>
+      view === "day" ? addDays(f, dir) : view === "month" ? addMonths(f, dir) : new Date(f.getFullYear() + dir, 0, 1),
+    );
   };
+  const goToday = () => {
+    Haptics.selectionAsync().catch(() => {});
+    setFocus(today);
+  };
+
+  const heading =
+    view === "day"
+      ? focus.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" })
+      : view === "month"
+        ? focus.toLocaleDateString(undefined, { month: "long", year: "numeric" })
+        : String(focus.getFullYear());
+  const showingToday =
+    view === "day" ? isSameDay(focus, today) : view === "month" ? focus.getMonth() === today.getMonth() && focus.getFullYear() === today.getFullYear() : focus.getFullYear() === today.getFullYear();
 
   const confirmDelete = useCallback(
     (ev: CalendarOccurrence) => {
-      Alert.alert(
-        ev.recurrence !== "none" ? "Delete all repeats?" : "Delete event?",
-        ev.title,
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Delete",
-            style: "destructive",
-            onPress: async () => {
-              try {
-                await deleteCalendarEvent(ev.id);
-                events.refetch();
-              } catch (e) {
-                Alert.alert("Could not delete", e instanceof Error ? e.message : String(e));
-              }
-            },
+      Alert.alert(ev.recurrence !== "none" ? "Delete all repeats?" : "Delete event?", ev.title, [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deleteCalendarEvent(ev.id);
+              setEditing(null);
+              events.refetch();
+            } catch (e) {
+              Alert.alert("Could not delete", e instanceof Error ? e.message : String(e));
+            }
           },
-        ],
-      );
+        },
+      ]);
     },
     [events],
   );
@@ -129,106 +113,111 @@ export default function CalendarScreen() {
   const shareFeed = useCallback(async (rotate: boolean) => {
     try {
       const { url } = await (rotate ? rotateCalendarFeedUrl() : fetchCalendarFeedUrl());
-      // iOS: Calendar -> Add Calendar -> Add Subscription Calendar -> paste this URL.
       await Share.share({ message: url });
     } catch (e) {
       Alert.alert("Calendar link", e instanceof Error ? e.message : String(e));
     }
   }, []);
 
-  const todayKey = dayKey(new Date());
-  const monthLabel = month.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  // New events start on the day being looked at (next hour if that is today, else 09:00).
+  const defaultStart = useMemo(() => {
+    const d = new Date(focus);
+    if (isSameDay(d, today)) {
+      const n = new Date();
+      n.setMinutes(0, 0, 0);
+      n.setHours(n.getHours() + 1);
+      return n;
+    }
+    d.setHours(9, 0, 0, 0);
+    return d;
+  }, [focus, today]);
+
+  const todayLong = today.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  const selectedItems = byDay.get(dayKey(focus)) ?? [];
+  const firstLoad = events.loading && !events.data;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + HEADER_BAR_HEIGHT, backgroundColor: colors.bg }]}>
-      <ScreenHeader title="Calendar" subtitle={monthLabel} onBack={() => router.back()} />
-      <View style={styles.monthBar}>
-        <Pressable onPress={() => shiftMonth(-1)} hitSlop={12} accessibilityLabel="Previous month">
-          <ChevronLeft size={22} color={colors.textPrimary} />
-        </Pressable>
-        <Text style={[styles.monthLabel, { color: colors.textPrimary }]}>{monthLabel}</Text>
-        <Pressable onPress={() => shiftMonth(1)} hitSlop={12} accessibilityLabel="Next month">
-          <ChevronRight size={22} color={colors.textPrimary} />
-        </Pressable>
-      </View>
-      <Pressable
-        onPress={() => setSyncOpen(true)}
-        accessibilityLabel="Sync calendars with Outlook, Google or Apple"
-        style={[styles.syncChip, { backgroundColor: colors.surface1, borderColor: colors.hairline }]}
-      >
-        <Link2 size={14} color={colors.focus} />
-        <Text style={[styles.syncChipText, { color: colors.focus }]}>Sync Outlook / Google / Apple</Text>
-      </Pressable>
+      <ScreenHeader title="Calendar" subtitle={`Today · ${todayLong}`} onBack={() => router.back()} />
 
-      {events.loading ? (
+      <View style={styles.controls}>
+        <SegmentedControl options={VIEWS} value={view} onChange={setView} />
+        <View style={styles.navRow}>
+          <Pressable onPress={() => step(-1)} hitSlop={12} accessibilityLabel="Previous">
+            <ChevronLeft size={22} color={colors.textPrimary} />
+          </Pressable>
+          <Text style={[styles.heading, { color: colors.textPrimary }]} numberOfLines={1}>{heading}</Text>
+          <Pressable onPress={() => step(1)} hitSlop={12} accessibilityLabel="Next">
+            <ChevronRight size={22} color={colors.textPrimary} />
+          </Pressable>
+        </View>
+        <View style={styles.actionsRow}>
+          <Pressable
+            onPress={goToday}
+            accessibilityLabel="Jump to today"
+            style={[styles.pill, showingToday ? { backgroundColor: colors.surface2 } : { backgroundColor: colors.focus }]}
+          >
+            <Text style={[styles.pillText, { color: showingToday ? colors.textSecondary : colors.textInverse }]}>Today</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setSyncOpen(true)}
+            accessibilityLabel="Sync calendars with Outlook, Google or Apple"
+            style={[styles.pill, { backgroundColor: colors.surface1, borderColor: colors.hairline, borderWidth: StyleSheet.hairlineWidth }]}
+          >
+            <Link2 size={13} color={colors.focus} />
+            <Text style={[styles.pillText, { color: colors.focus }]}>Sync Outlook / Google / Apple</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      {events.error ? <View style={{ paddingHorizontal: spacing.md }}><ErrorBanner message={events.error} /></View> : null}
+
+      {firstLoad ? (
         <LoadingState label="Loading calendar…" />
+      ) : view === "day" ? (
+        <DayView
+          day={focus}
+          events={list}
+          today={today}
+          onPressEvent={setEditing}
+          refreshing={events.refreshing}
+          onRefresh={events.refetch}
+        />
       ) : (
         <ScrollView
           contentContainerStyle={styles.scroll}
           refreshControl={<RefreshControl refreshing={events.refreshing} onRefresh={events.refetch} tintColor={colors.textSecondary} />}
         >
-          {events.error ? <ErrorBanner message={events.error} /> : null}
-          {byDay.length === 0 ? (
-            <Surface style={styles.empty}>
-              <Text style={[styles.emptyTitle, { color: colors.textPrimary }]}>Nothing scheduled</Text>
-              <Text style={[styles.emptyBody, { color: colors.textSecondary }]}>
-                Tap + to add an event, or tell the chat "dentist thursday 3pm".
-              </Text>
-            </Surface>
+          {view === "month" ? (
+            <>
+              <MonthView month={focus} events={list} selected={focus} today={today} onSelect={setFocus} />
+              <View style={styles.dayHeader}>
+                <Text style={[styles.dayHeaderText, { color: isSameDay(focus, today) ? colors.focus : colors.textSecondary }]}>
+                  {isSameDay(focus, today) ? "Today · " : ""}
+                  {focus.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "short" })}
+                </Text>
+                <Pressable onPress={() => setView("day")} hitSlop={8}>
+                  <Text style={{ color: colors.focus, fontFamily: fonts.geistMedium, fontSize: 13 }}>Timeline ›</Text>
+                </Pressable>
+              </View>
+              {selectedItems.length === 0 ? (
+                <Surface style={styles.empty}>
+                  <Text style={[styles.emptyBody, { color: colors.textSecondary }]}>Nothing scheduled this day.</Text>
+                </Surface>
+              ) : (
+                <AgendaList events={selectedItems} onPress={setEditing} />
+              )}
+            </>
           ) : (
-            byDay.map(([key, items]) => {
-              const d = new Date(items[0].starts_at);
-              const isToday = key === todayKey;
-              return (
-                <View key={key} style={styles.dayGroup}>
-                  <Text style={[styles.dayLabel, { color: isToday ? colors.focus : colors.textSecondary }]}>
-                    {isToday ? "Today · " : ""}
-                    {d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "short" })}
-                  </Text>
-                  {items.map((ev) => {
-                    const derived = ev.origin !== "user";
-                    return (
-                      <Pressable key={ev.occurrence_id} disabled={derived} onPress={() => setEditing(ev)}>
-                      <Surface style={styles.card}>
-                        <View style={styles.cardRow}>
-                          <View style={{ flex: 1 }}>
-                            <View style={styles.titleRow}>
-                              {ev.origin === "import" ? <Link2 size={13} color={colors.trends} /> : null}
-                              {ev.origin === "goal" ? <Flag size={13} color={colors.focus} /> : null}
-                              {ev.origin === "rsu" ? <Coins size={13} color={colors.wealth} /> : null}
-                              {ev.origin === "subscription" ? <CreditCard size={13} color={colors.kinematic} /> : null}
-                              {ev.origin === "dividend" ? <TrendingUp size={13} color={colors.wealth} /> : null}
-                              <Text style={[styles.title, { color: colors.textPrimary }]} numberOfLines={2}>
-                                {ev.title}
-                              </Text>
-                            </View>
-                            <Text style={[styles.meta, { color: colors.textSecondary }]}>{formatTime(ev)}</Text>
-                            {ev.location ? (
-                              <View style={styles.metaRow}>
-                                <MapPin size={12} color={colors.textTertiary} />
-                                <Text style={[styles.meta, { color: colors.textTertiary }]}>{ev.location}</Text>
-                              </View>
-                            ) : null}
-                            {ev.recurrence !== "none" ? (
-                              <View style={styles.metaRow}>
-                                <Repeat size={12} color={colors.textTertiary} />
-                                <Text style={[styles.meta, { color: colors.textTertiary }]}>{ev.recurrence}</Text>
-                              </View>
-                            ) : null}
-                          </View>
-                          {!derived ? (
-                            <Pressable onPress={() => confirmDelete(ev)} hitSlop={10} accessibilityLabel={`Delete ${ev.title}`}>
-                              <Trash2 size={18} color={colors.textTertiary} />
-                            </Pressable>
-                          ) : null}
-                        </View>
-                      </Surface>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              );
-            })
+            <YearView
+              year={focus.getFullYear()}
+              events={list}
+              today={today}
+              onPickMonth={(m) => {
+                setFocus(m.getMonth() === today.getMonth() && m.getFullYear() === today.getFullYear() ? today : startOfMonth(m));
+                setView("month");
+              }}
+            />
           )}
         </ScrollView>
       )}
@@ -244,17 +233,14 @@ export default function CalendarScreen() {
         <Plus size={26} color={colors.textInverse} />
       </Pressable>
 
-      <SyncModal
-        visible={syncOpen}
-        onClose={() => setSyncOpen(false)}
-        onChanged={events.refetch}
-        onShareFeed={shareFeed}
-      />
+      <SyncModal visible={syncOpen} onClose={() => setSyncOpen(false)} onChanged={events.refetch} onShareFeed={shareFeed} />
 
       <EventModal
         event={editing === "new" ? null : editing}
         visible={editing !== null}
+        defaultStart={defaultStart}
         onClose={() => setEditing(null)}
+        onDelete={confirmDelete}
         onSaved={() => {
           setEditing(null);
           events.refetch();
@@ -264,369 +250,18 @@ export default function CalendarScreen() {
   );
 }
 
-function roundedNextHour(): Date {
-  const d = new Date();
-  d.setMinutes(0, 0, 0);
-  d.setHours(d.getHours() + 1);
-  return d;
-}
-
-function ago(iso: string | null): string {
-  if (!iso) return "never";
-  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} min ago`;
-  const h = Math.round(mins / 60);
-  return h < 24 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
-}
-
-// Link external calendars INTO LifeOS (Outlook "publish" link) and share
-// LifeOS OUT to other apps.
-function SyncModal({
-  visible,
-  onClose,
-  onChanged,
-  onShareFeed,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  onChanged: () => void;
-  onShareFeed: (rotate: boolean) => void;
-}) {
-  const { colors } = useTheme();
-  const insets = useSafeAreaInsets();
-  const [subs, setSubs] = useState<CalendarSubscription[]>([]);
-  const [url, setUrl] = useState("");
-  const [name, setName] = useState("Outlook");
-  const [hideDetails, setHideDetails] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      setSubs((await fetchCalendarSubscriptions()).data);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    if (visible) {
-      setError(null);
-      load();
-    }
-  }, [visible, load]);
-
-  const run = async (key: string, fn: () => Promise<unknown>) => {
-    setBusy(key);
-    setError(null);
-    try {
-      await fn();
-      await load();
-      onChanged();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      await load();
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const add = () =>
-    run("add", async () => {
-      if (!url.trim()) throw new Error("Paste your calendar link first.");
-      await addCalendarSubscription(name.trim() || "Outlook", url.trim(), hideDetails ? "busy" : "full");
-      setUrl("");
-    });
-
-  const remove = (s: CalendarSubscription) =>
-    Alert.alert("Remove calendar?", `${s.name}'s events will disappear from LifeOS (your Outlook calendar is untouched).`, [
-      { text: "Cancel", style: "cancel" },
-      { text: "Remove", style: "destructive", onPress: () => run(`rm-${s.id}`, () => deleteCalendarSubscription(s.id)) },
-    ]);
-
-  const box = [styles.input, { color: colors.textPrimary, backgroundColor: colors.surface1, borderColor: colors.hairline }];
-
-  return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: colors.bg }}>
-        <ScrollView contentContainerStyle={[styles.modalBody, { paddingBottom: insets.bottom + spacing.xl }]} keyboardShouldPersistTaps="handled">
-          <View style={styles.modalHeader}>
-            <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Sync calendars</Text>
-            <Pressable onPress={onClose} hitSlop={10}>
-              <Text style={{ color: colors.focus, fontFamily: fonts.geistMedium, fontSize: 15 }}>Done</Text>
-            </Pressable>
-          </View>
-
-          <Text style={[styles.syncHeading, { color: colors.textPrimary }]}>Bring Outlook into LifeOS</Text>
-          <Text style={[styles.syncHelp, { color: colors.textSecondary }]}>
-            In Outlook on the web: Settings (gear) → Calendar → Shared calendars → Publish a calendar → pick the calendar, choose
-            "Can view all details" → Publish → copy the ICS link and paste it below. Events appear here read-only and refresh
-            every 30 minutes.
-          </Text>
-          <TextInput value={name} onChangeText={setName} placeholder="Name (e.g. Work)" placeholderTextColor={colors.textTertiary} style={box} />
-          <TextInput
-            value={url}
-            onChangeText={setUrl}
-            placeholder="https://outlook.office365.com/…/calendar.ics"
-            placeholderTextColor={colors.textTertiary}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            style={box}
-          />
-          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.title, { color: colors.textPrimary, fontSize: 14 }]}>Hide meeting details</Text>
-              <Text style={[styles.meta, { color: colors.textTertiary }]}>
-                Store only that you're busy — titles, places and notes never reach LifeOS.
-              </Text>
-            </View>
-            <Switch value={hideDetails} onValueChange={setHideDetails} />
-          </View>
-          <PrimaryButton label={busy === "add" ? "Linking… importing events" : "Link calendar"} onPress={add} loading={busy === "add"} />
-          {error ? <ErrorBanner message={error} /> : null}
-
-          {subs.length > 0 ? <Text style={[styles.syncHeading, { color: colors.textPrimary, marginTop: spacing.lg }]}>Linked calendars</Text> : null}
-          {subs.map((s) => (
-            <Surface key={s.id} style={styles.card}>
-              <Text style={[styles.title, { color: colors.textPrimary }]}>{s.name}</Text>
-              <Text style={[styles.meta, { color: s.last_error ? colors.bad : colors.textSecondary }]}>
-                {s.last_error ? s.last_error : `${s.event_count} events · synced ${ago(s.last_synced_at)}`}
-              </Text>
-              <Text style={[styles.meta, { color: colors.textTertiary }]}>
-                {s.host} · {s.privacy === "busy" ? "busy only" : "full details"} · link stored encrypted
-              </Text>
-              <View style={{ flexDirection: "row", gap: spacing.lg, marginTop: spacing.sm }}>
-                <Pressable onPress={() => run(`sync-${s.id}`, () => syncCalendarSubscription(s.id))} disabled={busy !== null}>
-                  <Text style={{ color: colors.focus, fontFamily: fonts.geistMedium }}>{busy === `sync-${s.id}` ? "Syncing…" : "Sync now"}</Text>
-                </Pressable>
-                <Pressable onPress={() => remove(s)} disabled={busy !== null}>
-                  <Text style={{ color: colors.bad, fontFamily: fonts.geistMedium }}>Remove</Text>
-                </Pressable>
-              </View>
-            </Surface>
-          ))}
-
-          <Text style={[styles.syncHeading, { color: colors.textPrimary, marginTop: spacing.lg }]}>Send LifeOS to other calendars</Text>
-          <Text style={[styles.syncHelp, { color: colors.textSecondary }]}>
-            Share a link that Outlook, Google or Apple Calendar can subscribe to (one-way: LifeOS → them). Your Outlook events
-            are not included, so nothing loops back.
-          </Text>
-          <View style={{ flexDirection: "row", gap: spacing.lg }}>
-            <Pressable onPress={() => onShareFeed(false)}><Text style={{ color: colors.focus, fontFamily: fonts.geistMedium }}>Share link</Text></Pressable>
-            <Pressable onPress={() => onShareFeed(true)}><Text style={{ color: colors.bad, fontFamily: fonts.geistMedium }}>Reset link</Text></Pressable>
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
-}
-
-function reminderKey(offsets: number[]): string {
-  const first = offsets[0];
-  if (first === undefined) return "none";
-  return REMINDERS.find((r) => r.minutes[0] === first)?.key ?? "30";
-}
-
-// Create when `event` is null, edit otherwise. Editing a repeating event edits
-// the whole series; the date shift is applied to the series start so the
-// pattern keeps its shape.
-function EventModal({
-  event,
-  visible,
-  onClose,
-  onSaved,
-}: {
-  event: CalendarOccurrence | null;
-  visible: boolean;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const { colors } = useTheme();
-  const insets = useSafeAreaInsets();
-  const [title, setTitle] = useState("");
-  const [location, setLocation] = useState("");
-  const [start, setStart] = useState(roundedNextHour);
-  const [kind, setKind] = useState<CalendarKind>("event");
-  const [repeat, setRepeat] = useState<Recurrence>("none");
-  const [reminder, setReminder] = useState("30");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Load the form whenever the sheet opens.
-  useEffect(() => {
-    if (!visible) return;
-    setError(null);
-    if (event) {
-      setTitle(event.title);
-      setLocation(event.location ?? "");
-      setStart(new Date(event.starts_at));
-      setKind(event.kind);
-      setRepeat(event.recurrence);
-      setReminder(reminderKey(event.reminder_offsets));
-    } else {
-      setTitle("");
-      setLocation("");
-      setStart(roundedNextHour());
-      setKind("event");
-      setRepeat("none");
-      setReminder("30");
-    }
-  }, [visible, event]);
-
-  const save = async () => {
-    if (!title.trim()) {
-      setError("Give the event a title.");
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      const reminderMinutes = REMINDERS.find((r) => r.key === reminder)?.minutes ?? [];
-      if (event) {
-        const patch: Partial<CalendarEventInput> = {
-          title: title.trim(),
-          kind,
-          recurrence: repeat,
-          location: location.trim() || null,
-        };
-        // Only touch reminders if the user changed them (custom offsets, e.g. a bill's
-        // "9am the day before", aren't representable in the picker and must survive an edit).
-        if (reminder !== reminderKey(event.reminder_offsets)) patch.reminder_offsets = reminderMinutes;
-        let picked = start;
-        if (event.all_day) picked = new Date(start.getFullYear(), start.getMonth(), start.getDate()); // local midnight
-        const shiftMs = picked.getTime() - new Date(event.starts_at).getTime();
-        if (shiftMs !== 0) {
-          patch.starts_at = new Date(new Date(event.series_starts_at).getTime() + shiftMs).toISOString();
-        }
-        await updateCalendarEvent(event.id, patch);
-      } else {
-        await createCalendarEvent({
-          title: title.trim(),
-          starts_at: start.toISOString(),
-          kind,
-          recurrence: repeat,
-          location: location.trim() || null,
-          reminder_offsets: reminderMinutes,
-        });
-      }
-      onSaved();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        style={{ flex: 1, backgroundColor: colors.bg }}
-      >
-        <ScrollView contentContainerStyle={[styles.modalBody, { paddingBottom: insets.bottom + spacing.xl }]} keyboardShouldPersistTaps="handled">
-          <View style={styles.modalHeader}>
-            <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>{event ? "Edit event" : "New event"}</Text>
-            <Pressable onPress={onClose} hitSlop={10}>
-              <Text style={{ color: colors.focus, fontFamily: fonts.geistMedium, fontSize: 15 }}>Cancel</Text>
-            </Pressable>
-          </View>
-
-          <TextInput
-            value={title}
-            onChangeText={setTitle}
-            placeholder="Title"
-            placeholderTextColor={colors.textTertiary}
-            style={[styles.input, { color: colors.textPrimary, backgroundColor: colors.surface1, borderColor: colors.hairline }]}
-            autoFocus={!event}
-          />
-          <TextInput
-            value={location}
-            onChangeText={setLocation}
-            placeholder="Location (optional)"
-            placeholderTextColor={colors.textTertiary}
-            style={[styles.input, { color: colors.textPrimary, backgroundColor: colors.surface1, borderColor: colors.hairline }]}
-          />
-
-          <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>
-            {event && event.recurrence !== "none" ? "When (this occurrence — moves the whole series)" : "When"}
-          </Text>
-          <DateTimePicker
-            value={start}
-            mode={event?.all_day ? "date" : "datetime"}
-            display="compact"
-            onChange={(_e, d) => d && setStart(d)}
-            themeVariant={colors.bg === "#0F172A" ? "dark" : "light"}
-            style={{ alignSelf: "flex-start" }}
-          />
-
-          <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Type</Text>
-          <SegmentedControl options={KINDS} value={kind} onChange={setKind} />
-
-          <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Repeats</Text>
-          <SegmentedControl options={REPEATS} value={repeat} onChange={setRepeat} />
-
-          <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Remind me</Text>
-          <SegmentedControl
-            options={REMINDERS.map((r) => ({ key: r.key, label: r.label }))}
-            value={reminder}
-            onChange={setReminder}
-          />
-
-          {error ? <ErrorBanner message={error} /> : null}
-          <View style={{ marginTop: spacing.lg }}>
-            <PrimaryButton label={event ? "Save changes" : "Save event"} onPress={save} loading={saving} />
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
-}
-
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  monthBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-  },
-  syncChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: "flex-start",
-    gap: spacing.sm,
-    marginLeft: spacing.lg,
-    marginBottom: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.full,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  syncHeading: { fontFamily: fonts.spaceGroteskSemiBold, fontSize: 16, marginTop: spacing.sm },
-  syncHelp: { fontFamily: fonts.geistRegular, fontSize: 13, lineHeight: 19 },
-  syncChipText: { fontFamily: fonts.geistMedium, fontSize: 13 },
-  monthLabel: { fontFamily: fonts.spaceGroteskSemiBold, fontSize: 18 },
-  scroll: { padding: spacing.md, paddingBottom: 120 },
-  dayGroup: { marginBottom: spacing.lg },
-  dayLabel: {
-    fontFamily: fonts.spaceGroteskSemiBold,
-    fontSize: 12,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-    marginBottom: spacing.sm,
-    marginLeft: spacing.xs,
-  },
-  card: { borderRadius: radius.lg, padding: spacing.md, marginBottom: spacing.sm },
-  cardRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
-  titleRow: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
-  title: { fontFamily: fonts.geistMedium, fontSize: 16, flexShrink: 1 },
-  metaRow: { flexDirection: "row", alignItems: "center", gap: spacing.xs, marginTop: 2 },
-  meta: { fontFamily: fonts.geistRegular, fontSize: 13, marginTop: 2 },
-  empty: { borderRadius: radius.lg, padding: spacing.xl, alignItems: "center", gap: spacing.sm },
-  emptyTitle: { fontFamily: fonts.spaceGroteskSemiBold, fontSize: 16 },
+  controls: { paddingHorizontal: spacing.md, paddingTop: spacing.sm, gap: spacing.sm },
+  navRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  heading: { flex: 1, textAlign: "center", fontFamily: fonts.spaceGroteskSemiBold, fontSize: 17, paddingHorizontal: spacing.sm },
+  actionsRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingBottom: spacing.sm },
+  pill: { flexDirection: "row", alignItems: "center", gap: spacing.xs, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.full },
+  pillText: { fontFamily: fonts.geistMedium, fontSize: 13 },
+  scroll: { padding: spacing.md, paddingBottom: 140 },
+  dayHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: spacing.lg, marginBottom: spacing.sm, marginHorizontal: spacing.xs },
+  dayHeaderText: { fontFamily: fonts.spaceGroteskSemiBold, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.8 },
+  empty: { borderRadius: radius.lg, padding: spacing.lg, alignItems: "center" },
   emptyBody: { fontFamily: fonts.geistRegular, fontSize: 14, textAlign: "center" },
   fab: {
     position: "absolute",
@@ -642,16 +277,4 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     elevation: 6,
   },
-  modalBody: { padding: spacing.lg, gap: spacing.sm },
-  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.md },
-  modalTitle: { fontFamily: fonts.spaceGroteskBold, fontSize: 22 },
-  input: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: radius.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
-    fontFamily: fonts.geistRegular,
-    fontSize: 16,
-  },
-  fieldLabel: { fontFamily: fonts.geistMedium, fontSize: 13, marginTop: spacing.md },
 });

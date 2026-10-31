@@ -72,8 +72,14 @@ def notify(
     data: dict | None = None,
     user_id: str | None = None,
     push: bool = True,
+    external: tuple[str, str] | None = None,
 ) -> bool:
-    """Record + push a notification. Returns True if a new row was created."""
+    """Record + push a notification. Returns True if a new row was created.
+
+    `external` = (title, body) to use for third-party channels (Expo/Apple push and
+    Telegram) instead of the real text. The Inbox row always keeps the real text.
+    Use it for anything private (e.g. work-meeting titles) — neither Telegram nor
+    push is end-to-end encrypted."""
     sb = get_supabase()
     if sb is None:
         logger.warning("Supabase not configured; notification dropped")
@@ -113,11 +119,12 @@ def notify(
                 payload = {**(data or {}), "kind": kind}
                 if deep_link:
                     payload["deep_link"] = deep_link
-                sent = send_push(title, body, payload, user_id=user_id)
+                out_title, out_body = external if external else (title, body)
+                sent = send_push(out_title, out_body, payload, user_id=user_id)
                 if sent:
                     push_status = "sent"
                     row["pushed_at"] = now.isoformat()
-                elif send_telegram(f"{title}\n{body}" if body else title):
+                elif send_telegram(f"{out_title}\n{out_body}" if out_body else out_title):
                     # Fallback channel while no device can receive push.
                     push_status = "telegram"
                     row["pushed_at"] = now.isoformat()
@@ -132,10 +139,15 @@ def notify(
         return False
 
 
-def send_message(kind: str, text: str, *, deep_link: str | None = "/inbox", **kwargs) -> bool:
-    """notify() for workers that compose one block of text: the first line
-    becomes the title, the rest the body."""
+def _split(text: str) -> tuple[str, str]:
     first, _, rest = text.strip().partition("\n")
-    title = first.strip()[:80] or "LifeOS"
-    body = rest.strip()
-    return notify(kind, title, body[:500], deep_link=deep_link, **kwargs)
+    return first.strip()[:80] or "LifeOS", rest.strip()[:500]
+
+
+def send_message(kind: str, text: str, *, deep_link: str | None = "/inbox", external_text: str | None = None, **kwargs) -> bool:
+    """notify() for workers that compose one block of text: the first line
+    becomes the title, the rest the body. `external_text` is the redacted
+    version sent to Telegram/push (the Inbox keeps `text`)."""
+    title, body = _split(text)
+    external = _split(external_text) if external_text else None
+    return notify(kind, title, body, deep_link=deep_link, external=external, **kwargs)
