@@ -11,6 +11,9 @@ What's New:
 - **Several health screenshots are processed one by one.** The health node used to send all images in one prompt and expect ONE record, so screenshots of different days could not each be saved. Each screenshot now gets its own parse/date/record (screenshots for the same day still merge into that day's row), and one failing screenshot no longer loses the others.
 - Server logs now show the routing decisions (`Image dispatch: N image(s)`, `Image classification: [...]`, `Health image parsed: type=…, fields found=[…]` — never the health values). `api.py` configures INFO logging for the app's own loggers.
 - 9 new tests (`tests/test_image_routing.py`), 185 backend tests total.
+- **Heart-rate charts are read, not just zones.** Past-day heart screenshots are usually a zone-coloured graph with no printed numbers. The vision prompt now tells the model to estimate resting / average / min / max HR from the plotted line (reading the y-axis; images sent at `detail: high`) and to set `values_estimated`. Estimates are flagged in the day's notes and the reply, and **only fill gaps — they never overwrite a value already stored** (exact numbers from a printed stat or the iOS Shortcut win). Replies now include the date each screenshot was saved to.
+- **Batches ignore the caption's date/duplicate instructions** (each screenshot keeps its own date); a caption like "duplicate for the 27th" applies only to a single screenshot.
+- 8 more tests (`tests/test_health_chart_reading.py`), 193 backend tests total.
 
 ---
 

@@ -20,14 +20,16 @@ def health_image_node(state: GraphState) -> GraphState:
         return _health_image_single(state)
     lines: list[str] = []
     for i, img in enumerate(images, 1):
-        sub: GraphState = {**state, "images": [img], "content": img}  # type: ignore[typeddict-item]
+        # The caption (e.g. "on thursday", "duplicate for the 27th") describes ONE screenshot, so it must not
+        # be applied to every image in a batch; each screenshot's own date is used instead.
+        sub: GraphState = {**state, "images": [img], "content": img, "caption": None}  # type: ignore[typeddict-item]
         try:
             _health_image_single(sub)
             reply = sub.get("response") or "no result"
         except Exception as e:  # one bad screenshot must not lose the others
             logger.error(f"Health screenshot {i} failed: {e}")
             reply = "failed to process this screenshot"
-        lines.append(f"{i}. {reply.removeprefix('Processed health screenshot. ')}")
+        lines.append(f"{i}. {reply.removeprefix('Processed health screenshot ').removeprefix('Processed health screenshot. ')}")
     state["response"] = f"Processed {len(images)} health screenshots:\n" + "\n".join(lines)
     return state
 
@@ -63,6 +65,17 @@ Extract any available metrics:
 - HRV (ms), Steps, Active calories (kcal), Body weight (kg), VO2 max
 - For workouts: sport name, date, start time, duration (minutes), calories, avg/max HR, HR zone minutes
 
+HEART-RATE CHART screenshots (a graph of heart rate across a day, usually coloured by zone, often with NO printed
+statistics — this is typical for past days): do NOT leave the heart-rate fields null just because no number is printed.
+Read the y-axis scale and ESTIMATE from the plotted line:
+  - max_heart_rate = the highest point of the line
+  - min_heart_rate = the lowest point of the line
+  - average_heart_rate = the typical level the line sits at across the day (visual average)
+  - resting_heart_rate = the lowest level the line SUSTAINS (rest/sleep), not a single dip
+  - heart_rate_zones = minutes per zone if the legend/bars give them
+Round to whole bpm. If a number IS printed on screen, use the printed number, not an estimate.
+Set "values_estimated": true whenever ANY heart-rate value was read off the chart instead of printed, else false.
+
 Use the date visible in the screenshot if any, else today's date, in 'YYYY-MM-DD' format.
 Today is @@TODAY@@. Screenshots often show only day+month (e.g. "Jul 17") WITHOUT a year — in that case you MUST use today's year, never a year from your training data.
 @@CAPTION@@
@@ -70,6 +83,7 @@ Today is @@TODAY@@. Screenshots often show only day+month (e.g. "Jul 17") WITHOU
 Return ONLY a valid JSON object (null for values not found):
 {
   "screenshot_type": "workout" or "daily_metrics",
+  "values_estimated": true_or_false,
   "date": "YYYY-MM-DD",
   "sleep_duration_minutes": integer_or_null,
   "sleep_deep_minutes": integer_or_null,
@@ -108,7 +122,7 @@ Return ONLY a valid JSON object (null for values not found):
                     (f'The user says about this image: "{caption}". If they say when it was (e.g. "on thursday", "yesterday", "last monday"), that overrides the screenshot date — resolve it relative to today and use it as "date". If they name the workout type, use it as the workout name.' if caption else "")
                 )
                 },
-                *[{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}} for img in images]
+                *[{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}", "detail": "high"}} for img in images]
             ]
         )
     ]
@@ -258,6 +272,8 @@ Return ONLY a valid JSON object (null for values not found):
             if weight is not None: notes_list.append(f"Weight: {weight} kg")
             if vo2_max is not None: notes_list.append(f"VO2 Max: {vo2_max}")
             if zones is not None: notes_list.append(f"HR Zones: {json.dumps(zones)}")
+            estimated = bool(data.get("values_estimated")) and any(v is not None for v in (rhr, avg_hr, min_hr, max_hr))
+            if estimated: notes_list.append("Heart-rate values estimated from the chart (approximate)")
 
             notes_str = "Health screenshot import:\n" + "\n".join(notes_list)
 
@@ -287,16 +303,23 @@ Return ONLY a valid JSON object (null for values not found):
 
                 existing_id = None
                 existing_notes = None
+                existing_row: dict = {}
                 try:
-                    existing = supabase.table("health_metrics").select("id, notes").eq("user_id", user_id).eq("recorded_at", date_str).execute()
+                    existing = supabase.table("health_metrics").select("*").eq("user_id", user_id).eq("recorded_at", date_str).execute()
                     if existing.data and len(existing.data) > 0:
                         existing_id = existing.data[0]["id"]
                         existing_notes = existing.data[0].get("notes")
+                        existing_row = existing.data[0]
                 except Exception as e:
                     logger.warning(f"Failed to check existing health metrics: {e}")
 
                 try:
                     merged = {k: v for k, v in payload.items() if v is not None}
+                    if estimated:
+                        # Chart estimates only FILL GAPS: never overwrite a value that is already stored.
+                        for k in ("resting_heart_rate", "average_heart_rate", "min_heart_rate", "max_heart_rate", "sleeping_heart_rate"):
+                            if existing_row.get(k) is not None:
+                                merged.pop(k, None)
                     header = "Health screenshot import:"
                     prev_lines = [l for l in (existing_notes or "").split("\n") if l.strip() and not l.startswith(header)]
                     new_lines = [l for l in notes_str.split("\n") if l.strip() and not l.startswith(header)]
@@ -423,7 +446,7 @@ Return ONLY a valid JSON object (null for values not found):
             # Format success message
             parsed_summary = ", ".join(notes_list) if notes_list else "no metrics found"
             dup_note = f" Also duplicated to {', '.join(additional_dates[:3])}." if additional_dates else ""
-            state["response"] = f"Processed health screenshot. Logged metrics: {parsed_summary}.{dup_note}"
+            state["response"] = f"Processed health screenshot ({date_str}). Logged metrics: {parsed_summary}.{dup_note}"
         else:
             logger.warning("Health image: model reply contained no JSON: %r", (raw_json or "")[:300])
             state["response"] = "Could not extract structured health metrics from the screenshot."
