@@ -20,6 +20,7 @@ def handle_chat(
     source: str = "web",
     external_id: str | None = None,
     dry_run: bool = False,
+    confirmed_items: list[dict] | None = None,
 ) -> dict:
     """Send a text message (or one or more images) through the agent graph and return its reply."""
     from graph import app_graph  # lazy: heavy imports (langchain, supabase)
@@ -37,6 +38,7 @@ def handle_chat(
         "thread_source": source,
         "thread_external_id": external_id or user_id,
         "dry_run": dry_run,
+        "confirmed_items": confirmed_items,
     }
     if all_images:
         payload.update({

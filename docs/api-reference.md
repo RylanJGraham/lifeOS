@@ -41,11 +41,12 @@ Sends a text message to the LangGraph agent (same pipeline as Telegram) and retu
     "message": "What did I eat today?",
     "image": null,
     "session_id": "web-123...",
-    "dry_run": false
+    "dry_run": false,
+    "confirmed_items": null
   }
   ```
 - `session_id` is optional. When provided, the conversation is persisted to `chat_threads` and loaded as context on the next turn.
-- `dry_run` (optional, default `false`) runs the intent/parser but does **not** persist nutrition/workout/health entries. When `true` and the backend recognizes a logging intent, the response `ui` block has `status: "preview"` with parsed rows and a `metadata.intent` field. The client should render a confirmation card and re-send with `dry_run: false` to commit.
+- `dry_run` (optional, default `false`) runs the intent/parser but does **not** persist nutrition/workout/health entries. When `true` and the backend recognizes a logging intent, the response `ui` block has `status: "preview"` with parsed rows and a `metadata.intent` field. The client should render a confirmation card and re-send with `dry_run: false` to commit. **For meals, send back `confirmed_items`** (the `metadata.items` array from the preview, unchanged): the server then saves exactly those items with no re-parse (numbers can't drift between preview and save) and skips duplicates (same description + time), so a repeated Confirm is harmless. A preview never writes or deletes anything.
 - **Returns**:
   ```json
   {

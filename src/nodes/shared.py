@@ -36,6 +36,7 @@ class GraphState(TypedDict):
     thread_source: Optional[str]  # 'telegram' | 'web'
     thread_external_id: Optional[str]  # telegram chat_id or web session id
     dry_run: Optional[bool]  # if true, parse but do not persist (preview mode)
+    confirmed_items: Optional[list[dict]]  # previewed meals the user confirmed (saved as-is, no re-parse)
     health_images: Optional[list[str]]  # set by the image dispatcher (mixed uploads)
     food_images: Optional[list[str]]
 

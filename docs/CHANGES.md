@@ -4,7 +4,17 @@
 
 ---
 
-## Latest change: Ingest image routing fix
+## Latest change: Meals were logged twice (preview saved), date picker
+
+What's New:
+- **Every previewed meal was saved twice.** In `handle_nutrition_text` the `dry_run` (preview) check sat AFTER the code that inserts meals, so the preview already saved them; the app's Confirm then re-sent the message, the AI re-parsed it (slightly different numbers each time) and saved it again. Thursday/Friday/Saturday showed ~2x calories with mismatched macros. Fixed: a preview now writes **nothing** (and doesn't delete); **Confirm sends back the exact previewed items** (`confirmed_items` on `POST /api/chat`) and the server saves them with no LLM call, so what you approve is what is saved; inserts are idempotent (same user + description + time is skipped, so a double-tapped Confirm can't duplicate). The preview rows now show the day/time each item will be logged at. Confirm also skips the intent classifier so it can't be misrouted.
+- **Past days with no time given** are logged at a meal-type slot (breakfast 09:00, lunch 13:00, snack 16:00, dinner 20:00, else 12:00) instead of the clock time at which the message was typed (Thursday "porridge" typed Saturday 17:10 was stored as Thursday 17:10).
+- **Date range picker** (Bio "Pick", Capital "Pick days"): the compact pop-over opened off the right edge of the screen. Dates are now buttons that open a full calendar sheet.
+- 20 more tests (`tests/test_nutrition_flow.py`), 205 backend tests total. Existing duplicate rows are NOT auto-removed (see below).
+
+---
+
+## Previous: Ingest image routing fix
 
 What's New:
 - **Multi-image uploads were always sent to the food parser.** `image_dispatcher_node` skipped classification when more than one image was attached ("most common multi-image use case is a meal"), so three sleep screenshots or five heart screenshots answered "Could not parse nutrition data". Now **every image is classified individually** (food vs health/fitness screenshot, concurrently); all-health → health node, all-food → nutrition node (unchanged), mixed → `mixed_image_node` runs each node on its own images and combines the replies.

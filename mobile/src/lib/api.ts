@@ -72,6 +72,7 @@ export async function sendChat(
   images?: string[],
   sessionId?: string,
   dryRun = false,
+  confirmedItems?: unknown[],
 ): Promise<{ reply: string; ui?: UIBlock | null }> {
   const res = await fetch(`${API_URL}/api/chat`, {
     method: "POST",
@@ -82,6 +83,8 @@ export async function sendChat(
       ...(images && images.length > 0 ? { images } : {}),
       ...(sessionId ? { session_id: sessionId } : {}),
       dry_run: dryRun,
+      // On Confirm: save exactly the items that were previewed (no re-parse).
+      ...(confirmedItems && confirmedItems.length > 0 ? { confirmed_items: confirmedItems } : {}),
     }),
   });
   if (!res.ok) throw await parseError(res, "Chat request failed");

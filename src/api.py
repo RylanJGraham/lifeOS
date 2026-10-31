@@ -478,6 +478,7 @@ class ChatRequest(BaseModel):
     images: list[str] | None = None  # multiple base64-encoded images (no data: prefix)
     session_id: str | None = None  # optional web session id for persistent threads
     dry_run: bool = False  # if true, parse but do not persist (preview mode)
+    confirmed_items: list[dict] | None = None  # items from a preview, sent back on Confirm to be saved as-is
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest, auth: AuthContext = Depends(require_auth)):
@@ -499,6 +500,7 @@ async def chat(req: ChatRequest, auth: AuthContext = Depends(require_auth)):
             source="web",
             external_id=session_id,
             dry_run=req.dry_run,
+            confirmed_items=req.confirmed_items,
         )
     except Exception as e:
         SupabaseLogger.error("web-chat", f"Chat request failed: {e}")

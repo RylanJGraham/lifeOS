@@ -51,7 +51,8 @@ def text_intent_node(state: GraphState) -> GraphState:
     """
 
     try:
-        intent = llm_fast.invoke([HumanMessage(content=prompt)]).content.strip().lower()
+        # A Confirm of a previewed meal is already known to be nutrition: skip the classifier so it cannot misroute.
+        intent = "nutrition" if state.get("confirmed_items") else llm_fast.invoke([HumanMessage(content=prompt)]).content.strip().lower()
 
         if "trade" in intent:
             handle_trade(state)

@@ -77,6 +77,171 @@ Return ONLY a valid JSON object with the same structure (sufficient_data, clarif
     return items
 
 
+_DEFAULT_SLOT = {"breakfast": (9, 0), "lunch": (13, 0), "snack": (16, 0), "dinner": (20, 0), "other": (12, 0)}
+
+
+def _item_times(it: dict, current_time: str) -> list[str]:
+    """ISO timestamps an item is logged at: explicit `meal_times` (sent back by a confirmed preview), else the
+    day(s)/clock the user said, resolved in Python (never trust an LLM with date math), else now."""
+    explicit = it.get("meal_times")
+    if isinstance(explicit, list) and explicit:
+        out = []
+        for t in explicit:
+            try:
+                out.append(datetime.fromisoformat(str(t)).isoformat())
+            except ValueError:
+                pass
+        if out:
+            return out
+    clock = it.get("meal_clock")
+    days = it.get("meal_days") or []
+    if isinstance(days, str):
+        days = [days]
+    times = [t for t in (_resolve_day_reference(str(d)) for d in days) if t] or [current_time]
+    if not clock and days:
+        # A PAST day with no time given used to be stamped with the clock time of when it was typed
+        # (e.g. "porridge on Thursday", typed Saturday 17:10 -> Thursday 17:10). Use a sensible slot instead.
+        slot = _DEFAULT_SLOT.get(str(it.get("meal_type") or "").lower(), _DEFAULT_SLOT["other"])
+        today = datetime.fromisoformat(current_time).date()
+        times = [
+            t if datetime.fromisoformat(t).date() >= today
+            else datetime.fromisoformat(t).replace(hour=slot[0], minute=slot[1], second=0, microsecond=0).isoformat()
+            for t in times
+        ]
+    if clock:
+        try:
+            hh, mm = str(clock).split(":")[:2]
+            times = [datetime.fromisoformat(t).replace(hour=int(hh), minute=int(mm), second=0, microsecond=0).isoformat() for t in times]
+        except (ValueError, TypeError):
+            pass
+    return times
+
+
+def _micro_payload(it: dict) -> dict:
+    return {
+        "fiber": it.get("fiber") or 0,
+        "sugar": it.get("sugar") or 0,
+        "ai_analysis": it.get("ai_analysis") or "",
+        **{k: v for k, v in (it.get("micronutrients") or {}).items() if v is not None},
+    }
+
+
+def _insert_meal(supabase, user_id: str, it: dict, meal_time: str) -> bool:
+    """Insert one meal unless an identical one (same user, description, time) already exists, so a
+    double-tapped Confirm or a retried request can never log the same meal twice."""
+    try:
+        dup = (supabase.table("meals").select("id").eq("user_id", user_id)
+               .eq("description", it.get("meal_name")).eq("meal_time", meal_time).limit(1).execute())
+        if dup.data:
+            return False
+    except Exception as e:
+        logger.warning(f"Duplicate check failed, inserting anyway: {e}")
+    meal_type = it.get("meal_type") or None
+    supabase.table("meals").insert({
+        "description": it.get("meal_name"),
+        "calories": it.get("calories") or 0,
+        "protein": it.get("protein") or 0,
+        "carbs": it.get("carbs") or 0,
+        "fat": it.get("fats") or 0,
+        "caffeine_mg": it.get("caffeine_mg") or 0,
+        "meal_time": meal_time,
+        "meal_type": meal_type,
+        "micronutrients": _micro_payload(it),
+        "user_id": user_id,
+    }).execute()
+    ensure_supplements_for_meal(supabase, user_id, datetime.fromisoformat(meal_time), meal_type)
+    return True
+
+
+def _when_label(iso: str) -> str:
+    try:
+        d = datetime.fromisoformat(iso)
+        return ("today " if d.date() == datetime.now().astimezone().date() else d.strftime("%a %d %b ")) + d.strftime("%H:%M")
+    except ValueError:
+        return ""
+
+
+def _preview_item(it: dict, times: list[str]) -> dict:
+    """Everything needed to save this item later EXACTLY as previewed (the app sends it back on Confirm)."""
+    return {
+        "meal_name": it.get("meal_name"),
+        "calories": it.get("calories") or 0,
+        "protein": it.get("protein") or 0,
+        "carbs": it.get("carbs") or 0,
+        "fats": it.get("fats") or 0,
+        "caffeine_mg": it.get("caffeine_mg") or 0,
+        "fiber": it.get("fiber") or 0,
+        "sugar": it.get("sugar") or 0,
+        "ai_analysis": it.get("ai_analysis") or "",
+        "meal_type": it.get("meal_type"),
+        "micronutrients": it.get("micronutrients") or {},
+        "meal_times": times,
+        "meal_time": times[0] if times else None,
+    }
+
+
+def _sanitize_confirmed(raw) -> list[dict]:
+    """Validate items the client sends back on Confirm (never trust the client): bounded sizes, numbers coerced."""
+    def num(v, hi):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, min(f, hi)) if f == f else 0
+
+    out = []
+    for it in (raw if isinstance(raw, list) else [])[:40]:
+        if not isinstance(it, dict) or not str(it.get("meal_name") or "").strip():
+            continue
+        micro = {str(k)[:40]: num(v, 100000) for k, v in (it.get("micronutrients") or {}).items()
+                 if isinstance(v, (int, float)) and not isinstance(v, bool)} if isinstance(it.get("micronutrients"), dict) else {}
+        out.append({
+            "meal_name": str(it["meal_name"]).strip()[:200],
+            "calories": num(it.get("calories"), 20000), "protein": num(it.get("protein"), 2000),
+            "carbs": num(it.get("carbs"), 3000), "fats": num(it.get("fats"), 2000),
+            "caffeine_mg": num(it.get("caffeine_mg"), 5000), "fiber": num(it.get("fiber"), 500), "sugar": num(it.get("sugar"), 1000),
+            "ai_analysis": str(it.get("ai_analysis") or "")[:500], "micronutrients": micro,
+            "meal_type": str(it["meal_type"])[:30] if it.get("meal_type") else None,
+            "meal_times": [str(t)[:40] for t in (it.get("meal_times") or [])][:60] if isinstance(it.get("meal_times"), list) else [],
+        })
+    return out
+
+
+def _logged_reply(state: GraphState, items: list, logged_summaries: list, search_info: str, removed_info: str, removed_summaries: list) -> None:
+    if len(logged_summaries) > 1:
+        state["response"] = removed_info + f"Logged {len(logged_summaries)} items{search_info}:\n" + "\n".join(f"• {s}" for s in logged_summaries)
+        state["ui"] = confirmation_block(
+            status="logged",
+            title=f"{len(logged_summaries)} items logged",
+            rows=[
+                {"label": it.get("meal_name") or "Item", "value": f"{it.get('calories') or 0} kcal"}
+                for it in items
+            ],
+            subtitle=search_info.strip(" ()") or None,
+        )
+    elif logged_summaries:
+        insight = items[0].get('ai_analysis') if items else ''
+        state["response"] = removed_info + f"**Logged:** {logged_summaries[0]}{search_info}" + (f"\n\n{insight}" if insight else "")
+        logged_item = items[0] if items else {}
+        state["ui"] = confirmation_block(
+            status="logged",
+            title=logged_item.get("meal_name") or "Meal",
+            subtitle=search_info.strip(" ()") or None,
+            rows=[
+                {"label": "Calories", "value": f"{logged_item.get('calories') or 0} kcal"},
+                {"label": "Protein", "value": f"{logged_item.get('protein') or 0}g"},
+                {"label": "Carbs", "value": f"{logged_item.get('carbs') or 0}g"},
+                {"label": "Fat", "value": f"{logged_item.get('fats') or 0}g"},
+            ],
+            insight=insight or None,
+        )
+    elif removed_summaries:
+        state["response"] = removed_info.strip()
+        state["ui"] = confirmation_block(status="removed", title="Removed", rows=[{"label": s, "value": ""} for s in removed_summaries])
+    else:
+        state["response"] = "Understood, but found no food items to log."
+
+
 def handle_nutrition_text(state: GraphState) -> GraphState:
     """Extract meals/supplements from free text and store them."""
     text = state["content"]
@@ -91,6 +256,23 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
                 user_id = res_profile.data[0]["user_id"]
         except Exception:
             pass
+
+    # CONFIRM of a previewed meal: save exactly the items the user saw. No LLM, no search, no re-parse
+    # (a re-parse returns slightly different numbers and used to log every meal twice).
+    confirmed = _sanitize_confirmed(state.get("confirmed_items"))
+    if confirmed and supabase:
+        summaries = []
+        for it in confirmed:
+            times = _item_times(it, current_time)
+            for t in times:
+                _insert_meal(supabase, user_id, it, t)
+            summaries.append(f"{it['meal_name']} ({it['calories']:g} kcal {_when_label(times[0])})")
+        _logged_reply(state, confirmed, summaries, "", "", [])
+        try:
+            mark_resolved("pacing", "Meal logged")
+        except Exception as e:
+            logger.warning(f"Failed to resolve pacing action item: {e}")
+        return state
 
     # Step 1: Barcode shortcut — if the user sends digits that look like a
     # barcode/EAN, look it up directly in OpenFoodFacts before falling back
@@ -239,7 +421,9 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
         m = check_supplement_overrides(text, m)
         # Corrections first: delete what the user asked to remove (works
         # even when there are no new items to log).
-        removed_summaries = _process_meal_removals(supabase, m) if supabase else []
+        has_items = bool(m.get("sufficient_data") and (m.get("items") or m.get("meal_name")))
+        # A preview must not change anything: with new items to preview, deletions wait for the confirmed run.
+        removed_summaries = [] if (state.get("dry_run") and has_items) else (_process_meal_removals(supabase, m) if supabase else [])
         if m.get("sufficient_data"):
             items = m.get("items") or []
             logger.info(f"Nutrition extraction parsed {len(items)} items: {[it.get('meal_name') for it in items]}")
@@ -249,133 +433,31 @@ def handle_nutrition_text(state: GraphState) -> GraphState:
             # two items back, ask the LLM to re-check and list everything.
             items = _reextract_if_incomplete(text, items, current_time, search_context)
             logged_summaries = []
-            if supabase:
-                user_id = ZERO_UUID
-                try:
-                    res_profile = supabase.table("user_profiles").select("user_id").limit(1).execute()
-                    if res_profile.data and len(res_profile.data) > 0:
-                        user_id = res_profile.data[0]["user_id"]
-                except Exception:
-                    pass
-
-                for it in items:
-                    micro_payload = {
-                        "fiber": it.get("fiber") or 0,
-                        "sugar": it.get("sugar") or 0,
-                        "ai_analysis": it.get("ai_analysis") or "",
-                        **{k: v for k, v in (it.get("micronutrients") or {}).items() if v is not None},
-                    }
-
-                    # Resolve day references in Python (never trust LLM date math).
-                    # Each item carries its own days/clock: ranges fan out per day,
-                    # different-day foods stay separate items.
-                    clock = it.get("meal_clock")
-                    days = it.get("meal_days") or []
-                    if isinstance(days, str):
-                        days = [days]
-                    times = []
-                    for d in days:
-                        t = _resolve_day_reference(str(d))
-                        if t:
-                            times.append(t)
-                    if not times:
-                        times = [current_time]
-                    if clock:
-                        try:
-                            hh, mm = str(clock).split(":")[:2]
-                            times = [
-                                datetime.fromisoformat(t).replace(hour=int(hh), minute=int(mm), second=0, microsecond=0).isoformat()
-                                for t in times
-                            ]
-                        except (ValueError, TypeError):
-                            pass
-
-                    for meal_time in times:
-                        parsed_meal_time = datetime.fromisoformat(meal_time)
-                        meal_type = it.get("meal_type") or None
-                        supabase.table("meals").insert({
-                            "description": it.get("meal_name"),
-                            "calories": it.get("calories") or 0,
-                            "protein": it.get("protein") or 0,
-                            "carbs": it.get("carbs") or 0,
-                            "fat": it.get("fats") or 0,
-                            "caffeine_mg": it.get("caffeine_mg") or 0,
-                            "meal_time": meal_time,
-                            "meal_type": meal_type,
-                            "micronutrients": micro_payload,
-                            "user_id": user_id
-                        }).execute()
-                        ensure_supplements_for_meal(supabase, user_id, parsed_meal_time, meal_type)
-
-                    day_part = f" × {len(times)}d ({times[0][:10]}→{times[-1][:10]})" if len(times) > 1 else f" {times[0][:10]} {times[0][11:16]}"
-                    logged_summaries.append(f"{it.get('meal_name')} ({it.get('calories')} kcal{day_part})")
-
             search_info = f" (verified via search for '{search_query}')" if search_context else ""
             removed_info = ("Removed " + ", ".join(removed_summaries) + ".\n") if removed_summaries else ""
+            planned = [(it, _item_times(it, current_time)) for it in items]
 
-            # Dry-run preview: show parsed items without persisting them.
-            if state.get("dry_run"):
-                preview_rows = [
-                    {"label": it.get("meal_name") or "Item", "value": f"{it.get('calories') or 0} kcal"}
-                    for it in items
-                ]
+            # PREVIEW (dry_run): show what would be logged and write NOTHING. The app sends these exact items
+            # back on Confirm, so what you approve is what is saved.
+            if state.get("dry_run") and planned:
                 state["response"] = removed_info + f"Preview: {len(items)} item(s) ready to log."
                 state["ui"] = confirmation_block(
                     status="preview",
                     title=f"Log {len(items)} item{('s' if len(items) > 1 else '')}?",
-                    rows=preview_rows,
+                    rows=[{"label": it.get("meal_name") or "Item", "value": f"{it.get('calories') or 0} kcal · {_when_label(times[0])}"} for it, times in planned],
                     subtitle=search_info.strip(" ()") or None,
-                    metadata={
-                        "intent": "confirm_nutrition",
-                        "items": [
-                            {
-                                "meal_name": it.get("meal_name"),
-                                "calories": it.get("calories") or 0,
-                                "protein": it.get("protein") or 0,
-                                "carbs": it.get("carbs") or 0,
-                                "fats": it.get("fats") or 0,
-                                "meal_time": it.get("meal_time") or current_time,
-                                "meal_type": it.get("meal_type"),
-                                "micronutrients": it.get("micronutrients") or {},
-                            }
-                            for it in items
-                        ],
-                    },
+                    metadata={"intent": "confirm_nutrition", "items": [_preview_item(it, times) for it, times in planned]},
                 )
                 return state
 
-            if len(logged_summaries) > 1:
-                state["response"] = removed_info + f"Logged {len(logged_summaries)} items{search_info}:\n" + "\n".join(f"• {s}" for s in logged_summaries)
-                state["ui"] = confirmation_block(
-                    status="logged",
-                    title=f"{len(logged_summaries)} items logged",
-                    rows=[
-                        {"label": it.get("meal_name") or "Item", "value": f"{it.get('calories') or 0} kcal"}
-                        for it in items
-                    ],
-                    subtitle=search_info.strip(" ()") or None,
-                )
-            elif logged_summaries:
-                insight = items[0].get('ai_analysis') if items else ''
-                state["response"] = removed_info + f"**Logged:** {logged_summaries[0]}{search_info}" + (f"\n\n{insight}" if insight else "")
-                logged_item = items[0] if items else {}
-                state["ui"] = confirmation_block(
-                    status="logged",
-                    title=logged_item.get("meal_name") or "Meal",
-                    subtitle=search_info.strip(" ()") or None,
-                    rows=[
-                        {"label": "Calories", "value": f"{logged_item.get('calories') or 0} kcal"},
-                        {"label": "Protein", "value": f"{logged_item.get('protein') or 0}g"},
-                        {"label": "Carbs", "value": f"{logged_item.get('carbs') or 0}g"},
-                        {"label": "Fat", "value": f"{logged_item.get('fats') or 0}g"},
-                    ],
-                    insight=insight or None,
-                )
-            elif removed_summaries:
-                state["response"] = removed_info.strip()
-                state["ui"] = confirmation_block(status="removed", title="Removed", rows=[{"label": s, "value": ""} for s in removed_summaries])
-            else:
-                state["response"] = "Understood, but found no food items to log."
+            if supabase:
+                for it, times in planned:
+                    for meal_time in times:
+                        _insert_meal(supabase, user_id, it, meal_time)
+                    day_part = f" × {len(times)}d ({times[0][:10]}→{times[-1][:10]})" if len(times) > 1 else f" {times[0][:10]} {times[0][11:16]}"
+                    logged_summaries.append(f"{it.get('meal_name')} ({it.get('calories')} kcal{day_part})")
+
+            _logged_reply(state, items, logged_summaries, search_info, removed_info, removed_summaries)
 
             if logged_summaries:
                 try:

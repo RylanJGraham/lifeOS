@@ -225,7 +225,10 @@ export default function ChatScreen() {
     const previewTs = messages.find((m) => m.ui === pending.ui)?.ts;
     try {
       const imagesToSend = pending.images.length > 0 ? pending.images : undefined;
-      const res = await sendChat(pending.text, imagesToSend, sessionIdRef.current, false);
+      // Meals: send back the exact previewed items so what you confirmed is what gets saved.
+      const meta = (pending.ui as { metadata?: { intent?: string; items?: unknown[] } | null }).metadata;
+      const confirmedItems = meta?.intent === "confirm_nutrition" ? meta.items : undefined;
+      const res = await sendChat(pending.text, imagesToSend, sessionIdRef.current, false, confirmedItems);
       setMessages((prev) => {
         const filtered = previewTs ? prev.filter((m) => m.ts !== previewTs) : prev;
         return [...filtered, { role: "agent", text: res.reply, ts: Date.now(), ui: res.ui }];
