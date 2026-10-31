@@ -148,6 +148,9 @@ Returns the current Telegram webhook URL, status, pending update count, and last
 
 ## Statement uploads
 
+### `GET /api/statements/{upload_id}`
+Progress of an uploaded statement: `{status: pending|processing|done|failed, error, processed_at, inserted, skipped}`. `404` for another user's upload. The mobile Ingest chat polls this after an upload and reports the result.
+
 ### `POST /statements/upload`
 
 Accepts a PDF bank/CC statement, saves it to `STATEMENT_DIRECTORY`, records it in `statement_uploads`, and triggers the `pdf-statement-sync` pipeline.

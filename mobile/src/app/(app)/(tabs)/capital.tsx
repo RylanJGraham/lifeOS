@@ -1,5 +1,5 @@
-import { useState, useMemo } from "react";
-import { useRouter } from "expo-router";
+import { useState, useMemo, useCallback, useRef } from "react";
+import { useRouter, useFocusEffect } from "expo-router";
 import { ScrollView, StyleSheet, Text, View, RefreshControl, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LineChart, BarChart } from "react-native-gifted-charts";
@@ -28,6 +28,9 @@ import {
 } from "@/lib/queries";
 import { spendStatus } from "@/lib/pacing";
 import { DateRangePicker } from "@/components/DateRangePicker";
+import { CategoryBreakdown } from "@/components/capital/CategoryBreakdown";
+import { CATEGORY_LABEL, canonicalCategory, categoryBreakdown, resolveBudgets } from "@/lib/categories";
+import { monthlyTakeHome } from "@/lib/finance";
 import { addDays, formatRange, inclusiveDays, localDay, startOfDay } from "@/lib/dateRange";
 import { colors, colors as lightColors, radius, spacing, fonts, withAlpha } from "@/theme";
 import { useTheme } from "@/theme/ThemeProvider";
@@ -129,6 +132,23 @@ export default function CapitalScreen() {
     anomalies.refetch();
   };
 
+  // Refresh whenever this tab is opened (a statement imported from Ingest lands in the background).
+  const refetchOnFocus = useRef(() => {});
+  refetchOnFocus.current = () => {
+    transactions.refetch();
+    profile.refetch();
+  };
+  const firstFocus = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      if (firstFocus.current) {
+        firstFocus.current = false;
+        return;
+      }
+      refetchOnFocus.current();
+    }, []),
+  );
+
   const txs = useMemo(() => (transactions.data ?? []) as FullTransaction[], [transactions.data]);
 
   const now = new Date();
@@ -212,17 +232,12 @@ export default function CapitalScreen() {
   const expenses = periodTx.reduce((a, t) => a + (typeof t.amount === "number" ? Math.min(t.amount, 0) : 0), 0);
   const net = income + expenses;
   const periodLabel = customActive ? formatRange(pFrom, pTo) : now.toLocaleDateString(undefined, { month: "long", year: "numeric" });
-  const pace = spendStatus(expenses, profile.data ?? undefined);
+  // base_salary is a bare number (yours is annual); budget against real monthly take-home instead.
+  const monthlyBase = monthlyTakeHome(profile.data?.base_salary, txs);
+  const pace = spendStatus(expenses, { base_salary: monthlyBase || null });
 
-  const categoryTotals = periodTx.reduce<Record<string, number>>((acc, t) => {
-    if (typeof t.amount !== "number" || t.amount >= 0) return acc;
-    const cat = t.category ?? "Uncategorized";
-    acc[cat] = (acc[cat] ?? 0) + Math.abs(t.amount);
-    return acc;
-  }, {});
-  const topCategories = Object.entries(categoryTotals).sort((a, b) => b[1] - a[1]).slice(0, 5);
-  const maxCatSpend = topCategories.length > 0 ? topCategories[0][1] : 0;
-  void topCategories; void maxCatSpend; // retained for future use
+  // One merged view of spending ("Food" and "Food & Dining" are the same category), budgets only for the month view.
+  const { rows: categoryRows, total: totalSpent } = categoryBreakdown(periodTx, customActive ? {} : resolveBudgets(monthlyBase));
 
   const dailySpendMap = new Map<string, number>();
   for (const t of txs) {
@@ -241,41 +256,11 @@ export default function CapitalScreen() {
 
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const monthFraction = now.getDate() / daysInMonth;
-  const budget = profile.data?.base_salary ?? null;
+  const budget = monthlyBase > 0 ? monthlyBase : null;
   const spentPct = budget ? Math.min(100, (Math.abs(expenses) / budget) * 100) : null;
   const burnSeverity = spentPct == null ? null : pace?.severity ?? "good";
   const burnColor = burnSeverity === "bad" ? colors.bad : burnSeverity === "warn" ? colors.kinematic : colors.good;
 
-  // ── Budget vs. actual by category ──
-  // Default category budgets derived from net income × typical percentages.
-  // The user can later override these via a settings row; for now we use
-  // sensible defaults so the pacing rings are meaningful on first use.
-  const DEFAULT_CATEGORY_BUDGETS: Record<string, number> = {
-    Food: 0.18,
-    Shopping: 0.12,
-    Entertainment: 0.05,
-    Health: 0.04,
-    Other: 0.06,
-  };
-  const categoryBudgets = income > 0
-    ? Object.fromEntries(
-        Object.entries(DEFAULT_CATEGORY_BUDGETS).map(([cat, pct]) => [cat, income * pct]),
-      )
-    : {};
-  const monthPct = monthFraction * 100;
-  const budgetCategories = Array.from(
-    new Set([...Object.keys(categoryBudgets), ...Object.keys(categoryTotals)]),
-  )
-    .map((cat) => {
-      const catBudget = categoryBudgets[cat] ?? 0;
-      const actual = categoryTotals[cat] ?? 0;
-      const pct = catBudget > 0 ? (actual / catBudget) * 100 : actual > 0 ? 100 : 0;
-      const severity = pct > 100 ? "over" : pct > monthPct + 10 ? "warn" : "good";
-      const ringColor = severity === "over" ? colors.bad : severity === "warn" ? colors.kinematic : colors.good;
-      return { cat, budget: catBudget, actual, pct, severity, ringColor };
-    })
-    .filter((r) => r.actual > 0 || r.budget > 0)
-    .sort((a, b) => b.actual - a.actual);
 
   const targetSavingsRate = profile.data?.target_savings_rate ?? null;
   const actualSavingsRate = income > 0 ? (net / income) * 100 : null;
@@ -552,31 +537,15 @@ export default function CapitalScreen() {
           ) : null}
 
           {/* ─── Budget vs. actual by category ─── */}
-          {customActive ? (
-            <>
-              <SectionLabel title="Spending by category" subtitle={periodLabel} />
-              <Surface style={{ paddingVertical: 0 }}>
-                {Object.entries(categoryTotals).length === 0 ? (
-                  <Text style={styles.emptyBody}>No spending in these days.</Text>
-                ) : (
-                  Object.entries(categoryTotals)
-                    .sort((a, b) => b[1] - a[1])
-                    .map(([cat, amt], i, arr) => (
-                      <View key={cat}>
-                        <ListRow title={cat} trailing={fmtMoney(-amt)} />
-                        {i < arr.length - 1 ? <View style={styles.rowDivider} /> : null}
-                      </View>
-                    ))
-                )}
-              </Surface>
-            </>
-          ) : null}
-          {!customActive ? <SectionLabel title="Budget vs. actual" subtitle={`${now.toLocaleDateString(undefined, { month: "short" })} · Day ${now.getDate()}/${daysInMonth}`} /> : null}
-          {customActive ? null : budgetCategories.length === 0 ? (
+          <SectionLabel
+            title="Spending by category"
+            subtitle={customActive ? periodLabel : `${now.toLocaleDateString(undefined, { month: "short" })} · Day ${now.getDate()}/${daysInMonth}`}
+          />
+          {categoryRows.length === 0 && !customActive ? (
             <Surface style={styles.emptyCard}>
               <Wallet size={28} color={colors.textTertiary} />
               <Text style={styles.emptyTitle}>No spending logged this month</Text>
-              <Text style={styles.emptyBody}>Upload a bank statement via Ingest to start tracking your budget pacing.</Text>
+              <Text style={styles.emptyBody}>Upload a bank statement via Ingest to see where your money goes.</Text>
               <Pressable
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -588,52 +557,7 @@ export default function CapitalScreen() {
               </Pressable>
             </Surface>
           ) : (
-            <Surface style={{ paddingVertical: 0 }}>
-              {budgetCategories.map((row, i) => {
-                const remaining = row.budget - row.actual;
-                return (
-                  <View key={row.cat}>
-                    <View style={styles.catRow}>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md, flex: 1 }}>
-                        <ProgressRing
-                          progress={Math.min(100, row.pct)}
-                          size={42}
-                          strokeWidth={4}
-                          color={row.ringColor}
-                        >
-                          <Text style={[styles.catRingPct, { color: row.ringColor }]}>{Math.round(row.pct)}</Text>
-                        </ProgressRing>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.catLabel}>{row.cat}</Text>
-                          <Text style={styles.catSub}>
-                            {fmtMoney(row.actual)} / {fmtMoney(row.budget)}
-                          </Text>
-                          <View style={styles.catBarWrap}>
-                            <PacingBar
-                              height={5}
-                              segments={[{ value: Math.min(100, row.pct), color: row.ringColor }]}
-                            />
-                          </View>
-                        </View>
-                      </View>
-                      <View style={{ alignItems: "flex-end" }}>
-                        <Text style={[styles.catValue, { color: row.ringColor }]}>
-                          {remaining >= 0 ? "+" : ""}{fmtMoney(remaining)}
-                        </Text>
-                        <Text style={styles.catPaceLabel}>
-                          {row.severity === "over"
-                            ? "OVER"
-                            : row.severity === "warn"
-                              ? "PACING UP"
-                              : "ON TRACK"}
-                        </Text>
-                      </View>
-                    </View>
-                    {i < budgetCategories.length - 1 ? <View style={styles.rowDivider} /> : null}
-                  </View>
-                );
-              })}
-            </Surface>
+            <CategoryBreakdown rows={categoryRows} total={totalSpent} showBudgets={!customActive} emptyText="No spending on these days." />
           )}
 
           {/* ─── Ledger stream ─── */}
@@ -644,7 +568,7 @@ export default function CapitalScreen() {
               <View key={i}>
                 <ListRow
                   title={t.merchant_name ?? t.category ?? "Transaction"}
-                  subtitle={t.transaction_date ? fmtDate(t.transaction_date) : undefined}
+                  subtitle={t.transaction_date ? `${fmtDate(t.transaction_date)} · ${CATEGORY_LABEL[canonicalCategory(t.category)]}` : undefined}
                   trailing={fmtMoney(typeof t.amount === "number" ? t.amount : 0)}
                   trailingColor={(t.amount as number) >= 0 ? colors.good : colors.textPrimary}
                 />

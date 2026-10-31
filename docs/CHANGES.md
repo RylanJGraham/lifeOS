@@ -4,7 +4,18 @@
 
 ---
 
-## Latest change: Meals were logged twice (preview saved), date picker
+## Latest change: PDF import signs/duplicates/status, Capital categories
+
+What's New:
+- **Statement PDF import stored spending as income.** The model sometimes returned expenses as POSITIVE amounts (a whole statement: 50 rows), and the only safety net covered salary. `_repair_signs` now fixes signs deterministically: the running balance (SALDO) decides each row's sign (either statement order), with a category rule for the unverifiable edge row and a fallback when nothing is negative. Also: de-duplication is now **count-aware** (two identical same-day purchases are both kept; re-importing a statement adds nothing), merchant names are matched literally (no `_`/`%` wildcards), and an unreadable PDF is a visible **failure** (moved to `failed/`) instead of a silent "done".
+- **The app never learned an import had finished.** The background job scanned the folder and never updated `statement_uploads` (stuck on `pending`), and the app said "queued" and stopped. The job now marks each upload `processing → done|failed` with counts (migration 036: `transactions_inserted/skipped`), `GET /api/statements/{id}` reports progress, the Ingest chat waits and posts "✅ N imported, M already in your ledger", and Capital refetches whenever the tab is opened.
+- **Capital categories**: one vocabulary (`mobile/src/lib/categories.ts`) merges "Food"/"Food & Dining" etc. The category section is now "Spending by category" with each category's share of spending and a budget line only where a budget is known. Budgets no longer come from *this month's income* (zero or inflated by mis-signed rows => "€0 budget, 100% over" everywhere); they use `monthlyTakeHome` (real monthly income when visible, else `base_salary / 12` since `base_salary` is an annual figure). 15 more front-end logic tests (`mobile/tests-node/`).
+- 16 more backend tests (`tests/test_pdf_ingestion.py`), 221 backend tests total.
+- **Existing bad rows from the 31 Oct import are fixed separately** (27 sign-flipped duplicates, 23 mis-signed purchases, legacy short category names) — see below.
+
+---
+
+## Previous: Meals were logged twice (preview saved), date picker
 
 What's New:
 - **Every previewed meal was saved twice.** In `handle_nutrition_text` the `dry_run` (preview) check sat AFTER the code that inserts meals, so the preview already saved them; the app's Confirm then re-sent the message, the AI re-parsed it (slightly different numbers each time) and saved it again. Thursday/Friday/Saturday showed ~2x calories with mismatched macros. Fixed: a preview now writes **nothing** (and doesn't delete); **Confirm sends back the exact previewed items** (`confirmed_items` on `POST /api/chat`) and the server saves them with no LLM call, so what you approve is what is saved; inserts are idempotent (same user + description + time is skipped, so a double-tapped Confirm can't duplicate). The preview rows now show the day/time each item will be logged at. Confirm also skips the intent classifier so it can't be misrouted.

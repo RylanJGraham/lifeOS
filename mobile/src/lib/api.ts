@@ -279,6 +279,32 @@ export interface StatementUploadResponse {
   path?: string;
 }
 
+export interface StatementStatus {
+  status: "pending" | "processing" | "done" | "failed" | string;
+  error?: string | null;
+  inserted?: number | null;
+  skipped?: number | null;
+}
+
+export const getStatementStatus = (uploadId: string) =>
+  apiJson<StatementStatus>(`/api/statements/${uploadId}`, {}, "Could not check the statement");
+
+/** Poll until the import finishes (done/failed) or `timeoutMs` passes (then returns the last status). */
+export async function waitForStatement(uploadId: string, timeoutMs = 180_000, everyMs = 3_000): Promise<StatementStatus> {
+  const deadline = Date.now() + timeoutMs;
+  let last: StatementStatus = { status: "pending" };
+  while (Date.now() < deadline) {
+    try {
+      last = await getStatementStatus(uploadId);
+      if (last.status === "done" || last.status === "failed") return last;
+    } catch {
+      /* transient network error: keep polling */
+    }
+    await new Promise((r) => setTimeout(r, everyMs));
+  }
+  return last;
+}
+
 export async function uploadStatement(
   fileUri: string,
   fileName: string,

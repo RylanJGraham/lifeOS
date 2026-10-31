@@ -61,6 +61,17 @@ class _Query:
     def gte(self, k, v): return self._f(lambda r: r.get(k) is not None and str(r[k]) >= str(v))
     def in_(self, k, vs): return self._f(lambda r: r.get(k) in vs)
 
+    def ilike(self, k, pattern):
+        import re as _re
+        # SQL ILIKE: unescaped % is a wildcard, backslash escapes % _ and itself; case-insensitive
+        rx, i = "", 0
+        while i < len(pattern):
+            ch = pattern[i]
+            if ch == "\\" and i + 1 < len(pattern):
+                rx += _re.escape(pattern[i + 1]); i += 2; continue
+            rx += ".*" if ch == "%" else ("." if ch == "_" else _re.escape(ch)); i += 1
+        return self._f(lambda r: r.get(k) is not None and _re.fullmatch(rx, str(r[k]), _re.I) is not None)
+
     def is_(self, k, v):
         return self._f(lambda r: (r.get(k) is None) if v == "null" else r.get(k) == v)
 

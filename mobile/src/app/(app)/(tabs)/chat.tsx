@@ -20,7 +20,7 @@ import * as DocumentPicker from "expo-document-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Plus, SendHorizonal, X, FileText } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
-import { sendChat, uploadStatement, type UIBlock } from "@/lib/api";
+import { sendChat, uploadStatement, waitForStatement, type UIBlock } from "@/lib/api";
 import { colors as lightColors, radius, spacing, fonts, withAlpha } from "@/theme";
 import { useTheme } from "@/theme/ThemeProvider";
 import { ScreenHeader, SectionLabel, NavRow, Dot, FormattedText, ChatBlock, HEADER_BAR_HEIGHT } from "@/components/ui";
@@ -170,12 +170,17 @@ export default function ChatScreen() {
 
       let messageText = text;
       let uploadRefs: string[] = [];
+      let results: Array<{ status: string; upload_id?: string | null; name: string; error?: unknown }> = [];
 
       if (filesToSend.length > 0) {
         setUploading(true);
         try {
-          const results = await Promise.all(
-            filesToSend.map((f) => uploadStatement(f.uri, f.name).catch((e) => ({ status: "error", error: e, name: f.name })))
+          results = await Promise.all(
+            filesToSend.map((f) =>
+              uploadStatement(f.uri, f.name)
+                .then((r) => ({ ...r, name: f.name })) // the API reply has no file name; the UI messages need it
+                .catch((e) => ({ status: "error", error: e, name: f.name })),
+            )
           );
           uploadRefs = results
             .filter((r): r is { status: string; upload_id?: string | null; name: string } => r.status !== "error")
@@ -193,6 +198,30 @@ export default function ChatScreen() {
           }
         } finally {
           setUploading(false);
+        }
+        // A PDF is imported in the background (~30-60 s). Tell the user, wait for the real result, and report it
+        // (it used to say "queued" and then nothing, so the app looked stuck).
+        const uploadedIds = results
+          .filter((r) => r.status !== "error" && !!r.upload_id)
+          .map((r) => ({ id: r.upload_id as string, name: r.name }));
+        if (uploadedIds.length > 0) {
+          setMessages((prev) => [
+            ...prev,
+            { role: "agent", text: `Uploaded ${uploadedIds.map((u) => u.name).join(", ")} — importing now, this takes about a minute. I'll tell you when it's done.`, ts: Date.now() },
+          ]);
+          uploadedIds.forEach(({ id, name }) => {
+            waitForStatement(id).then((st) => {
+              const text =
+                st.status === "done"
+                  ? `✅ ${name}: ${st.inserted ?? 0} new transaction${st.inserted === 1 ? "" : "s"} imported${st.skipped ? `, ${st.skipped} already in your ledger` : ""}. Capital is up to date.`
+                  : st.status === "failed"
+                    ? `${name} could not be imported: ${st.error || "unknown error"}`
+                    : `${name} is still importing — check Capital in a minute.`;
+              setMessages((prev) => [...prev, { role: st.status === "failed" ? "error" : "agent", text, ts: Date.now() }]);
+              setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+            });
+          });
+          if (!text && imagesToSend.length === 0) return; // only PDFs: nothing to send to the chat model
         }
         if (uploadRefs.length > 0) {
           const fileNote = `I uploaded PDF statement(s): ${uploadRefs.join(", ")}. They're queued for parsing via the pdf-statement-sync pipeline.`;

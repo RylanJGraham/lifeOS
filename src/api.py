@@ -778,6 +778,22 @@ async def upload_statement(
     })
 
 
+@app.get("/api/statements/{upload_id}")
+async def statement_status(upload_id: str, auth: AuthContext = Depends(require_auth)):
+    """Progress of an uploaded statement: pending -> processing -> done | failed (+ counts)."""
+    from utils.supabase_client import get_supabase
+    sb = get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=500, detail="Supabase not configured.")
+    rows = sb.table("statement_uploads").select("status,error,processed_at,transactions_inserted,transactions_skipped") \
+        .eq("id", upload_id).eq("user_id", auth.user_id).limit(1).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Upload not found.")
+    r = rows[0]
+    return {"status": r.get("status"), "error": r.get("error"), "processed_at": r.get("processed_at"),
+            "inserted": r.get("transactions_inserted"), "skipped": r.get("transactions_skipped")}
+
+
 # ─── Supplements ───────────────────────────────────────────────
 class SupplementLookupRequest(BaseModel):
     brand: str

@@ -47,7 +47,22 @@ class PDFTransactionIngester:
             logger.info("No PDF statements found in directory.")
             return
         for pdf_path in pdf_files:
-            self.process_file(pdf_path)
+            try:
+                upload = self._find_upload(pdf_path)
+                if upload:
+                    self.process_upload(upload["id"], upload["user_id"])  # keeps statement_uploads in step
+                else:
+                    self.process_file(pdf_path)
+            except Exception as e:  # one bad PDF must not stop the others
+                logger.error(f"Failed to process {pdf_path}: {e}")
+
+    def _find_upload(self, pdf_path: str) -> dict | None:
+        try:
+            res = self.db.table("statement_uploads").select("*").eq("storage_path", pdf_path).limit(1).execute()
+            return res.data[0] if res.data else None
+        except Exception as e:
+            logger.warning(f"Could not look up upload record for {pdf_path}: {e}")
+            return None
 
     def process_upload(self, upload_id: str, user_id: str) -> dict:
         """Process a PDF previously recorded in statement_uploads."""
@@ -61,11 +76,22 @@ class PDFTransactionIngester:
                 return {"ok": False, "error": "file missing"}
             self.db.table("statement_uploads").update({"status": "processing"}).eq("id", upload_id).execute()
             transactions = self._parse_pdf(file_path)
+            if not transactions:
+                self.db.table("statement_uploads").update({
+                    "status": "failed", "error": "No transactions could be read from this PDF.",
+                    "processed_at": datetime.now().isoformat(),
+                }).eq("id", upload_id).execute()
+                failed_dir = os.path.join(self.statement_dir, "failed")
+                os.makedirs(failed_dir, exist_ok=True)
+                os.rename(file_path, os.path.join(failed_dir, os.path.basename(file_path)))  # don't retry forever
+                return {"ok": False, "error": "no transactions parsed"}
             inserted, skipped = self._save_transactions(transactions, user_id)
             self._update_bank_balance(transactions, user_id)
             self.db.table("statement_uploads").update({
                 "status": "done",
                 "processed_at": datetime.now().isoformat(),
+                "transactions_inserted": inserted,
+                "transactions_skipped": skipped,
             }).eq("id", upload_id).execute()
             # Move processed file to archive
             archive_dir = os.path.join(self.statement_dir, "archived")
@@ -152,6 +178,9 @@ Statement text:
                 if t["category"] == "Income" and t["amount"] < 0:
                     logger.warning(f"Flipping negative income: {t['merchant_name']} {t['amount']} -> {abs(t['amount'])}")
                     t["amount"] = abs(t["amount"])
+            fixed = self._repair_signs(transactions)
+            if fixed:
+                logger.warning(f"Corrected the sign of {fixed} transaction amounts (expenses must be negative)")
             logger.info(f"Parsed {len(transactions)} transactions from PDF")
             return transactions
         except Exception as e:
@@ -181,6 +210,51 @@ Statement text:
             except Exception as e:
                 logger.error(f"Failed to read PDF {pdf_path}: {e}")
         return text
+
+    @staticmethod
+    def _repair_signs(transactions: list) -> int:
+        """The model sometimes returns spending as POSITIVE numbers (it did for a whole statement: 50 expenses
+        stored as income). Fix signs deterministically; returns how many amounts were corrected.
+
+        1. Running balance (SALDO): consecutive rows must satisfy balance_change == signed amount, in
+           whichever order the statement lists them. When that holds for most rows, the balance decides the sign.
+        2. Fallback with no usable balance: if NOTHING is negative, the non-income rows are expenses.
+        """
+        rows = transactions
+        n = len(rows)
+
+        def same(a: float, b: float) -> bool:
+            return abs(a - b) < 0.011
+
+        pairs = [(i - 1, i) for i in range(1, n) if rows[i - 1].get("saldo") is not None and rows[i].get("saldo") is not None]
+        score_oldest_first = sum(1 for p, i in pairs if same(abs(rows[i]["saldo"] - rows[p]["saldo"]), abs(rows[i]["amount"])))
+        score_newest_first = sum(1 for p, i in pairs if same(abs(rows[p]["saldo"] - rows[i]["saldo"]), abs(rows[p]["amount"])))
+        fixed = 0
+        if pairs and max(score_oldest_first, score_newest_first) >= max(3, len(pairs) // 2):
+            oldest_first = score_oldest_first >= score_newest_first
+            checked: set[int] = set()
+            for p, i in pairs:
+                target, delta = (rows[i], rows[i]["saldo"] - rows[p]["saldo"]) if oldest_first else (rows[p], rows[p]["saldo"] - rows[i]["saldo"])
+                checked.add(id(target))
+                if same(abs(delta), abs(target["amount"])):
+                    want = abs(target["amount"]) if delta > 0 else -abs(target["amount"])
+                    if target["amount"] != want:
+                        target["amount"], fixed = want, fixed + 1
+            if fixed:
+                # The edge row (no neighbouring balance to compare with) can't be verified. Since the model got signs
+                # wrong elsewhere in this statement, apply the category rule: non-income is an expense.
+                for t in rows:
+                    if id(t) not in checked and t.get("category") != "Income" and t["amount"] > 0:
+                        t["amount"], fixed = -t["amount"], fixed + 1
+        else:
+            non_income = [t for t in rows if t.get("category") != "Income"]
+            if len(non_income) >= 5 and not any(t["amount"] < 0 for t in rows):
+                for t in non_income:
+                    t["amount"], fixed = -abs(t["amount"]), fixed + 1
+        for t in rows:  # income is never negative
+            if t.get("category") == "Income" and t["amount"] < 0:
+                t["amount"] = abs(t["amount"])
+        return fixed
 
     def _normalize_date(self, raw: str | None) -> str:
         if not raw:
@@ -226,27 +300,31 @@ Statement text:
             return 0, 0
         user_id = self._resolve_user_id(user_id)
         inserted, skipped = 0, 0
+        # Count-aware de-duplication: two identical purchases on the same day (same merchant + amount) are
+        # both real; only skip as many as are ALREADY stored, so a re-imported statement adds nothing.
+        wanted: dict[tuple, list] = {}
         for t in transactions:
+            wanted.setdefault((t["transaction_date"], t["merchant_name"].lower(), round(t["amount"], 2)), []).append(t)
+        for (_, _, _), group in wanted.items():
+            t = group[0]
             try:
-                dup = self.db.table("transactions").select("id") \
-                    .eq("user_id", user_id) \
-                    .eq("transaction_date", t["transaction_date"]) \
-                    .eq("amount", t["amount"]) \
-                    .ilike("merchant_name", t["merchant_name"]) \
-                    .limit(1).execute()
-                if dup.data:
-                    skipped += 1
-                    continue
-                self.db.table("transactions").insert({
-                    "user_id": user_id,
-                    "transaction_date": t["transaction_date"],
-                    "merchant_name": t["merchant_name"],
-                    "amount": t["amount"],
-                    "category": t["category"],
-                    "confidence_score": t["confidence_score"],
-                    "notes": "PDF statement ingestion",
-                }).execute()
-                inserted += 1
+                pattern = t["merchant_name"].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                have = len(self.db.table("transactions").select("id")
+                           .eq("user_id", user_id).eq("transaction_date", t["transaction_date"])
+                           .eq("amount", t["amount"]).ilike("merchant_name", pattern).execute().data or [])
+                to_add = max(0, len(group) - have)
+                skipped += len(group) - to_add
+                for row in group[:to_add]:
+                    self.db.table("transactions").insert({
+                        "user_id": user_id,
+                        "transaction_date": row["transaction_date"],
+                        "merchant_name": row["merchant_name"],
+                        "amount": row["amount"],
+                        "category": row["category"],
+                        "confidence_score": row["confidence_score"],
+                        "notes": "PDF statement ingestion",
+                    }).execute()
+                    inserted += 1
             except Exception as e:
                 logger.error(f"Failed to insert transaction: {e}")
         logger.info(f"Inserted {inserted} transactions; skipped {skipped} duplicates")
