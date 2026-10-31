@@ -1,4 +1,5 @@
 """Shared test setup: put src/ on the path, isolate env, provide a fake Supabase."""
+import itertools
 import os
 import sys
 from datetime import datetime, timezone
@@ -11,6 +12,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 for var in ("SUPABASE_URL", "SUPABASE_SERVICE_KEY", "API_SECRET", "OPENROUTER_API_KEY", "TELEGRAM_ENABLED"):
     os.environ.pop(var, None)
 os.environ.setdefault("OPENROUTER_API_KEY", "test-key")
+from cryptography.fernet import Fernet  # noqa: E402
+os.environ["CALENDAR_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 
 OWNER = "11111111-1111-1111-1111-111111111111"
 
@@ -75,7 +78,7 @@ class _Query:
         if self.op == "insert":
             new = [dict(r) for r in (self.payload if isinstance(self.payload, list) else [self.payload])]
             for r in new:
-                r.setdefault("id", f"{self.table}-{len(rows) + 1}")
+                r.setdefault("id", f"{self.table}-{next(self.db.ids)}")  # globally unique, even after deletes
                 r.setdefault("created_at", datetime.now(timezone.utc).isoformat())  # DB default
             rows.extend(new)
             return SimpleNamespace(data=new, count=len(new))
@@ -107,6 +110,7 @@ class _Query:
 class FakeSupabase:
     def __init__(self):
         self.tables: dict[str, list[dict]] = {}
+        self.ids = itertools.count(1)
 
     def table(self, name):
         return _Query(self, name)

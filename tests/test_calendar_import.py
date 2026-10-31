@@ -301,3 +301,34 @@ class TestEndpoints:
     def test_requires_auth(self, client):
         assert client.get("/api/calendar/subscriptions").status_code == 401
         assert client.post("/api/calendar/subscriptions", json={"url": "https://x"}).status_code == 401
+
+
+class TestBulkAndLegacy:
+    def test_large_calendar_uses_batched_writes(self, fake_sb, owner_id, monkeypatch):
+        calls = {"insert": 0, "delete": 0}
+        real = fake_sb.table
+        def counting(name):
+            q = real(name)
+            if name == "calendar_events":
+                oi, od = q.insert, q.delete
+                q.insert = lambda row: (calls.__setitem__("insert", calls["insert"] + 1), oi(row))[1]
+                q.delete = lambda: (calls.__setitem__("delete", calls["delete"] + 1), od())[1]
+            return q
+        monkeypatch.setattr(fake_sb, "table", counting)
+        occ = [{"uid": f"u{i}", "title": f"m{i}", "notes": None, "location": None,
+                "starts_at": f"2026-11-{1 + i % 28:02d}T{8 + i % 10:02d}:00:00+00:00", "ends_at": None, "all_day": False} for i in range(550)]
+        assert ci.reconcile(fake_sb, owner_id, "s1", occ) == 550
+        assert len(fake_sb.rows("calendar_events")) == 550
+        assert calls["insert"] == 6  # 550 rows / batches of 100, not 550 round trips
+        assert ci.reconcile(fake_sb, owner_id, "s1", occ[:100]) == 100
+        assert len(fake_sb.rows("calendar_events")) == 100 and calls["delete"] == 5
+
+    def test_legacy_plaintext_links_get_encrypted(self, fake_sb, owner_id, monkeypatch):
+        monkeypatch.setattr(ci, "get_supabase", lambda: fake_sb)
+        monkeypatch.setattr(ci, "fetch_ics", lambda u: "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+        fake_sb.tables["calendar_subscriptions"] = [
+            {"id": "s1", "user_id": owner_id, "name": "Old", "url": "https://x.example/SECRET/a.ics"}]
+        assert ci.sync_all() == 1
+        stored = fake_sb.rows("calendar_subscriptions")[0]["url"]
+        assert stored.startswith("enc:v1:") and "SECRET" not in stored
+        assert ci.encrypt_legacy_links(fake_sb) == 0  # idempotent

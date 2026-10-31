@@ -10,6 +10,7 @@ import {
   TextInput,
   Alert,
   Share,
+  Switch,
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
@@ -297,6 +298,7 @@ function SyncModal({
   const [subs, setSubs] = useState<CalendarSubscription[]>([]);
   const [url, setUrl] = useState("");
   const [name, setName] = useState("Outlook");
+  const [hideDetails, setHideDetails] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -333,7 +335,7 @@ function SyncModal({
   const add = () =>
     run("add", async () => {
       if (!url.trim()) throw new Error("Paste your calendar link first.");
-      await addCalendarSubscription(name.trim() || "Outlook", url.trim());
+      await addCalendarSubscription(name.trim() || "Outlook", url.trim(), hideDetails ? "busy" : "full");
       setUrl("");
     });
 
@@ -373,7 +375,16 @@ function SyncModal({
             keyboardType="url"
             style={box}
           />
-          <PrimaryButton label="Link calendar" onPress={add} loading={busy === "add"} />
+          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.title, { color: colors.textPrimary, fontSize: 14 }]}>Hide meeting details</Text>
+              <Text style={[styles.meta, { color: colors.textTertiary }]}>
+                Store only that you're busy — titles, places and notes never reach LifeOS.
+              </Text>
+            </View>
+            <Switch value={hideDetails} onValueChange={setHideDetails} />
+          </View>
+          <PrimaryButton label={busy === "add" ? "Linking… importing events" : "Link calendar"} onPress={add} loading={busy === "add"} />
           {error ? <ErrorBanner message={error} /> : null}
 
           {subs.length > 0 ? <Text style={[styles.syncHeading, { color: colors.textPrimary, marginTop: spacing.lg }]}>Linked calendars</Text> : null}
@@ -383,7 +394,9 @@ function SyncModal({
               <Text style={[styles.meta, { color: s.last_error ? colors.bad : colors.textSecondary }]}>
                 {s.last_error ? s.last_error : `${s.event_count} events · synced ${ago(s.last_synced_at)}`}
               </Text>
-              <Text style={[styles.meta, { color: colors.textTertiary }]}>{s.host}</Text>
+              <Text style={[styles.meta, { color: colors.textTertiary }]}>
+                {s.host} · {s.privacy === "busy" ? "busy only" : "full details"} · link stored encrypted
+              </Text>
               <View style={{ flexDirection: "row", gap: spacing.lg, marginTop: spacing.sm }}>
                 <Pressable onPress={() => run(`sync-${s.id}`, () => syncCalendarSubscription(s.id))} disabled={busy !== null}>
                   <Text style={{ color: colors.focus, fontFamily: fonts.geistMedium }}>{busy === `sync-${s.id}` ? "Syncing…" : "Sync now"}</Text>

@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from auth import require_auth, allowed_origins, AuthContext
+from utils.secrets import SecretsNotConfigured
 from utils.logger import SupabaseLogger
 from chat_service import handle_chat
 from pipeline_service import list_pipelines, run_pipeline
@@ -1056,6 +1057,7 @@ async def calendar_feed(token: str):
 class CalendarSubscriptionRequest(BaseModel):
     name: str = ""
     url: str
+    privacy: str = "full"  # "full" | "busy" (store only that you are busy)
 
 
 @app.get("/api/calendar/subscriptions")
@@ -1072,9 +1074,11 @@ async def calendar_subscription_add(req: CalendarSubscriptionRequest, auth: Auth
     import calendar_import
     from fastapi.concurrency import run_in_threadpool
     try:
-        result = await run_in_threadpool(calendar_import.add_subscription, auth.user_id, req.name, req.url)
+        result = await run_in_threadpool(calendar_import.add_subscription, auth.user_id, req.name, req.url, req.privacy)
     except calendar_import.CalendarLinkError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except SecretsNotConfigured as e:
+        raise HTTPException(status_code=503, detail=str(e))
     return {"status": "success", "data": result}
 
 

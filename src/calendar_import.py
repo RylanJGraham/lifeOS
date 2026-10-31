@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 import requests
 from dateutil.rrule import rrulestr
 
+from utils.secrets import SecretsNotConfigured, decrypt_secret, encrypt_secret
 from utils.supabase_client import get_supabase
 
 logger = logging.getLogger("calendar_import")
@@ -30,6 +31,7 @@ WINDOW_PAST = timedelta(days=30)
 WINDOW_FUTURE = timedelta(days=180)
 MAX_OCCURRENCES_PER_EVENT = 500
 IMPORT_REMINDER_MINUTES = 15
+BATCH = 100
 
 # Windows time-zone names (what Outlook emits) -> IANA. Unknown names fall back
 # to the user's configured zone.
@@ -262,33 +264,40 @@ def parse_calendar(text: str, default_tz: ZoneInfo, now: datetime | None = None)
 # ─── Sync ────────────────────────────────────────────────────────────────
 
 
-def _row(user_id: str, sub_id: str, o: dict) -> dict:
+def _row(user_id: str, sub_id: str, o: dict, privacy: str = "full") -> dict:
+    busy = privacy == "busy"  # store only that you are busy: no title, place or notes
     return {
         "user_id": user_id, "subscription_id": sub_id, "source": "import", "kind": "event",
-        "recurrence": "none", "title": o["title"], "notes": o["notes"], "location": o["location"],
+        "recurrence": "none", "title": "Busy" if busy else o["title"],
+        "notes": None if busy else o["notes"], "location": None if busy else o["location"],
         "starts_at": o["starts_at"], "ends_at": o["ends_at"], "all_day": o["all_day"],
         "reminder_offsets": [] if o["all_day"] else [IMPORT_REMINDER_MINUTES],
         "external_uid": f"{o['uid']}|{o['starts_at']}",
     }
 
 
-def reconcile(sb, user_id: str, sub_id: str, occurrences: list[dict]) -> int:
+def reconcile(sb, user_id: str, sub_id: str, occurrences: list[dict], privacy: str = "full") -> int:
     """Make the stored import rows for one subscription match `occurrences`."""
     existing = {r["external_uid"]: r for r in (
         sb.table("calendar_events").select("*").eq("subscription_id", sub_id).execute().data or [])}
     wanted = {}
     for o in occurrences:
-        r = _row(user_id, sub_id, o)
+        r = _row(user_id, sub_id, o, privacy)
         wanted[r["external_uid"]] = r
+    new_rows = []
     for uid, row in wanted.items():
         cur = existing.get(uid)
         if cur is None:
-            sb.table("calendar_events").insert(row).execute()
+            new_rows.append(row)
         elif any(cur.get(k) != row[k] for k in ("title", "notes", "location", "ends_at", "all_day")):
             sb.table("calendar_events").update({k: row[k] for k in ("title", "notes", "location", "ends_at", "all_day")}).eq("id", cur["id"]).execute()
-    for uid, cur in existing.items():
-        if uid not in wanted:
-            sb.table("calendar_events").delete().eq("id", cur["id"]).execute()
+    # Bulk writes: a work calendar expands to hundreds of occurrences, and one
+    # HTTP round trip per row made the first sync take over a minute.
+    for i in range(0, len(new_rows), BATCH):
+        sb.table("calendar_events").insert(new_rows[i:i + BATCH]).execute()
+    stale = [cur["id"] for uid, cur in existing.items() if uid not in wanted]
+    for i in range(0, len(stale), BATCH):
+        sb.table("calendar_events").delete().in_("id", stale[i:i + BATCH]).execute()
     return len(wanted)
 
 
@@ -299,11 +308,11 @@ def sync_subscription(sub: dict, tz: ZoneInfo | None = None) -> dict:
     tz = tz or local_tz()
     now = datetime.now(timezone.utc).isoformat()
     try:
-        text = fetch_ics(sub["url"])
-        count = reconcile(sb, sub["user_id"], sub["id"], parse_calendar(text, tz))
+        text = fetch_ics(decrypt_secret(sub["url"]))
+        count = reconcile(sb, sub["user_id"], sub["id"], parse_calendar(text, tz), sub.get("privacy") or "full")
         sb.table("calendar_subscriptions").update({"last_synced_at": now, "last_error": None, "event_count": count}).eq("id", sub["id"]).execute()
         return {"ok": True, "count": count}
-    except CalendarLinkError as e:
+    except (CalendarLinkError, SecretsNotConfigured) as e:
         sb.table("calendar_subscriptions").update({"last_error": str(e)[:300]}).eq("id", sub["id"]).execute()
         return {"ok": False, "error": str(e)}
     except Exception as e:  # never let one bad feed break the worker
@@ -312,15 +321,20 @@ def sync_subscription(sub: dict, tz: ZoneInfo | None = None) -> dict:
         return {"ok": False, "error": "Unexpected error while importing."}
 
 
-def add_subscription(user_id: str, name: str, url: str) -> dict:
+def add_subscription(user_id: str, name: str, url: str, privacy: str = "full") -> dict:
     sb = get_supabase()
+    if privacy not in ("full", "busy"):
+        raise CalendarLinkError("privacy must be 'full' or 'busy'.")
     url = normalize_url(url)
     validate_public_url(url)
+    encrypted = encrypt_secret(url)  # fail closed before anything is fetched or stored
     name = (name or "").strip()[:60] or "Imported calendar"
     # Prove the link works before saving it.
     from calendar_service import local_tz
     parse_calendar(fetch_ics(url), local_tz())
-    sub = sb.table("calendar_subscriptions").insert({"user_id": user_id, "name": name, "url": url}).execute().data[0]
+    sub = sb.table("calendar_subscriptions").insert(
+        {"user_id": user_id, "name": name, "url": encrypted, "privacy": privacy}
+    ).execute().data[0]
     result = sync_subscription(sub)
     return {"id": sub["id"], "name": name, **result}
 
@@ -329,9 +343,17 @@ def list_subscriptions(user_id: str) -> list[dict]:
     sb = get_supabase()
     rows = sb.table("calendar_subscriptions").select("*").eq("user_id", user_id).execute().data or []
     return [{
-        "id": r["id"], "name": r["name"], "host": urlparse(r["url"]).hostname,
+        "id": r["id"], "name": r["name"], "privacy": r.get("privacy") or "full",
+        "host": _host_hint(r),
         "last_synced_at": r.get("last_synced_at"), "last_error": r.get("last_error"), "event_count": r.get("event_count") or 0,
     } for r in rows]
+
+
+def _host_hint(r: dict) -> str | None:
+    try:
+        return urlparse(decrypt_secret(r["url"])).hostname
+    except Exception:
+        return None
 
 
 def delete_subscription(user_id: str, sub_id: str) -> bool:
@@ -341,10 +363,24 @@ def delete_subscription(user_id: str, sub_id: str) -> bool:
     return bool(sb.table("calendar_subscriptions").delete().eq("id", sub_id).eq("user_id", user_id).execute().data)
 
 
+def encrypt_legacy_links(sb) -> int:
+    """Encrypt any link saved before encryption existed (self-healing; no-op if none)."""
+    n = 0
+    for sub in sb.table("calendar_subscriptions").select("id,url").execute().data or []:
+        if not sub["url"].startswith("enc:"):
+            sb.table("calendar_subscriptions").update({"url": encrypt_secret(sub["url"])}).eq("id", sub["id"]).execute()
+            n += 1
+    return n
+
+
 def sync_all() -> int:
     sb = get_supabase()
     if sb is None:
         return 0
+    try:
+        encrypt_legacy_links(sb)
+    except SecretsNotConfigured as e:
+        logger.error(f"Cannot encrypt stored calendar links: {e}")
     n = 0
     for sub in sb.table("calendar_subscriptions").select("*").execute().data or []:
         if sync_subscription(sub)["ok"]:

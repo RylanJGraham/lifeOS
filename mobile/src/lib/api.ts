@@ -329,12 +329,23 @@ export interface NotificationPrefs {
 }
 
 async function apiJson<T>(path: string, init: RequestInit = {}, fallback = "Request failed"): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
-    ...init,
-    headers: await authHeaders(init.body ? { "Content-Type": "application/json" } : {}),
-  });
-  if (!res.ok) throw await parseError(res, fallback);
-  return res.json();
+  // Never hang the UI: abort after 90 s with a message instead of spinning forever.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90_000);
+  try {
+    const res = await fetch(`${API_URL}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: await authHeaders(init.body ? { "Content-Type": "application/json" } : {}),
+    });
+    if (!res.ok) throw await parseError(res, fallback);
+    return res.json();
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") throw new Error(`${fallback}: the server took too long to answer — try again.`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export const fetchNotifications = (limit = 50) =>
@@ -419,6 +430,7 @@ export interface CalendarSubscription {
   id: string;
   name: string;
   host: string | null;
+  privacy: "full" | "busy";
   last_synced_at: string | null;
   last_error: string | null;
   event_count: number;
@@ -427,10 +439,10 @@ export interface CalendarSubscription {
 export const fetchCalendarSubscriptions = () =>
   apiJson<{ data: CalendarSubscription[] }>("/api/calendar/subscriptions", {}, "Could not load linked calendars");
 
-export const addCalendarSubscription = (name: string, url: string) =>
+export const addCalendarSubscription = (name: string, url: string, privacy: "full" | "busy" = "full") =>
   apiJson<{ data: { id: string; name: string; ok: boolean; count?: number; error?: string } }>(
     "/api/calendar/subscriptions",
-    { method: "POST", body: JSON.stringify({ name, url }) },
+    { method: "POST", body: JSON.stringify({ name, url, privacy }) },
     "Could not link that calendar",
   );
 

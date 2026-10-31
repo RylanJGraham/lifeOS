@@ -57,6 +57,7 @@ export default function CalendarPage() {
   const [subUrl, setSubUrl] = useState("");
   const [subName, setSubName] = useState("Outlook");
   const [subBusy, setSubBusy] = useState(false);
+  const [hideDetails, setHideDetails] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -92,7 +93,7 @@ export default function CalendarPage() {
     setSubBusy(true);
     setError(null);
     try {
-      await addCalendarSubscription(subName.trim() || "Outlook", subUrl.trim());
+      await addCalendarSubscription(subName.trim() || "Outlook", subUrl.trim(), hideDetails ? "busy" : "full");
       setSubUrl("");
       await Promise.all([loadSubs(), load()]);
     } catch (err: any) {
@@ -244,11 +245,15 @@ export default function CalendarPage() {
             {subBusy ? "Linking…" : "Link"}
           </button>
         </div>
+        <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+          <input type="checkbox" checked={hideDetails} onChange={(e) => setHideDetails(e.target.checked)} />
+          Hide meeting details — store only that I'm busy (titles, places and notes never reach LifeOS)
+        </label>
         {subs.map((s) => (
           <div key={s.id} style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13 }}>
             <span style={{ fontWeight: 500 }}>{s.name}</span>
             <span style={{ color: s.last_error ? "var(--status-critical, #dc2626)" : "var(--text-secondary)", flex: 1 }}>
-              {s.last_error ?? `${s.event_count} events${s.last_synced_at ? " · synced " + new Date(s.last_synced_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}`}
+              {s.last_error ?? `${s.event_count} events · ${s.privacy === "busy" ? "busy only" : "full details"}${s.last_synced_at ? " · synced " + new Date(s.last_synced_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}`}
             </span>
             <button type="button" onClick={() => unlinkCalendar(s)} style={{ background: "none", border: 0, color: "var(--text-tertiary)", cursor: "pointer" }}>Remove</button>
           </div>

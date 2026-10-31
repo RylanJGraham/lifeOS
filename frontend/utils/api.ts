@@ -238,6 +238,7 @@ export interface CalendarSubscription {
   id: string;
   name: string;
   host: string | null;
+  privacy: "full" | "busy";
   last_synced_at: string | null;
   last_error: string | null;
   event_count: number;
@@ -249,11 +250,11 @@ export async function getCalendarSubscriptions(): Promise<CalendarSubscription[]
   return (await res.json()).data;
 }
 
-export async function addCalendarSubscription(name: string, url: string): Promise<void> {
+export async function addCalendarSubscription(name: string, url: string, privacy: "full" | "busy" = "full"): Promise<void> {
   const res = await fetch(`${API_URL}/api/calendar/subscriptions`, {
     method: "POST",
     headers: await authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ name, url }),
+    body: JSON.stringify({ name, url, privacy }),
   });
   if (!res.ok) throw await parseError(res, "Could not link that calendar");
 }

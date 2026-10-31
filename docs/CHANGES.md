@@ -12,6 +12,7 @@ What's New:
 - Mobile push is gated off (`EXPO_PUBLIC_ENABLE_PUSH`) and the `expo-notifications` plugin removed from `app.json`, because the free Apple team can't sign the push entitlement; Telegram carries notifications meanwhile.
 - **Mobile UX**: Calendar + Inbox icons top-right of every main screen header (Inbox shows an unread badge on Cockpit); Cockpit "Upcoming" card always visible; Bio range gains **Pick** (custom from/to days, any day in the last ~13 months) and Capital's Cash tab gains **Pick days** (totals, categories, daily spend and ledger for the chosen days; shared `DateRangePicker` + `lib/dateRange.ts`); Inbox got a back button.
 - **Outlook/Google/Apple → LifeOS**: link a published ICS calendar (mobile "Sync Outlook / Google / Apple" sheet and web `/calendar`); events sync every 30 min, read-only, with reminders (migration 033, `src/calendar_import.py`, `workers/calendar_sync.py`). Also fixed the Calendar/Notifications/Inbox screens rendering their first row under the fixed header.
+- **Linked-calendar hardening**: published links are encrypted at rest (`CALENDAR_ENCRYPTION_KEY`, fail-closed), never returned/logged; new per-calendar "hide meeting details" (busy-only) mode (migration 034). Manual setup: set `CALENDAR_ENCRYPTION_KEY` on the server (done on the droplet).
 - Tests: 113 total (new `tests/test_calendar_followups.py`).
 
 Also: `OWNER_AUTH_USER_ID` (see `docs/architecture.md` §3.9) maps the owner's login onto the legacy data owner id; found because all existing rows belong to the zero UUID while the login id differs.

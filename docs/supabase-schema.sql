@@ -751,6 +751,7 @@ CREATE TABLE IF NOT EXISTS calendar_subscriptions (
     last_error TEXT,
     last_synced_at TIMESTAMP WITH TIME ZONE,
     name TEXT NOT NULL,
+    privacy TEXT NOT NULL,
     url TEXT NOT NULL,
     user_id UUID NOT NULL
 );
