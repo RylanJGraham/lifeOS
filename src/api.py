@@ -1,14 +1,15 @@
 import os
+import re
 import json
 from datetime import datetime, timezone
-from fastapi import FastAPI, Request, HTTPException, Depends, Header, UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, File
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from pydantic import BaseModel
 
-from telegram_webhook import router as telegram_router
+from auth import require_auth, allowed_origins, AuthContext
 from utils.logger import SupabaseLogger
 from chat_service import handle_chat
 from pipeline_service import list_pipelines, run_pipeline
@@ -21,22 +22,19 @@ app = FastAPI(title="Life-OS Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=allowed_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
 
-# Include the telegram webhook router
-app.include_router(telegram_router)
-
-# Shared-secret guard for the money endpoints (chat + pipelines).
-# The ngrok URL is public; without this anyone could burn LLM credits.
-API_SECRET = os.getenv("API_SECRET")
-
-async def require_api_key(x_api_key: str = Header(None)):
-    if API_SECRET and x_api_key != API_SECRET:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+# Telegram is being retired: the webhook is only mounted when explicitly
+# re-enabled with TELEGRAM_ENABLED=true. Push + the in-app Inbox are the
+# notification channels (see utils/notify.py).
+TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "").lower() in ("1", "true", "yes")
+if TELEGRAM_ENABLED:
+    from telegram_webhook import router as telegram_router
+    app.include_router(telegram_router)
 
 @app.on_event("startup")
 async def startup_event():
@@ -44,7 +42,7 @@ async def startup_event():
     
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     public_domain = os.getenv("PUBLIC_DOMAIN") or os.getenv("NGROK_DOMAIN")
-    if bot_token and public_domain:
+    if TELEGRAM_ENABLED and bot_token and public_domain:
         webhook_url = f"https://{public_domain}/webhook"
         import asyncio
         import httpx
@@ -77,11 +75,9 @@ async def status_check():
     # Check Supabase
     supabase_status = "error"
     try:
-        from supabase import create_client
-        sb_url = os.getenv("SUPABASE_URL")
-        sb_key = os.getenv("SUPABASE_SERVICE_KEY")
-        if sb_url and sb_key:
-            sb = create_client(sb_url, sb_key)
+        from utils.supabase_client import get_supabase
+        sb = get_supabase()
+        if sb:
             # A lightweight query to verify auth
             sb.table("health_metrics").select("id").limit(1).execute()
             supabase_status = "ok"
@@ -100,10 +96,8 @@ async def status_check():
         }
     }
 
-ZERO_UUID = "00000000-0000-0000-0000-000000000000"
-
 @app.get("/telegram/webhook-info")
-async def telegram_webhook_info(_=Depends(require_api_key)):
+async def telegram_webhook_info(auth: AuthContext = Depends(require_auth)):
     """Fetches Telegram webhook info, persists a health snapshot, and returns it."""
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not bot_token:
@@ -147,17 +141,11 @@ async def telegram_webhook_info(_=Depends(require_api_key)):
         webhook_status = "ok"
 
     # Persist the snapshot to Supabase.
-    from utils.logger import get_supabase_client
-    supabase = get_supabase_client()
+    from utils.supabase_client import get_supabase
+    supabase = get_supabase()
     if supabase:
         try:
-            user_id = ZERO_UUID
-            try:
-                profile_res = supabase.table("user_profiles").select("user_id").limit(1).execute()
-                if profile_res.data:
-                    user_id = profile_res.data[0]["user_id"]
-            except Exception:
-                pass
+            user_id = auth.user_id
 
             payload = {
                 "user_id": user_id,
@@ -187,7 +175,7 @@ async def telegram_webhook_info(_=Depends(require_api_key)):
     }
 
 @app.post("/api/sleep")
-async def receive_sleep_data(request: Request):
+async def receive_sleep_data(request: Request, auth: AuthContext = Depends(require_auth)):
     """Receives sleep data (single object or list) and upserts into health_metrics.
 
     Accepted fields per record (all optional except date):
@@ -200,18 +188,12 @@ async def receive_sleep_data(request: Request):
         data = await request.json()
         records = data if isinstance(data, list) else [data]
 
-        from utils.logger import get_supabase_client
-        supabase = get_supabase_client()
+        from utils.supabase_client import get_supabase
+        supabase = get_supabase()
         if not supabase:
             raise HTTPException(status_code=500, detail="Supabase not configured.")
 
-        user_id = "00000000-0000-0000-0000-000000000000"
-        try:
-            res = supabase.table("user_profiles").select("user_id").limit(1).execute()
-            if res.data:
-                user_id = res.data[0]["user_id"]
-        except Exception:
-            pass
+        user_id = auth.user_id
 
         def pick(d, *keys):
             for k in keys:
@@ -285,7 +267,7 @@ async def receive_sleep_data(request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/health-metrics")
-async def receive_health_metrics(request: Request):
+async def receive_health_metrics(request: Request, auth: AuthContext = Depends(require_auth)):
     """
     Receives daily health metrics pushed from an iOS Shortcut (Apple Health).
     """
@@ -293,19 +275,12 @@ async def receive_health_metrics(request: Request):
         data = await request.json()
         SupabaseLogger.info("api", "Received Apple Health metrics payload.")
 
-        from utils.logger import get_supabase_client
-        supabase = get_supabase_client()
+        from utils.supabase_client import get_supabase
+        supabase = get_supabase()
         if not supabase:
             raise HTTPException(status_code=500, detail="Supabase not configured.")
 
-        # Get user_id
-        user_id = "00000000-0000-0000-0000-000000000000"
-        try:
-            res = supabase.table("user_profiles").select("user_id").limit(1).execute()
-            if res.data and len(res.data) > 0:
-                user_id = res.data[0]["user_id"]
-        except Exception:
-            pass
+        user_id = auth.user_id
 
         # Parse fields from the JSON payload (default to None)
         date_str = data.get("date", datetime.utcnow().strftime("%Y-%m-%d"))
@@ -442,11 +417,11 @@ async def receive_health_metrics(request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/system_stream")
-async def get_system_stream(limit: int = 20):
+async def get_system_stream(limit: int = 20, _: AuthContext = Depends(require_auth)):
     """Fetches the latest system logs and ai insights for the anomaly stream."""
     try:
-        from utils.logger import get_supabase_client
-        supabase = get_supabase_client()
+        from utils.supabase_client import get_supabase
+        supabase = get_supabase()
         if not supabase:
             raise HTTPException(status_code=500, detail="Supabase not configured.")
         
@@ -497,7 +472,7 @@ class ChatRequest(BaseModel):
     dry_run: bool = False  # if true, parse but do not persist (preview mode)
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest, _=Depends(require_api_key)):
+async def chat(req: ChatRequest, auth: AuthContext = Depends(require_auth)):
     """Send a text message (optionally with one or more images) to the LangGraph agent."""
     images = list(req.images or [])
     if req.image:
@@ -506,12 +481,8 @@ async def chat(req: ChatRequest, _=Depends(require_api_key)):
         raise HTTPException(status_code=400, detail="Message or image is required.")
     from fastapi.concurrency import run_in_threadpool
     try:
-        from utils.resolve_user_id import resolve_user_id, ensure_identity
         session_id = req.session_id or "anonymous"
-        user_id = resolve_user_id("web", session_id)
-        # If the session is not anonymous and we resolved a real user, cache the mapping
-        if session_id != "anonymous" and user_id != "00000000-0000-0000-0000-000000000000":
-            ensure_identity("web", session_id, user_id)
+        user_id = auth.user_id
         return await run_in_threadpool(
             handle_chat,
             req.message,
@@ -530,7 +501,7 @@ class GoalsChatRequest(BaseModel):
     history: list[dict] = []
 
 @app.post("/api/goals/chat")
-async def goals_chat(req: GoalsChatRequest, _=Depends(require_api_key)):
+async def goals_chat(req: GoalsChatRequest, _=Depends(require_auth)):
     """Chat with the goal strategist; may create/update/delete/check-in goals."""
     if not (req.message or "").strip():
         raise HTTPException(status_code=400, detail="Message is required.")
@@ -550,19 +521,17 @@ class GoalCheckinRequest(BaseModel):
 
 
 @app.post("/api/goals/checkin")
-async def goals_checkin(req: GoalCheckinRequest, _=Depends(require_api_key)):
+async def goals_checkin(req: GoalCheckinRequest, _=Depends(require_auth)):
     """Record a Yes/No habit check-in and update the goal streak."""
     from datetime import datetime, timezone
     from workers.action_items import mark_resolved
     if req.answer not in ("yes", "no"):
         raise HTTPException(status_code=400, detail="answer must be 'yes' or 'no'.")
     try:
-        sb_url = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
-        sb_key = os.getenv("SUPABASE_SERVICE_KEY")
-        if not sb_url or not sb_key:
+        from utils.supabase_client import get_supabase
+        sb = get_supabase()
+        if sb is None:
             raise HTTPException(status_code=500, detail="Supabase not configured")
-        from supabase import create_client
-        sb = create_client(sb_url, sb_key)
 
         res = sb.table("goals").select("*").eq("id", req.goal_id).limit(1).execute()
         if not res.data:
@@ -611,7 +580,7 @@ class BudgetCoachRequest(BaseModel):
     history: list[dict] = []
 
 @app.post("/api/budget-coach")
-async def budget_coach(req: BudgetCoachRequest, _=Depends(require_api_key)):
+async def budget_coach(req: BudgetCoachRequest, _=Depends(require_auth)):
     """Chat with the budget coach using salary, rent, bank balance, transactions,
     budgets, and goals."""
     if not (req.message or "").strip():
@@ -631,7 +600,7 @@ class PersonaChatRequest(BaseModel):
     history: list[dict] = []
 
 @app.post("/api/personas/chat")
-async def personas_chat(req: PersonaChatRequest, _=Depends(require_api_key)):
+async def personas_chat(req: PersonaChatRequest, _=Depends(require_auth)):
     """Chat with a care-team specialist (doctor | nutritionist | pt);
     may create goals (with check-in cadences) or log durable notes."""
     if req.persona not in ("doctor", "nutritionist", "pt"):
@@ -647,12 +616,12 @@ async def personas_chat(req: PersonaChatRequest, _=Depends(require_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/pipelines")
-async def get_pipelines(_=Depends(require_api_key)):
+async def get_pipelines(_=Depends(require_auth)):
     """List available data-ingest pipelines with their current run status."""
     return JSONResponse(content={"status": "success", "data": list_pipelines()})
 
 @app.post("/api/pipelines/{pipeline_id}/run")
-async def trigger_pipeline(pipeline_id: str, _=Depends(require_api_key)):
+async def trigger_pipeline(pipeline_id: str, _=Depends(require_auth)):
     """Trigger a pipeline run in the background."""
     try:
         from fastapi.concurrency import run_in_threadpool
@@ -677,7 +646,7 @@ _GOAL_ADJUSTMENTS = {"cut": -500, "lean_bulk": 250, "bulk": 500, "maintain": 0}
 _PROTEIN_PER_KG = {"cut": 2.2, "lean_bulk": 2.0, "bulk": 1.8, "maintain": 1.8}
 
 @app.post("/api/calculate-targets")
-async def calculate_targets(req: TargetsRequest, _=Depends(require_api_key)):
+async def calculate_targets(req: TargetsRequest, _=Depends(require_auth)):
     """AI-assisted TDEE + macro targets. Weight is estimated by the LLM from a
     free-text physique description when the user doesn't know it; the energy
     math itself is deterministic (Mifflin-St Jeor)."""
@@ -726,7 +695,7 @@ async def calculate_targets(req: TargetsRequest, _=Depends(require_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/correlations")
-async def get_correlations():
+async def get_correlations(_: AuthContext = Depends(require_auth)):
     """Generates a dummy correlation matrix for P0 feature demo"""
     # Note: In a real system we would pull data from supabase and run pd.corr()
     # For now we'll return a static/dummy correlation matrix
@@ -742,92 +711,22 @@ async def get_correlations():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/telegram/webhook-info")
-async def telegram_webhook_info(_=Depends(require_api_key)):
-    """Return the current Telegram webhook status from Telegram's API and
-    persist a snapshot in Supabase for the /system dashboard."""
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    public_domain = os.getenv("PUBLIC_DOMAIN") or os.getenv("NGROK_DOMAIN")
-    if not bot_token:
-        raise HTTPException(status_code=503, detail="TELEGRAM_BOT_TOKEN not configured")
-
-    import httpx
-    webhook_url = f"https://{public_domain}/webhook" if public_domain else "not set"
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            res = await client.get(f"https://api.telegram.org/bot{bot_token}/getWebhookInfo")
-        data = res.json().get("result", {}) if res.status_code == 200 else {}
-    except Exception as e:
-        data = {}
-        res = None
-
-    last_error_ts = data.get("last_error_date")
-    last_sync_ts = data.get("last_synchronization_error_date")
-    last_update_ts = last_sync_ts or last_error_ts
-    try:
-        last_update_at = datetime.fromtimestamp(int(last_update_ts), tz=timezone.utc).isoformat() if last_update_ts else None
-    except Exception:
-        last_update_at = None
-
-    pending = data.get("pending_update_count") or 0
-    url = data.get("url") or webhook_url
-    error = data.get("last_error_message") or data.get("last_synchronization_error_message")
-    status = "ok"
-    if not url or url == "not set":
-        status = "not_set"
-    elif pending > 5 or error:
-        status = "failing"
-
-    # Persist snapshot for dashboard history
-    try:
-        from utils.logger import get_supabase_client
-        sb = get_supabase_client()
-        if sb:
-            payload = {
-                "user_id": "00000000-0000-0000-0000-000000000000",
-                "webhook_url": url,
-                "last_update_at": last_update_at,
-                "last_update_id": data.get("last_update_id"),
-                "pending_update_count": pending,
-                "status": status,
-                "error": error,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            existing = sb.table("telegram_webhook_health").select("id").limit(1).execute()
-            if existing.data:
-                sb.table("telegram_webhook_health").update(payload).eq("id", existing.data[0]["id"]).execute()
-            else:
-                sb.table("telegram_webhook_health").insert(payload).execute()
-    except Exception as e:
-        SupabaseLogger.warning("api", f"Failed to persist webhook health: {e}")
-
-    return JSONResponse(content={
-        "status": "success",
-        "data": {
-            "webhook_url": url,
-            "status": status,
-            "pending_update_count": pending,
-            "last_update_at": last_update_at,
-            "error": error,
-        },
-    })
-
-
 @app.post("/statements/upload")
 async def upload_statement(
     file: UploadFile = File(...),
-    user_id: str = "00000000-0000-0000-0000-000000000000",
-    _=Depends(require_api_key),
+    auth: AuthContext = Depends(require_auth),
 ):
     """Accept a bank/CC PDF statement, save it to disk, record it in
     statement_uploads, and queue a PDF-statement-sync pipeline run."""
     import shutil
-    if not file.filename.lower().endswith(".pdf"):
+    user_id = auth.user_id
+    safe_name = os.path.basename((file.filename or "").replace("\\", "/"))
+    if not safe_name.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF statements are supported.")
 
     statement_dir = os.environ.get("STATEMENT_DIRECTORY", "./data/statements")
     os.makedirs(statement_dir, exist_ok=True)
-    dest_path = os.path.join(statement_dir, f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{file.filename}")
+    dest_path = os.path.join(statement_dir, f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{safe_name}")
 
     try:
         with open(dest_path, "wb") as buffer:
@@ -836,12 +735,12 @@ async def upload_statement(
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
     try:
-        from utils.logger import get_supabase_client
-        sb = get_supabase_client()
+        from utils.supabase_client import get_supabase
+        sb = get_supabase()
         if sb:
             upload = sb.table("statement_uploads").insert({
                 "user_id": user_id,
-                "file_name": file.filename,
+                "file_name": safe_name,
                 "file_size_bytes": os.path.getsize(dest_path),
                 "mime_type": file.content_type or "application/pdf",
                 "storage_path": dest_path,
@@ -883,7 +782,7 @@ class SupplementRemoveRequest(BaseModel):
     item_id: str
 
 @app.post("/api/supplements/lookup")
-async def supplement_lookup(req: SupplementLookupRequest, _=Depends(require_api_key)):
+async def supplement_lookup(req: SupplementLookupRequest, _=Depends(require_auth)):
     """Use the LLM to look up a supplement's nutrition info by brand + name."""
     from supplement_service import lookup_supplement
     try:
@@ -893,7 +792,7 @@ async def supplement_lookup(req: SupplementLookupRequest, _=Depends(require_api_
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/supplements")
-async def supplement_list(_=Depends(require_api_key)):
+async def supplement_list(_=Depends(require_auth)):
     """List the user's current supplement schedule."""
     from supplement_service import list_supplements
     from nodes.shared import supabase
@@ -904,7 +803,7 @@ async def supplement_list(_=Depends(require_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/supplements")
-async def supplement_add(req: SupplementAddRequest, _=Depends(require_api_key)):
+async def supplement_add(req: SupplementAddRequest, _=Depends(require_auth)):
     """Add a supplement to the user's schedule."""
     from supplement_service import add_supplement
     from nodes.shared import supabase
@@ -915,7 +814,7 @@ async def supplement_add(req: SupplementAddRequest, _=Depends(require_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/supplements")
-async def supplement_remove(req: SupplementRemoveRequest, _=Depends(require_api_key)):
+async def supplement_remove(req: SupplementRemoveRequest, _=Depends(require_auth)):
     """Remove a supplement from the user's schedule."""
     from supplement_service import remove_supplement
     from nodes.shared import supabase
@@ -929,3 +828,219 @@ async def supplement_remove(req: SupplementRemoveRequest, _=Depends(require_api_
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+# ─── Notifications ─────────────────────────────────────────────
+class NotificationPrefsRequest(BaseModel):
+    push_enabled: bool | None = None
+    kinds: dict[str, bool] | None = None
+    quiet_start: str | None = None  # "HH:MM" or "" to clear
+    quiet_end: str | None = None
+    timezone: str | None = None
+
+
+@app.get("/api/notifications")
+async def notifications_list(limit: int = 50, unread_only: bool = False, auth: AuthContext = Depends(require_auth)):
+    """Notification history for the Inbox, newest first, plus the unread count."""
+    from utils.supabase_client import get_supabase
+    sb = get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=500, detail="Supabase not configured.")
+    q = sb.table("notifications").select("*").eq("user_id", auth.user_id)
+    if unread_only:
+        q = q.is_("read_at", "null")
+    rows = q.order("created_at", desc=True).limit(max(1, min(limit, 200))).execute().data or []
+    unread = sb.table("notifications").select("id", count="exact").eq("user_id", auth.user_id).is_("read_at", "null").execute()
+    return {"status": "success", "data": rows, "unread": unread.count or 0}
+
+
+@app.post("/api/notifications/read")
+async def notifications_mark_read(ids: list[str] | None = None, auth: AuthContext = Depends(require_auth)):
+    """Mark the given notification ids read, or all of them when no ids are sent."""
+    from utils.supabase_client import get_supabase
+    sb = get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=500, detail="Supabase not configured.")
+    q = sb.table("notifications").update({"read_at": datetime.now(timezone.utc).isoformat()}) \
+        .eq("user_id", auth.user_id).is_("read_at", "null")
+    if ids:
+        q = q.in_("id", ids)
+    res = q.execute()
+    return {"status": "success", "updated": len(res.data or [])}
+
+
+@app.get("/api/notifications/prefs")
+async def notification_prefs_get(auth: AuthContext = Depends(require_auth)):
+    from utils.supabase_client import get_supabase
+    sb = get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=500, detail="Supabase not configured.")
+    res = sb.table("notification_prefs").select("*").eq("user_id", auth.user_id).limit(1).execute()
+    prefs = res.data[0] if res.data else {
+        "user_id": auth.user_id, "push_enabled": True, "kinds": {},
+        "quiet_start": None, "quiet_end": None, "timezone": "UTC",
+    }
+    return {"status": "success", "data": prefs}
+
+
+@app.put("/api/notifications/prefs")
+async def notification_prefs_put(req: NotificationPrefsRequest, auth: AuthContext = Depends(require_auth)):
+    from zoneinfo import ZoneInfo
+    from utils.supabase_client import get_supabase
+    sb = get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=500, detail="Supabase not configured.")
+    row: dict = {"user_id": auth.user_id, "updated_at": datetime.now(timezone.utc).isoformat()}
+    if req.push_enabled is not None:
+        row["push_enabled"] = req.push_enabled
+    if req.kinds is not None:
+        row["kinds"] = req.kinds
+    for field in ("quiet_start", "quiet_end"):
+        value = getattr(req, field)
+        if value is not None:
+            if value and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value):
+                raise HTTPException(status_code=400, detail=f"{field} must be HH:MM")
+            row[field] = value or None
+    if req.timezone:
+        try:
+            ZoneInfo(req.timezone)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Unknown timezone.")
+        row["timezone"] = req.timezone
+    sb.table("notification_prefs").upsert(row, on_conflict="user_id").execute()
+    return await notification_prefs_get(auth)
+
+
+class PushTokenRequest(BaseModel):
+    expo_push_token: str
+    platform: str = "ios"
+
+
+@app.post("/api/notifications/devices")
+async def register_device(req: PushTokenRequest, auth: AuthContext = Depends(require_auth)):
+    """Register this device's Expo push token for the authenticated user."""
+    from utils.supabase_client import get_supabase
+    sb = get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=500, detail="Supabase not configured.")
+    sb.table("device_push_tokens").upsert({
+        "user_id": auth.user_id,
+        "expo_push_token": req.expo_push_token,
+        "platform": req.platform,
+        "last_seen_at": datetime.now(timezone.utc).isoformat(),
+        "invalid_at": None,
+    }, on_conflict="expo_push_token").execute()
+    return {"status": "success"}
+
+
+@app.post("/api/notifications/test")
+async def notification_test(auth: AuthContext = Depends(require_auth)):
+    """Send a test notification to this user's devices."""
+    from fastapi.concurrency import run_in_threadpool
+    from utils.notify import notify
+    ok = await run_in_threadpool(
+        notify, "system", "LifeOS test notification", "Push is working.",
+        deep_link="/inbox", user_id=auth.user_id,
+    )
+    return {"status": "success" if ok else "failed"}
+
+
+# ─── Calendar ──────────────────────────────────────────────────
+class CalendarEventRequest(BaseModel):
+    title: str | None = None
+    notes: str | None = None
+    location: str | None = None
+    starts_at: str | None = None
+    ends_at: str | None = None
+    all_day: bool | None = None
+    kind: str | None = None
+    recurrence: str | None = None
+    recurrence_until: str | None = None
+    reminder_offsets: list[int] | None = None
+
+
+@app.get("/api/calendar/events")
+async def calendar_events(start: str, end: str, tz: str | None = None, auth: AuthContext = Depends(require_auth)):
+    """Events (user + derived goal deadlines / RSU vests) between two ISO datetimes."""
+    import calendar_service as cal
+    from fastapi.concurrency import run_in_threadpool
+    try:
+        s, e = cal._parse_dt(start), cal._parse_dt(end)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="start/end must be ISO datetimes.")
+    if e < s or (e - s).days > 400:
+        raise HTTPException(status_code=400, detail="Window must be 0-400 days.")
+    data = await run_in_threadpool(cal.list_events, auth.user_id, s, e, tz)
+    return {"status": "success", "data": data}
+
+
+@app.post("/api/calendar/events")
+async def calendar_create(req: CalendarEventRequest, auth: AuthContext = Depends(require_auth)):
+    import calendar_service as cal
+    from fastapi.concurrency import run_in_threadpool
+    if not req.starts_at:
+        raise HTTPException(status_code=400, detail="starts_at is required.")
+    try:
+        row = await run_in_threadpool(cal.create_event, auth.user_id, req.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "success", "data": row}
+
+
+@app.patch("/api/calendar/events/{event_id}")
+async def calendar_update(event_id: str, req: CalendarEventRequest, auth: AuthContext = Depends(require_auth)):
+    import calendar_service as cal
+    from fastapi.concurrency import run_in_threadpool
+    try:
+        row = await run_in_threadpool(cal.update_event, auth.user_id, event_id, req.model_dump(exclude_unset=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Event not found.")
+    return {"status": "success", "data": row}
+
+
+@app.delete("/api/calendar/events/{event_id}")
+async def calendar_delete(event_id: str, auth: AuthContext = Depends(require_auth)):
+    import calendar_service as cal
+    from fastapi.concurrency import run_in_threadpool
+    if not await run_in_threadpool(cal.delete_event, auth.user_id, event_id):
+        raise HTTPException(status_code=404, detail="Event not found.")
+    return {"status": "success"}
+
+
+def _feed_url(request: Request, token: str) -> str:
+    domain = os.getenv("PUBLIC_DOMAIN")
+    base = f"https://{domain}" if domain else str(request.base_url).rstrip("/")
+    return f"{base}/calendar/feed/{token}.ics"
+
+
+@app.get("/api/calendar/feed")
+async def calendar_feed_url(request: Request, auth: AuthContext = Depends(require_auth)):
+    """The secret iCal subscription URL (created on first use)."""
+    import calendar_service as cal
+    from fastapi.concurrency import run_in_threadpool
+    token = await run_in_threadpool(cal.get_feed_token, auth.user_id)
+    return {"status": "success", "url": _feed_url(request, token)}
+
+
+@app.post("/api/calendar/feed/rotate")
+async def calendar_feed_rotate(request: Request, auth: AuthContext = Depends(require_auth)):
+    """Issue a new feed URL; the previous one stops working."""
+    import calendar_service as cal
+    from fastapi.concurrency import run_in_threadpool
+    token = await run_in_threadpool(cal.get_feed_token, auth.user_id, True)
+    return {"status": "success", "url": _feed_url(request, token)}
+
+
+@app.get("/calendar/feed/{token}.ics")
+async def calendar_feed(token: str):
+    """Public iCal feed. Authenticated by the unguessable token in the URL
+    (calendar apps cannot send headers); 404 for an unknown token."""
+    import calendar_service as cal
+    from fastapi.concurrency import run_in_threadpool
+    user_id = await run_in_threadpool(cal.user_for_feed_token, token)
+    if not user_id:
+        raise HTTPException(status_code=404, detail="Not found.")
+    body = await run_in_threadpool(cal.feed_ics, user_id)
+    return Response(content=body, media_type="text/calendar; charset=utf-8", headers={"Cache-Control": "no-store"})

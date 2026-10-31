@@ -15,6 +15,8 @@ export default function AppLayout() {
       <Stack.Screen name="specialist" options={{ animation: "slide_from_right" }} />
       <Stack.Screen name="inbox" options={{ animation: "slide_from_right" }} />
       <Stack.Screen name="system" options={{ animation: "slide_from_right" }} />
+      <Stack.Screen name="calendar" options={{ animation: "slide_from_right" }} />
+      <Stack.Screen name="notifications" options={{ animation: "slide_from_right" }} />
     </Stack>
   );
 }

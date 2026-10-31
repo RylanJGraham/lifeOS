@@ -362,6 +362,7 @@ CREATE TABLE IF NOT EXISTS device_push_tokens (
     expo_push_token TEXT NOT NULL,
     id UUID NOT NULL,
     last_seen_at TIMESTAMP WITH TIME ZONE,
+    invalid_at TIMESTAMP WITH TIME ZONE,
     platform TEXT,
     user_id UUID NOT NULL
 );
@@ -678,4 +679,66 @@ CREATE TABLE IF NOT EXISTS workouts (
     user_id UUID NOT NULL,
     weight NUMERIC,
     workout_date TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
+-- NOTE: the tables below were appended by hand from migrations 029-031.
+-- Re-run `python scripts/introspect_supabase_schema.py` after applying them to replace this block.
+
+-- Table: notifications
+CREATE TABLE IF NOT EXISTS notifications (
+    body TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    data JSONB NOT NULL,
+    dedupe_key TEXT,
+    deep_link TEXT,
+    id UUID NOT NULL,
+    kind TEXT NOT NULL,
+    push_status TEXT,
+    pushed_at TIMESTAMP WITH TIME ZONE,
+    read_at TIMESTAMP WITH TIME ZONE,
+    title TEXT NOT NULL,
+    user_id UUID NOT NULL
+);
+
+-- Table: notification_prefs
+CREATE TABLE IF NOT EXISTS notification_prefs (
+    kinds JSONB NOT NULL,
+    push_enabled BOOLEAN NOT NULL,
+    quiet_end TIME,
+    quiet_start TIME,
+    timezone TEXT NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    user_id UUID NOT NULL
+);
+
+-- Table: calendar_events
+CREATE TABLE IF NOT EXISTS calendar_events (
+    all_day BOOLEAN NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    ends_at TIMESTAMP WITH TIME ZONE,
+    id UUID NOT NULL,
+    kind TEXT NOT NULL,
+    location TEXT,
+    notes TEXT,
+    recurrence TEXT NOT NULL,
+    recurrence_until DATE,
+    reminder_offsets INTEGER[] NOT NULL,
+    source TEXT NOT NULL,
+    starts_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    title TEXT NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    user_id UUID NOT NULL
+);
+
+-- Table: schema_migrations
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    applied_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    version TEXT NOT NULL
+);
+
+-- Table: calendar_feed_tokens (migration 032)
+CREATE TABLE IF NOT EXISTS calendar_feed_tokens (
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    token TEXT NOT NULL,
+    user_id UUID NOT NULL
 );

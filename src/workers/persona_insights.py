@@ -30,7 +30,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 sb = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-from workers.goal_checkin import send_telegram  # noqa: E402
+from utils.notify import send_message  # noqa: E402
 from persona_service import CONTEXT_BUILDERS, PERSONAS, ZERO_UUID  # noqa: E402
 
 CADENCE_PERSONAS = {
@@ -113,7 +113,7 @@ Return ONLY valid JSON:
   "insight": "2-4 sentences: what the data shows, in your voice. Reference actual numbers.",
   "action_item": "one concrete thing the user should do, or null if none"
 }}
-The insight is shown on the dashboard either way; alert=true also pings the user on Telegram, so use it sparingly."""
+The insight is shown on the dashboard either way; alert=true also sends the user a push notification, so use it sparingly."""
 
     try:
         raw = llm_fast.invoke([HumanMessage(content=prompt)]).content
@@ -151,7 +151,7 @@ The insight is shown on the dashboard either way; alert=true also pings the user
         text = f"{cfg['name']} ({cfg['title']}):\n\n{insight}"
         if action_item:
             text += f"\n\n→ {action_item}"
-        send_telegram(text)
+        send_message("insight", text)
 
 
 def run(cadence: str):

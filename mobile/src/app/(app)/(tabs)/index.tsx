@@ -6,6 +6,7 @@ import { Flag, Brain, ChevronRight, Trophy, Wallet, TrendingUp, Flame, Moon, Act
 import * as Haptics from "expo-haptics";
 import {
   useInsights,
+  useCalendarEvents,
   dedupeLatestPerDomain,
   useProfile,
   useTodayMeals,
@@ -122,6 +123,14 @@ export default function CockpitScreen() {
   const backendStatus = useBackendStatus();
   const systemLogs = useSystemLogs(5);
   const dailyReports = useDailyReports(1);
+  // Next 7 days of calendar. Dates are memoised: useCalendarEvents refetches
+  // whenever its range changes, so a fresh Date each render would loop.
+  const upcomingRange = useMemo(() => {
+    const from = new Date();
+    from.setMinutes(0, 0, 0);
+    return { from, to: new Date(from.getTime() + 7 * 86400000) };
+  }, []);
+  const upcoming = useCalendarEvents(upcomingRange.from, upcomingRange.to);
   useFuelActivity();
 
   const loading = insights.loading || profile.loading || healthMetrics.loading || positions.loading || goals.loading;
@@ -503,6 +512,32 @@ export default function CockpitScreen() {
             detail={dailyReports.data[0].market_regime ? `${dailyReports.data[0].market_regime} · ${dailyReports.data[0].json_content && typeof dailyReports.data[0].json_content === "object" && "summary" in dailyReports.data[0].json_content ? String(dailyReports.data[0].json_content.summary) : "Daily advisor report"}` : "Daily advisor report"}
             onPress={() => router.push("/capital")}
           />
+        ) : null}
+
+        {/* ─── Upcoming calendar ─── */}
+        {(upcoming.data ?? []).length > 0 ? (
+          <>
+            <SectionLabel
+              title="Upcoming"
+              subtitle="Next 7 days"
+              action={{ label: "Calendar", onPress: () => router.push("/calendar") }}
+            />
+            <Surface style={styles.allClearCard}>
+              <View style={{ flex: 1, gap: 8 }}>
+                {(upcoming.data ?? []).slice(0, 3).map((ev) => {
+                  const d = new Date(ev.starts_at);
+                  const when = d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" }) +
+                    (ev.all_day ? "" : " · " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }));
+                  return (
+                    <View key={ev.occurrence_id}>
+                      <Text style={styles.allClearText} numberOfLines={1}>{ev.title}</Text>
+                      <Text style={[styles.allClearText, { opacity: 0.6, fontSize: 12 }]}>{when}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            </Surface>
+          </>
         ) : null}
 
         {/* ─── Action Queue: hero card + rest ─── */}

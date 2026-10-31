@@ -14,7 +14,6 @@ LifeOS is a personal operating system that aggregates health, finance, investmen
 |---|---|---|
 | Frontend | Next.js 14 + Tailwind CSS + Recharts + Framer Motion | `frontend/app/(app)/` |
 | Mobile app (iOS, native — current) | Expo / React Native, own UI, same backend contracts | `mobile/src/app/`, `mobile/src/lib/` |
-| Mobile app (iOS, Capacitor wrapper — superseded) | Capacitor 6 wrapping a static export of the Next.js frontend | `frontend/capacitor.config.ts`, `frontend/ios/` |
 | Backend | FastAPI + Python 3.11+ | `src/api.py`, `src/chat_service.py`, `src/pipeline_service.py` |
 | Agent | LangGraph + LangChain (OpenRouter cloud / Ollama local) | `src/graph.py` (orchestrator), `src/nodes/*.py` (handlers), `src/goals_service.py` |
 | Database | Supabase / PostgreSQL + pgvector | `docs/supabase-schema.sql` |
@@ -76,7 +75,12 @@ The source of truth for the schema is `docs/supabase-schema.sql`, which is regen
 | `user_identities` | Maps Telegram chat IDs / web sessions to real `user_id` | `user_id`, `source`, `external_id` |
 | `telegram_webhook_health` | Latest Telegram webhook status snapshot | `webhook_url`, `status`, `pending_update_count`, `last_update_at`, `error` |
 | `statement_uploads` | PDF bank/CC statements queued for processing | `user_id`, `file_name`, `storage_path`, `status` |
-| `device_push_tokens` | Registered Expo push tokens for the native mobile app | `user_id`, `expo_push_token`, `platform`, `last_seen_at` |
+| `device_push_tokens` | Registered Expo push tokens for the native mobile app | `user_id`, `expo_push_token`, `platform`, `last_seen_at`, `invalid_at` |
+| `notifications` | Inbox history of every notification sent (one row per `notify()` call) | `user_id`, `kind`, `title`, `body`, `deep_link`, `dedupe_key`, `push_status`, `read_at` |
+| `notification_prefs` | Per-user push settings | `user_id`, `push_enabled`, `kinds` (jsonb), `quiet_start`, `quiet_end`, `timezone` |
+| `calendar_events` | User-created calendar events (derived events are computed, not stored) | `user_id`, `title`, `starts_at`, `ends_at`, `all_day`, `kind`, `recurrence`, `recurrence_until`, `reminder_offsets` (int[] minutes) |
+| `calendar_feed_tokens` | Secret token per user for the iCal subscription URL (RLS on, no policies: backend only) | `user_id`, `token` |
+| `schema_migrations` | Which numbered migrations have been applied (`scripts/migrate.py`) | `version`, `applied_at` |
 
 ### Investment / advisor tables
 
@@ -111,6 +115,10 @@ Migrations live in `docs/supabase-migrations/`. They are applied manually in the
 - `020-user-identities.sql` — creates `user_identities` to map Telegram chat IDs / web sessions to real `user_id`.
 - `018-workout-external-id-and-budgets.sql` — adds `workouts.external_id`, `user_profiles.supplements`, `budgets`, `chat_threads`, `pipeline_runs`, `worker_heartbeats`.
 - `027-worker-heartbeats-and-views.sql` — adds `worker_heartbeats.created_at` and sets advisor views to `SECURITY INVOKER` to address Supabase security warnings.
+- `029-notifications.sql` — `notifications`, `notification_prefs`, `device_push_tokens.invalid_at` (own-row RLS).
+- `030-calendar-events.sql` — `calendar_events` (own-row RLS).
+- `032-calendar-feed-tokens.sql` — `calendar_feed_tokens`.
+- `031-schema-migrations.sql` — `schema_migrations`. Apply pending migrations with `python scripts/migrate.py` (`--status` to preview, `--baseline 28` once on an existing database to record 001–028 as applied). Needs `DATABASE_URL`.
 
 ### Row Level Security
 
@@ -300,16 +308,13 @@ The `RiskPanel` in the dashboard reads this policy and warns on concentration, c
 - `/chat` is labelled "Tasks & Chat" and combines conversation with observability: `ScheduledTasksPanel` reads `worker_heartbeats` to show last run, next expected run, and errors; `PipelinesPanel` lets the user trigger pipelines manually.
 - `src/chat_threads.py` loads and persists recent conversation turns in `chat_threads` so Telegram and web sessions keep context.
 - `src/chat_service.py` is the web chat wrapper around `graph.py`; it now accepts `session_id` and passes `thread_source`/`thread_external_id` into the graph state, plus `dry_run` for preview mode.
-- Telegram messages hit `POST /webhook` and are routed the same way, using the Telegram `chat_id` as the thread key.
+- Telegram is retired (the `/webhook` route is only mounted when `TELEGRAM_ENABLED=true`). Chat comes from the mobile app and web dashboard via `POST /api/chat`.
+- `text_intent_node` also routes to a `calendar` handler (`src/nodes/calendar.py`) for "dentist thursday 3pm"-style messages.
 
-### 3.6 Mobile App (iOS, Capacitor wrapper) — superseded, kept for reference
+### 3.6 Mobile App (iOS, Capacitor wrapper) — removed
 
-**Superseded by the native app in §3.7.** This was the first iOS attempt: the same `frontend/` Next.js app, bundled as a static export and wrapped with [Capacitor](https://capacitorjs.com) into a native Xcode project. Chat + photo logging on the app go through `/api/chat` exactly like the web dashboard (same LangGraph pipeline as Telegram); the app is simply another client of the same backend, with `source="web"` in `advisor_purchases`/chat threads. Left in the repo (`frontend/ios/`, `frontend/capacitor.config.ts`) in case the native rewrite in §3.7 needs to be compared against or reverted from, but new mobile work happens in `mobile/`.
+The first iOS attempt (the Next.js app wrapped with Capacitor) was removed along with `frontend/ios/`, `capacitor.config.ts`, `NativeBridge.tsx` and the `@capacitor/*` dependencies. It is preserved on the local git branch `archive/dead-code` (push it if you want it on the remote). All mobile work happens in `mobile/` (§3.7).
 
-- `frontend/next.config.js` — `output: "export"` is only enabled when `BUILD_TARGET=capacitor` (set by `npm run build:ios`). The normal `npm run build` used by Vercel is unaffected and still does a standard server build.
-- `frontend/.env.ios` (gitignored, not committed) — build-time env for the mobile build: `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_API_TOKEN` (must match the droplet's `API_SECRET`), `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Because the app ships as static assets with no server at runtime, these are baked in at build time — there is no way to change them without rebuilding.
-- `frontend/capacitor.config.ts` — `appId: com.humanengine.lifeos`, `webDir: "out"`. The app bundles the UI locally (no remote URL); only API calls to `NEXT_PUBLIC_API_URL` need a network connection.
-- `frontend/ios/` — the generated Xcode project (`App.xcworkspace`). Committed to git except `Pods/`, `build/`, and `App/public/` (regenerated by `cap sync`), which are gitignored.
 ### 3.7 Mobile App (iOS, native — Expo/React Native) — current
 
 **This is the primary mobile app.** Unlike §3.6, this is a real native rewrite, not a WebView: `mobile/` is a separate Expo (React Native) project with its own UI per screen, built with [Expo Router](https://docs.expo.dev/router/introduction/) (file-based routes under `mobile/src/app/`). It talks to the same backend and Supabase project as the web dashboard — same contracts, same tables, same `/api/*` endpoints — just with native screens instead of reusing the Next.js frontend.
@@ -359,13 +364,33 @@ npx expo run:ios --device "<name or UDID>"   # builds + installs to a physical i
 
 ---
 
+### 3.8 Notifications & Calendar
+
+**One way to notify:** `src/utils/notify.py` → `notify(kind, title, body, deep_link=…, dedupe_key=…)`. It (1) skips duplicates with the same `dedupe_key` within 24 h, (2) applies `notification_prefs` (master switch, per-kind toggle, quiet hours in the user's timezone), (3) sends an Expo push via `utils/push_notifications.send_push` (tokens Expo reports as `DeviceNotRegistered` get `invalid_at` set and are skipped), and (3b) if no device accepts the push, falls back to **outbound-only Telegram** (`utils/telegram.py`, needs `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`) — temporary, until a mobile build can receive push; it stops being used automatically once a device registers, and (4) records a `notifications` row with the `push_status` (`sent | telegram | no_devices | skipped_prefs | skipped_quiet`). It never raises. Every worker (`morning_briefing`, `fuel_pacing`, `evening_audit`, `goal_checkin`, `persona_insights`, `weekly_review`, `investment_notifier`, `calendar_reminders`) calls it; **Telegram is no longer a delivery channel**. `notify.send_message(kind, text)` is the helper for workers that compose one text block (first line = title).
+
+**Mobile:** `mobile/src/lib/notifications.ts` registers the device with `POST /api/notifications/devices` after sign-in (requires the `expo-notifications` plugin in `app.json` → needs a new native build) and opens `data.deep_link` when a notification is tapped. `notifications.tsx` shows history, quiet hours, per-category toggles and a test button; reachable from the Inbox.
+
+**Calendar:** `src/calendar_service.py` holds recurrence expansion (`none|daily|weekly|monthly|yearly`, month-end clamping, `recurrence_until`), derived events (goal deadlines, RSU vests), CRUD scoped by `user_id`, and the chat parser. `src/workers/calendar_reminders.py` runs every 5 minutes (cron/Task Scheduler call it directly, not via `pipeline_service`, to avoid 288 `pipeline_runs` rows a day; it is also registered as the `calendar-reminders` pipeline for manual runs). A reminder fires when `start − offset` falls in the last 10 minutes; `dedupe_key = cal:<occurrence_id>:<offset>` makes retries safe. UI: mobile `calendar.tsx` (month agenda + add sheet; "Upcoming" card on Cockpit) and web `/calendar`.
+
+**Calendar extras:** events are editable (mobile tap-to-edit, web pencil icon); derived events also include estimated **subscription renewals** and **dividend dates** (`calendar_service.predicted_events`/`project_dates` — need ≥2 regular past occurrences, so they appear as history accumulates); `GET /calendar/feed/<token>.ics` is a subscribable iCal feed; the morning briefing appends today's agenda verbatim (`calendar_service.todays_agenda`, not LLM-written). There is no source for *planned workouts* yet, so they are not shown.
+
+**Timezone:** calendar phrases are interpreted in `LIFEOS_TIMEZONE`; quiet hours use `notification_prefs.timezone`. Set both.
+
+### 3.9 Auth & tests
+
+`src/auth.py` — `require_auth` dependency (Supabase JWT or `X-API-Key`, fail-closed; see `docs/api-reference.md`). `src/utils/supabase_client.py` — the one shared service-role client (`get_supabase()`); new code should not call `create_client` directly. `tests/` (pytest, run `python -m pytest`) covers auth, position math, date resolution, the dry-run chat flow, calendar and notifications with an in-memory fake Supabase (`tests/conftest.py`). CI (`.github/workflows/ci.yml`) runs `py_compile`, pytest, the frontend build and the mobile `tsc`.
+
+---
+
 ## 4. API / Contracts
 
 Live endpoints are documented in `docs/api-reference.md`. Key contracts:
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /webhook` | Telegram updates |
+| `POST /webhook` | Telegram updates — retired, only mounted when `TELEGRAM_ENABLED=true` |
+| `GET/POST /api/notifications…` | Inbox history, read state, prefs, device registration |
+| `GET/POST/PATCH/DELETE /api/calendar/events` | Calendar |
 | `POST /api/chat` | Web chat through LangGraph |
 | `POST /api/goals/chat` | Goal strategist |
 | `POST /api/budget-coach` | Budget coach (read-only spending advice) |
@@ -477,11 +502,9 @@ This is the read-only broker sync. The system never places orders.
 - `docs/jarvis-v3-supabase-positions-sync.md` is now historical — it documents the contract those tables were built against, which `market_advisor.py` (§3.3) now implements.
 - Do not resurrect or recommend re-integrating the external Jarvis service.
 
-### Telegram
+### Telegram — retired
 
-- Bot token from BotFather.
-- Webhook registered automatically by `src/api.py` when `NGROK_DOMAIN` is set.
-- User chat ID stored in `TELEGRAM_CHAT_ID`.
+Replaced by Expo push + the in-app Inbox (§3.8). Legacy code (`src/telegram_webhook.py`) remains but is only mounted with `TELEGRAM_ENABLED=true`.
 
 ### OpenRouter
 
@@ -508,6 +531,8 @@ This is the read-only broker sync. The system never places orders.
 
 ### API breaking changes
 
+- **Auth (this release):** every endpoint except `/status` needs `Authorization: Bearer <Supabase token>` or `X-API-Key`. `NEXT_PUBLIC_API_TOKEN` / `EXPO_PUBLIC_API_TOKEN` are gone — those values were embedded in client bundles, so treat the old `API_SECRET` as public and **rotate it**. The iOS Shortcut posting to `/api/sleep` or `/api/health-metrics` must send `X-API-Key`. `POST /statements/upload` no longer accepts a `user_id` query parameter. CORS is an allow-list (`CORS_ORIGINS`); set it to your Vercel domain.
+- `device_push_tokens` rows are now written by the API (`POST /api/notifications/devices`), not by a client-side Supabase upsert.
 - Do not remove or rename `/webhook`, `/api/chat`, `/api/pipelines`, or `/status` without a compatibility shim.
 - Frontend route changes must update `docs/api-reference.md` and all internal `href` links.
 

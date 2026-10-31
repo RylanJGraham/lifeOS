@@ -413,7 +413,7 @@ html, body {
 
 .recharts-cartesian-grid line { stroke: var(--border-subtle) !important; }
 
-/* ─── iOS app shell (Capacitor) — safe areas + no rubber-band ──── */
+/* ─── Safe areas + no rubber-band (installed-PWA / notched phones) ──── */
 html,
 body {
   overscroll-behavior-y: none; /* no edge-bounce feel inside the native shell */

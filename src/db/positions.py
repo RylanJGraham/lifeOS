@@ -148,14 +148,10 @@ def update_position_from_fill(
         logger.warning(f"Unknown trade action '{action}'; skipping position update.")
         return None
 
-    # Preserve manual source/average_cost if an existing manual row exists.
+    # Preserve the manual source flag. Average cost is only frozen on sells
+    # (already carried over above); a buy must keep its weighted average.
     if existing and existing.get("source") == "manual":
         row["source"] = "manual"
-        manual_avg = _to_float(existing.get("average_cost"), price)
-        row["average_cost"] = manual_avg
-        if manual_avg and price:
-            row["unrealized_pnl"] = round((price - manual_avg) * row["quantity"], 4)
-            row["unrealized_pnl_pct"] = round(((price / manual_avg) - 1) * 100, 4)
 
     try:
         if existing:

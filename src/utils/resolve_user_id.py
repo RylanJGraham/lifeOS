@@ -19,18 +19,9 @@ logger = logging.getLogger("resolve_user_id")
 ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 
 
-def get_supabase() -> Optional[Client]:
-    if not create_client:
-        return None
-    url = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_KEY")
-    if not url or not key:
-        return None
-    try:
-        return create_client(url, key)
-    except Exception as e:
-        logger.warning(f"Could not create Supabase client: {e}")
-        return None
+def get_supabase():
+    from utils.supabase_client import get_supabase as _shared
+    return _shared()
 
 
 def resolve_user_id(source: str, external_id: str) -> str:

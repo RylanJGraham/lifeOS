@@ -34,7 +34,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL"
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 sb = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-from workers.goal_checkin import send_telegram  # noqa: E402
+from utils.notify import send_message  # noqa: E402
 
 ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 
@@ -441,7 +441,7 @@ def main():
         digest.append(insight + (f"\n→ {action}" if action else ""))
 
     if digest:
-        send_telegram("📅 Weekly review\n\n" + "\n\n".join(digest))
+        send_message("review", "Weekly review\n" + "\n\n".join(digest), deep_link="/inbox")
     else:
         logger.info("Nothing to report this week")
 

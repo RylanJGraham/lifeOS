@@ -4,7 +4,12 @@
 // defined once and every screen reads it the same way.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./supabase";
-import { getBackendStatus, getPipelines } from "./api";
+import {
+  getBackendStatus,
+  getPipelines,
+  fetchNotifications,
+  fetchCalendarEvents,
+} from "./api";
 import { liveBankBalance, type Transaction } from "./finance";
 
 function daysAgo(n: number): string {
@@ -669,4 +674,19 @@ export function monthSpend(transactions: FullTransaction[]) {
   const income = monthTx.reduce((a, t) => a + (typeof t.amount === "number" ? Math.max(t.amount, 0) : 0), 0);
   const expenses = monthTx.reduce((a, t) => a + (typeof t.amount === "number" ? Math.min(t.amount, 0) : 0), 0);
   return { income, expenses, net: income + expenses, monthTx };
+}
+
+// ─── Notifications & calendar (served by the backend API) ─────────────────
+export function useNotifications(limit = 50) {
+  return useAsync(async () => {
+    const res = await fetchNotifications(limit);
+    return { items: res.data, unread: res.unread };
+  }, [limit]);
+}
+
+export function useCalendarEvents(start: Date, end: Date) {
+  return useAsync(async () => {
+    const res = await fetchCalendarEvents(start.toISOString(), end.toISOString());
+    return res.data;
+  }, [start.getTime(), end.getTime()]);
 }

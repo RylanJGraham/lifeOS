@@ -2,7 +2,7 @@
 Evening audit — sent once per night before sleep if the day is incomplete.
 
 Checks whether today has meals, health metrics, and a workout. If anything is
-missing, it sends one consolidated Telegram nudge and creates an action item.
+missing, it sends one consolidated push nudge and creates an action item.
 The action item is resolved automatically when the user logs the missing data.
 
 Schedule (scripts/windows_tasks.ps1):
@@ -26,7 +26,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL"
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 sb = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-from workers.goal_checkin import send_telegram  # noqa: E402
+from utils.notify import send_message  # noqa: E402
 from workers.action_items import insert_insight, has_insight_today  # noqa: E402
 
 ZERO_UUID = "00000000-0000-0000-0000-000000000000"
@@ -120,10 +120,10 @@ def main():
     missing_str = ", ".join(missing)
     text = (
         f"🌙 Evening audit: today is missing {missing_str}.\n\n"
-        "Send a screenshot or text the bot before bed so the dashboard is complete."
+        "Log it in the app before bed so the dashboard is complete."
     )
 
-    sent = send_telegram(text)
+    sent = send_message("audit", text, dedupe_key=f"audit:{datetime.now().date()}")
     insert_insight(
         domain="evening_audit",
         insight_text=f"Today is missing {missing_str}.",
@@ -134,7 +134,7 @@ def main():
     if sent:
         logger.info(f"Evening audit sent: missing {missing_str}")
     else:
-        logger.warning("Evening audit insight stored but Telegram send failed")
+        logger.warning("Evening audit insight stored but notification send failed")
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL"
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 sb = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-from workers.goal_checkin import send_telegram  # noqa: E402
+from utils.notify import send_message  # noqa: E402
 
 ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 
@@ -166,7 +166,7 @@ def compose(facts: dict) -> tuple[str, str | None]:
         from langchain_core.messages import HumanMessage
         if llm_fast:
             prompt = f"""You are Jarvis, the user's dry-witted chief of staff. Write the morning briefing
-Telegram message from these computed facts (JSON). Rules: 4-7 short lines, plain text,
+push notification from these computed facts (JSON). Rules: 4-7 short lines, plain text,
 no headers, no markdown bullets with asterisks (use simple dashes), at most 2 emojis.
 Lead with the readiness verdict (green/yellow/red) and why. Include the training pick
 and yesterday's nutrition close-out when present. If illness_flag is true, be firm:
@@ -187,6 +187,16 @@ Facts: {json.dumps(facts)}"""
     return "\n".join(lines), action_item
 
 
+def _todays_agenda() -> list[str]:
+    """Calendar lines for today. Appended verbatim (not passed through the LLM)."""
+    try:
+        import calendar_service
+        return calendar_service.todays_agenda(_user_id())
+    except Exception as e:
+        logger.warning(f"Could not load today's agenda: {e}")
+        return []
+
+
 def main():
     if not sb:
         logger.error("Supabase client not initialized")
@@ -197,7 +207,9 @@ def main():
         return
     logger.info(f"Facts: {json.dumps(facts)}")
     text, action_item = compose(facts)
-    send_telegram(f"☀️ Morning briefing\n\n{text}")
+    agenda = _todays_agenda()
+    message = text + (("\n\nToday:\n" + "\n".join(agenda)) if agenda else "")
+    send_message("briefing", f"Morning briefing\n{message}", dedupe_key=f"briefing:{datetime.now().date()}")
     try:
         insight = text if len(text) < 500 else text[:497] + "..."
         from workers.action_items import insert_insight

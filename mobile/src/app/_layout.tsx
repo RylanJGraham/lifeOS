@@ -17,8 +17,10 @@ import {
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { ThemeProvider, useTheme } from "@/theme/ThemeProvider";
 import { colors } from "@/theme";
+import { usePushSetup } from "@/lib/notifications";
 
 function RootNavigation() {
+  usePushSetup();
   const { colors: themeColors } = useTheme();
   const { session, loading } = useAuth();
   const segments = useSegments();

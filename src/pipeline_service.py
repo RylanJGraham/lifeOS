@@ -186,7 +186,18 @@ def _run_goal_metric_sync():
     run_sync()
 
 
+def _run_calendar_reminders():
+    from workers.calendar_reminders import run as run_calendar_reminders
+    run_calendar_reminders()
+
+
 PIPELINES = {
+    "calendar-reminders": {
+        "name": "Calendar Reminders",
+        "description": "Send push reminders for upcoming calendar events (cron runs this every 5 minutes).",
+        "schedule": "Every 5 minutes",
+        "runner": _run_calendar_reminders,
+    },
     "health-sync": {
         "name": "Health Sync",
         "description": "Nightly aggregate of health metrics, meals, and workouts; writes a health summary to ai_insights.",
@@ -195,7 +206,7 @@ PIPELINES = {
     },
     "investment-notifier": {
         "name": "Investment Notifier",
-        "description": "Scan transactions for new investments and send a Telegram alert.",
+        "description": "Scan transactions for new investments and send a push alert.",
         "schedule": "Daily at 9:00 AM",
         "runner": _run_investment_notifier,
     },

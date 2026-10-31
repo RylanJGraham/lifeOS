@@ -4,7 +4,45 @@
 
 ---
 
-## Latest change: Confirm-before-save chat, Fuel Live Activity, habit streaks
+## Latest change: Telegram fallback for notifications + calendar follow-ups
+
+What's New:
+- **Telegram as a temporary notification fallback** (`src/utils/telegram.py`, `utils/notify.py`): while no mobile build can receive push, `notify()` sends outbound-only Telegram when no device accepts the push (needs `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`; `push_status = "telegram"`). Quiet hours/toggles still apply. Inbound Telegram chat stays retired. Note: the droplet had no `TELEGRAM_CHAT_ID`, so Telegram sends had been silently skipped before this.
+- **Calendar**: edit events (mobile + web; editing a repeating event moves the whole series, duration preserved); subscribable iCal feed (`/calendar/feed/<token>.ics`, migration 032); estimated subscription-renewal and dividend events; today's agenda appended to the morning briefing.
+- Tests: 113 total (new `tests/test_calendar_followups.py`).
+
+Breaking changes / manual setup: apply migration 032 (`python scripts/migrate.py`); set `TELEGRAM_CHAT_ID` on the droplet. Planned workouts are not on the calendar (no data source exists).
+
+---
+
+## Previous: Security pass, notifications, calendar, tests, dead-code removal
+
+What's New:
+- **Auth is now enforced and fail-closed** (`src/auth.py`, `src/api.py`): every endpoint except `/status` needs a Supabase session token (`Authorization: Bearer`) or `X-API-Key` (only if `API_SECRET` is set). Previously `/api/sleep`, `/api/health-metrics`, `/api/system_stream`, `/api/correlations` had no auth at all, and an unset `API_SECRET` silently disabled all auth. CORS is an allow-list (`CORS_ORIGINS`). `/statements/upload` no longer takes `user_id` from the query string and sanitises the filename (path traversal). The user id now comes from the token instead of "first row in `user_profiles`". The duplicate `/telegram/webhook-info` route was removed.
+- **Clients stop shipping a shared secret** (`mobile/src/lib/api.ts`, `frontend/utils/api.ts`, `system/page.tsx`): `EXPO_PUBLIC_API_TOKEN` / `NEXT_PUBLIC_API_TOKEN` removed; both send the Supabase session token.
+- **Telegram retired**: the webhook is only mounted when `TELEGRAM_ENABLED=true`. All workers (`morning_briefing`, `fuel_pacing`, `evening_audit`, `goal_checkin`, `persona_insights`, `weekly_review`, `investment_notifier`) now call `utils/notify`.
+- **Notifications** (`src/utils/notify.py`, `push_notifications.py`, migration 029, `/api/notifications*`, mobile `notifications.tsx`): one `notify()` that dedupes, applies per-kind toggles + quiet hours, pushes via Expo (dead tokens are retired), and records an Inbox history row. Push registration was never actually called before — it now runs after sign-in (`usePushSetup`) and the `expo-notifications` plugin was added to `app.json`. Tapping a notification opens its `deep_link`.
+- **Calendar** (`src/calendar_service.py`, `nodes/calendar.py`, `workers/calendar_reminders.py`, migration 030, `/api/calendar/events`, mobile `calendar.tsx` + Cockpit "Upcoming", web `/calendar`): user events with recurrence + reminders, derived goal deadlines and RSU vests, chat creation ("dentist thursday 3pm", with confirm-before-save), reminders every 5 minutes.
+- **Shared plumbing**: `utils/supabase_client.get_supabase()` (single lazily-created client).
+- **Tests + CI**: `tests/` (96 tests: auth, positions, dates, dry-run chat, calendar, notifications, endpoints) and `.github/workflows/ci.yml` (py_compile, pytest, frontend build, mobile `tsc`).
+- **Bug fixed (found by the new tests)**: adding to a *manual* position kept the first buy's average cost instead of the weighted average (`src/db/positions.py`).
+- **Migration runner**: `scripts/migrate.py` + `schema_migrations` (migration 031).
+- **Dead code removed** (kept on local branch `archive/dead-code`): `lib/Mi-Fitness-Sync`, `lib/SmartScaleConnect`, the Capacitor wrapper (`frontend/ios`, `capacitor.config.ts`, `NativeBridge`, `@capacitor/*`, `env-cmd`), and root scratch scripts (`scratch_test.py`, `test_webhook.py`, `apply_policies.py` — the last one created public read/write policies on `company_rsus`).
+
+Why: the previous analysis found the public client token made auth meaningless, several open write endpoints, a push pipeline that never registered devices, no tests, and a lot of dead weight; calendar + notifications were requested features and Telegram is being dropped.
+
+Files/modules touched: see the sections above; new tables `notifications`, `notification_prefs`, `calendar_events`, `schema_migrations`; new column `device_push_tokens.invalid_at`.
+
+Breaking changes / manual setup:
+1. **Rotate `API_SECRET`** on the droplet (the old value was in client bundles) and set `CORS_ORIGINS`, `LIFEOS_TIMEZONE`. Remove `EXPO_PUBLIC_API_TOKEN` / `NEXT_PUBLIC_API_TOKEN` from Vercel and the mobile env.
+2. Update the iOS Shortcut to send `X-API-Key` (see `docs/setup-ios-shortcut.md`).
+3. Apply migrations 029–031: `python scripts/migrate.py --baseline 28` once, then `python scripts/migrate.py` (needs `DATABASE_URL`). Then regenerate `docs/supabase-schema.sql` (it currently has the new tables appended by hand).
+4. The mobile app needs a **new native build** (new `expo-notifications` plugin) before push works. Push does not work in the simulator.
+5. Delete `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` from `.env` when you are ready; the Telegram status card on `/system` will show "not configured".
+
+---
+
+## Previous: Confirm-before-save chat, Fuel Live Activity, habit streaks
 
 What's New:
 - **Confirm-before-save in chat** (`mobile/src/app/(app)/(tabs)/chat.tsx`, `src/api.py`, `src/chat_service.py`, `src/nodes/nutrition.py`, `src/nodes/ui_blocks.py`):

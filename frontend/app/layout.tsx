@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import NativeBridge from "./components/NativeBridge";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -34,7 +33,6 @@ export default function RootLayout({
           WebkitFontSmoothing: "antialiased",
         }}
       >
-        <NativeBridge />
         {children}
       </body>
     </html>

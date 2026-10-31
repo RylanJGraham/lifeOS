@@ -9,6 +9,7 @@ from nodes.workout import handle_workout
 from nodes.weight import handle_weight
 from nodes.general import handle_general
 from nodes.query import handle_query_text
+from nodes.calendar import handle_calendar
 
 
 def text_intent_node(state: GraphState) -> GraphState:
@@ -35,6 +36,7 @@ def text_intent_node(state: GraphState) -> GraphState:
     Is it a QUESTION about data that already exists — sleep, what/how much they've eaten, macros vs targets,
     training load, cash/bank balance, portfolio, or goal progress (e.g. "how did I sleep", "what did I eat today",
     "what's my macros", "how's my training load", "portfolio summary")? -> 'query'
+    Is it asking to schedule/add a calendar event, appointment, bill due date or reminder for a future time (e.g. "dentist thursday 3pm", "remind me rent is due on the 1st")? -> 'calendar'
     Or is it just general conversation? -> 'general'
 
     Workout logs can be terse and use gym slang, e.g.: "did push today", "pull session yesterday",
@@ -43,7 +45,7 @@ def text_intent_node(state: GraphState) -> GraphState:
     A QUESTION asking about existing data is 'query', NOT 'general' — 'general' is only for chat that
     isn't asking about their own logged data (e.g. small talk, advice unrelated to their numbers).
 
-    Respond with ONLY ONE WORD: 'finance', 'trade', 'nutrition', 'weight', 'workout', 'query', or 'general'.
+    Respond with ONLY ONE WORD: 'finance', 'trade', 'nutrition', 'weight', 'workout', 'query', 'calendar', or 'general'.
 
     Text: "{text}"
     """
@@ -61,6 +63,8 @@ def text_intent_node(state: GraphState) -> GraphState:
             handle_weight(state)
         elif "workout" in intent:
             handle_workout(state)
+        elif "calendar" in intent:
+            handle_calendar(state)
         elif "query" in intent:
             handle_query_text(state)
         else:

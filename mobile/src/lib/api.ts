@@ -1,9 +1,13 @@
 // Mirrors frontend/utils/api.ts — same backend, same contracts.
+import { supabase } from "./supabase";
 export const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://localhost:8000";
-export const API_TOKEN = process.env.EXPO_PUBLIC_API_TOKEN || "";
 
-function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
-  return API_TOKEN ? { ...extra, "X-API-Key": API_TOKEN } : extra;
+// The backend authenticates with the signed-in user's Supabase session token.
+// (A shared EXPO_PUBLIC_* secret would ship inside the app binary.)
+export async function authHeaders(extra: Record<string, string> = {}): Promise<Record<string, string>> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
 }
 
 export interface Pipeline {
@@ -71,7 +75,7 @@ export async function sendChat(
 ): Promise<{ reply: string; ui?: UIBlock | null }> {
   const res = await fetch(`${API_URL}/api/chat`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       ...(message ? { message } : {}),
       // base64-encoded images WITHOUT the data: prefix
@@ -90,7 +94,7 @@ export async function sendGoalsChat(
 ): Promise<{ reply: string; goals_changed: boolean }> {
   const res = await fetch(`${API_URL}/api/goals/chat`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ message, history }),
   });
   if (!res.ok) throw await parseError(res, "Goals chat request failed");
@@ -126,7 +130,7 @@ export async function lookupSupplement(
 ): Promise<SupplementItem> {
   const res = await fetch(`${API_URL}/api/supplements/lookup`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ brand, name }),
   });
   if (!res.ok) throw await parseError(res, "Supplement lookup failed");
@@ -136,7 +140,7 @@ export async function lookupSupplement(
 
 export async function listSupplements(): Promise<SupplementPolicy> {
   const res = await fetch(`${API_URL}/api/supplements`, {
-    headers: authHeaders(),
+    headers: await authHeaders(),
   });
   if (!res.ok) throw await parseError(res, "Failed to load supplements");
   const json = await res.json();
@@ -150,7 +154,7 @@ export async function addSupplement(
 ): Promise<SupplementItem> {
   const res = await fetch(`${API_URL}/api/supplements`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ item, time_of_day: timeOfDay, hour }),
   });
   if (!res.ok) throw await parseError(res, "Failed to add supplement");
@@ -161,7 +165,7 @@ export async function addSupplement(
 export async function removeSupplement(itemId: string): Promise<boolean> {
   const res = await fetch(`${API_URL}/api/supplements`, {
     method: "DELETE",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ item_id: itemId }),
   });
   if (!res.ok) throw await parseError(res, "Failed to remove supplement");
@@ -178,7 +182,7 @@ export async function sendPersonaChat(
 ): Promise<{ reply: string; changed: boolean }> {
   const res = await fetch(`${API_URL}/api/personas/chat`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ persona, message, history }),
   });
   if (!res.ok) throw await parseError(res, "Specialist chat request failed");
@@ -191,7 +195,7 @@ export async function sendBudgetCoachChat(
 ): Promise<{ reply: string }> {
   const res = await fetch(`${API_URL}/api/budget-coach`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ message, history }),
   });
   if (!res.ok) throw await parseError(res, "Budget coach request failed");
@@ -199,7 +203,7 @@ export async function sendBudgetCoachChat(
 }
 
 export async function getPipelines(): Promise<Pipeline[]> {
-  const res = await fetch(`${API_URL}/api/pipelines`, { headers: authHeaders() });
+  const res = await fetch(`${API_URL}/api/pipelines`, { headers: await authHeaders() });
   if (!res.ok) throw await parseError(res, "Failed to fetch pipelines");
   const body = await res.json();
   return body.data ?? [];
@@ -208,7 +212,7 @@ export async function getPipelines(): Promise<Pipeline[]> {
 export async function runPipeline(id: string): Promise<void> {
   const res = await fetch(`${API_URL}/api/pipelines/${id}/run`, {
     method: "POST",
-    headers: authHeaders(),
+    headers: await authHeaders(),
   });
   if (!res.ok) throw await parseError(res, `Failed to run pipeline "${id}"`);
 }
@@ -229,7 +233,7 @@ export interface TelegramWebhookInfo {
 }
 
 export async function getTelegramWebhookInfo(): Promise<TelegramWebhookInfo> {
-  const res = await fetch(`${API_URL}/telegram/webhook-info`, { headers: authHeaders() });
+  const res = await fetch(`${API_URL}/telegram/webhook-info`, { headers: await authHeaders() });
   if (!res.ok) throw await parseError(res, "Failed to fetch Telegram webhook info");
   return res.json();
 }
@@ -258,7 +262,7 @@ export interface CalculatedTargets {
 export async function calculateTargets(req: CalculateTargetsRequest): Promise<CalculatedTargets> {
   const res = await fetch(`${API_URL}/api/calculate-targets`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(req),
   });
   if (!res.ok) throw await parseError(res, "Failed to calculate targets");
@@ -284,7 +288,7 @@ export async function uploadStatement(
   form.append("file", blob, fileName);
   const res = await fetch(`${API_URL}/statements/upload`, {
     method: "POST",
-    headers: authHeaders(),
+    headers: await authHeaders(),
     body: form,
   });
   if (!res.ok) throw await parseError(res, "Statement upload failed");
@@ -298,9 +302,115 @@ export async function goalCheckinAnswer(
 ): Promise<{ streak: number; achieved: boolean }> {
   const res = await fetch(`${API_URL}/api/goals/checkin`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ goal_id: goalId, answer, insight_id: insightId }),
   });
   if (!res.ok) throw await parseError(res, "Check-in failed");
   return res.json();
 }
+
+// ─── Notifications ────────────────────────────────────────────────────────
+export interface AppNotification {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  deep_link: string | null;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface NotificationPrefs {
+  push_enabled: boolean;
+  kinds: Record<string, boolean>;
+  quiet_start: string | null; // "HH:MM:SS" from Postgres TIME
+  quiet_end: string | null;
+  timezone: string;
+}
+
+async function apiJson<T>(path: string, init: RequestInit = {}, fallback = "Request failed"): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers: await authHeaders(init.body ? { "Content-Type": "application/json" } : {}),
+  });
+  if (!res.ok) throw await parseError(res, fallback);
+  return res.json();
+}
+
+export const fetchNotifications = (limit = 50) =>
+  apiJson<{ data: AppNotification[]; unread: number }>(`/api/notifications?limit=${limit}`, {}, "Could not load notifications");
+
+export const markNotificationsRead = (ids?: string[]) =>
+  apiJson<{ updated: number }>("/api/notifications/read", { method: "POST", body: JSON.stringify(ids ?? null) });
+
+export const fetchNotificationPrefs = () =>
+  apiJson<{ data: NotificationPrefs }>("/api/notifications/prefs", {}, "Could not load preferences");
+
+export const saveNotificationPrefs = (prefs: Partial<Omit<NotificationPrefs, "quiet_start" | "quiet_end">> & {
+  quiet_start?: string | null;
+  quiet_end?: string | null;
+}) =>
+  apiJson<{ data: NotificationPrefs }>(
+    "/api/notifications/prefs",
+    { method: "PUT", body: JSON.stringify(prefs) },
+    "Could not save preferences",
+  );
+
+export const registerDevice = (expo_push_token: string, platform: string) =>
+  apiJson("/api/notifications/devices", { method: "POST", body: JSON.stringify({ expo_push_token, platform }) });
+
+export const sendTestNotification = () => apiJson("/api/notifications/test", { method: "POST" });
+
+// ─── Calendar ─────────────────────────────────────────────────────────────
+export type CalendarKind = "event" | "appointment" | "bill" | "reminder" | "workout" | "other";
+export type Recurrence = "none" | "daily" | "weekly" | "monthly" | "yearly";
+
+export interface CalendarOccurrence {
+  id: string;
+  occurrence_id: string;
+  title: string;
+  notes: string | null;
+  location: string | null;
+  starts_at: string;
+  ends_at: string | null;
+  series_starts_at: string; // first occurrence of the series; edits apply to the whole series
+  all_day: boolean;
+  kind: CalendarKind;
+  recurrence: Recurrence;
+  reminder_offsets: number[];
+  origin: "user" | "goal" | "rsu" | "subscription" | "dividend"; // everything but "user" is derived and read-only
+}
+
+export interface CalendarEventInput {
+  title: string;
+  starts_at: string;
+  ends_at?: string | null;
+  all_day?: boolean;
+  kind?: CalendarKind;
+  recurrence?: Recurrence;
+  location?: string | null;
+  notes?: string | null;
+  reminder_offsets?: number[];
+}
+
+export const fetchCalendarEvents = (startIso: string, endIso: string) =>
+  apiJson<{ data: CalendarOccurrence[] }>(
+    `/api/calendar/events?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
+    {},
+    "Could not load calendar",
+  );
+
+export const createCalendarEvent = (ev: CalendarEventInput) =>
+  apiJson("/api/calendar/events", { method: "POST", body: JSON.stringify(ev) }, "Could not save event");
+
+export const deleteCalendarEvent = (id: string) =>
+  apiJson(`/api/calendar/events/${id}`, { method: "DELETE" }, "Could not delete event");
+
+export const updateCalendarEvent = (id: string, patch: Partial<CalendarEventInput>) =>
+  apiJson(`/api/calendar/events/${id}`, { method: "PATCH", body: JSON.stringify(patch) }, "Could not update event");
+
+export const fetchCalendarFeedUrl = () =>
+  apiJson<{ url: string }>("/api/calendar/feed", {}, "Could not get the calendar link");
+
+export const rotateCalendarFeedUrl = () =>
+  apiJson<{ url: string }>("/api/calendar/feed/rotate", { method: "POST" }, "Could not reset the calendar link");

@@ -21,6 +21,8 @@ import {
   Trophy,
   Flag,
   Server,
+  Calendar as CalendarIcon,
+  Bell,
 } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { useTheme } from "@/theme/ThemeProvider";
@@ -190,6 +192,17 @@ export default function InboxScreen() {
       >
         {insights.error ? <ErrorBanner message={insights.error} /> : null}
 
+        <View style={styles.shortcuts}>
+          <Pressable onPress={() => router.push("/calendar" as never)} style={[styles.shortcut, { backgroundColor: colors.surface1, borderColor: colors.hairline }]}>
+            <CalendarIcon size={16} color={colors.focus} />
+            <Text style={[styles.shortcutText, { color: colors.textPrimary }]}>Calendar</Text>
+          </Pressable>
+          <Pressable onPress={() => router.push("/notifications" as never)} style={[styles.shortcut, { backgroundColor: colors.surface1, borderColor: colors.hairline }]}>
+            <Bell size={16} color={colors.focus} />
+            <Text style={[styles.shortcutText, { color: colors.textPrimary }]}>Notifications</Text>
+          </Pressable>
+        </View>
+
         {unresolved.length === 0 ? (
           <Surface style={styles.emptyCard}>
             <Server size={24} color={colors.textTertiary} />
@@ -270,6 +283,18 @@ export default function InboxScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   scroll: { padding: spacing.md, paddingBottom: spacing.xl },
+  shortcuts: { flexDirection: "row", gap: spacing.sm, marginBottom: spacing.lg },
+  shortcut: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  shortcutText: { fontFamily: fonts.geistMedium, fontSize: 14 },
   group: { marginBottom: spacing.lg },
   groupLabel: {
     fontFamily: fonts.spaceGroteskSemiBold,

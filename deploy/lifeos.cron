@@ -39,3 +39,7 @@ RUN="cd $LIFEOS/src && set -a && . $LIFEOS/.env && set +a && $PY pipeline_servic
 
 # Monday
 0 6 * * 1   $RUN symptom-analysis >> $LOG 2>&1
+
+# Calendar reminders — every 5 minutes. Calls the worker directly (not via
+# pipeline_service) so it doesn't write 288 pipeline_runs rows per day.
+*/5 * * * * cd $LIFEOS/src && set -a && . $LIFEOS/.env && set +a && $PY workers/calendar_reminders.py >> $LOG 2>&1

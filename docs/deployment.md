@@ -63,9 +63,18 @@ scp .env root@<droplet-ip>:/opt/lifeos/.env
 ssh root@<droplet-ip> "chown lifeos:lifeos /opt/lifeos/.env && chmod 600 /opt/lifeos/.env && systemctl start lifeos-api"
 ```
 
-Make sure the droplet's `.env` contains `PUBLIC_DOMAIN=lifeos-you.duckdns.org`.
-On startup the API registers the Telegram webhook to
-`https://<PUBLIC_DOMAIN>/webhook` — no ngrok involved.
+Make sure the droplet's `.env` contains:
+
+- `PUBLIC_DOMAIN=lifeos-you.duckdns.org`
+- `API_SECRET=<new long random string>` — **rotate it**: the previous value was shipped inside client bundles. Only the iOS Shortcut uses it now.
+- `CORS_ORIGINS=https://<your-dashboard>.vercel.app` (comma separated; native mobile needs no CORS)
+- `LIFEOS_TIMEZONE=<your IANA timezone>` — used for calendar phrases and cron-adjacent reminders.
+
+Telegram is retired: the webhook is **not** registered unless you set `TELEGRAM_ENABLED=true`.
+Remove `EXPO_PUBLIC_API_TOKEN` / `NEXT_PUBLIC_API_TOKEN` from the mobile and Vercel environments — clients now authenticate with their Supabase session.
+
+Apply the new migrations (029–031) from a machine with `DATABASE_URL` set:
+`python scripts/migrate.py --baseline 28` once on this existing database, then `python scripts/migrate.py`.
 
 ### 6. Verify
 
@@ -73,11 +82,11 @@ On startup the API registers the Telegram webhook to
 curl https://lifeos-you.duckdns.org/status
 # {"status":"online","services":{"openrouter":"ok","supabase":"ok",...}}
 
-curl -H "x-api-key: <API_SECRET>" https://lifeos-you.duckdns.org/telegram/webhook-info
-# webhook_url should be https://lifeos-you.duckdns.org/webhook, status ok
+curl -H "x-api-key: <API_SECRET>" https://lifeos-you.duckdns.org/api/pipelines
+# 200 with your pipelines; without the header it must be 401
 ```
 
-Then send the bot a Telegram message and watch it answer:
+Then trigger a test notification from the app (Inbox → Notifications → "Send test notification") and watch the log:
 
 ```bash
 ssh root@<droplet-ip> journalctl -u lifeos-api -f

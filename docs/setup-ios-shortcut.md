@@ -70,6 +70,7 @@ You can build this manually in the **Shortcuts** app on your iPhone:
    - Set Method to: `POST`
    - Set Headers: 
      - `Content-Type`: `application/json`
+     - `X-API-Key`: the `API_SECRET` value from the server's `.env` (required — the endpoint rejects unauthenticated requests). The secret lives only inside the Shortcut, never in an app bundle.
    - Set Request Body to: `File` and choose the **Dictionary** from step 8.
 
 ---

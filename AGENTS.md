@@ -10,7 +10,7 @@ Key external dependencies:
 
 - **Supabase** — PostgreSQL, auth, realtime.
 - **OpenRouter** — cloud LLM for routing/extraction.
-- **Telegram** — user chat input/output.
+- **Expo push + in-app Inbox** — all user notifications go through `src/utils/notify.py`. **Telegram is retired** (route only mounted with `TELEGRAM_ENABLED=true`); do not add new Telegram sends.
 - **IBKR** — read-only broker sync via Flex Query.
 - **Jarvis Advisor v3** — external daily advisor that reads/writes Supabase.
 
@@ -109,7 +109,7 @@ If you cannot write a clear "What's New" summary, the change is not ready to pus
 ### Database changes
 
 1. Create a new numbered migration in `docs/supabase-migrations/`.
-2. Run it in the Supabase SQL Editor.
+2. Apply it with `python scripts/migrate.py` (or paste it in the Supabase SQL Editor; `scripts/migrate.py --status` shows what is pending).
 3. **Regenerate `docs/supabase-schema.sql`** by running `python scripts/introspect_supabase_schema.py`.
 4. Update frontend types in `frontend/app/components/<module>/types.ts`.
 5. Update backend code that reads/writes the table.
@@ -128,6 +128,8 @@ If you cannot write a clear "What's New" summary, the change is not ready to pus
 2. If a worker should be triggerable from the dashboard, register it in `src/pipeline_service.py`.
 3. Add a Windows scheduled task in `scripts/windows_tasks.ps1` and a cron line in `deploy/lifeos.cron` if it should run on a schedule.
 4. Use `logger` for output, not `print`.
+5. Get the database client from `utils.supabase_client.get_supabase()` (never `create_client` directly) and send user notifications with `utils.notify.notify()` / `send_message()`.
+6. Every new API route must depend on `auth.require_auth` and scope data by `auth.user_id` — `tests/test_auth.py` fails otherwise.
 
 ### Chat/agent changes
 
@@ -193,6 +195,7 @@ If you cannot write a clear "What's New" summary, the change is not ready to pus
 
 Before calling a task done:
 
+- [ ] `python -m pytest` passes (backend tests live in `tests/`; add one for new logic — dates, money math, auth)
 - [ ] `python -m py_compile src/graph.py src/nodes/*.py src/workers/ibkr_flex_sync.py src/pipeline_service.py src/workers/goal_checkin.py src/workers/transaction_anomalies.py src/workers/price_refresh.py src/workers/weekly_review.py src/workers/sync_health.py src/workers/market_advisor.py src/chat_threads.py src/db/supplements.py src/db/positions.py`
 - [ ] `cd frontend && npm run build` passes
 - [ ] New migrations are applied in Supabase

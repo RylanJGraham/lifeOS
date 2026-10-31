@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 # the path so the lazy `from graph import llm_fast` resolves.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import requests
+from utils.notify import send_message
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -41,27 +41,14 @@ logger = logging.getLogger("goal_checkin")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 sb = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 
-def send_telegram(text: str, reply_markup: dict | None = None) -> bool:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram not configured; skipping send")
-        return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    try:
-        r = requests.post(url, json=payload, timeout=8.0)
-        r.raise_for_status()
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send Telegram message: {e}")
-        return False
+def send_telegram(text: str) -> bool:
+    """Deliver a check-in message (name kept for existing call sites; it goes
+    to push + the Inbox now, not Telegram)."""
+    return send_message("goals", text, deep_link="/goals")
 
 
 def _period_start(cadence: str) -> datetime:
@@ -231,7 +218,7 @@ def _llm_assessment(goal: dict, metric_label: str, value: float, target: float) 
         pct = (value / target * 100) if target else 0
         prompt = (
             "You are Jarvis, the user's dry-witted personal chief of staff. "
-            "Write a 2-3 sentence Telegram check-in about this financial goal. "
+            "Write a 2-3 sentence short push-notification check-in about this financial goal. "
             "Be concrete: current value vs target, percentage, and what remains. "
             "No emojis except at most one. No questions.\n\n"
             f'Goal: "{goal.get("title")}"'
@@ -288,12 +275,8 @@ def checkin_habit_goal(goal: dict):
     else:
         text += f"Current streak: {current} {unit}\n"
     text += f"\nDid you stay on track {period}?"
-    keyboard = {"inline_keyboard": [[
-        {"text": "✅ Yes", "callback_data": f"goal_checkin:{goal['id']}:yes"},
-        {"text": "❌ Slipped", "callback_data": f"goal_checkin:{goal['id']}:no"},
-    ]]}
 
-    sent = send_telegram(text, reply_markup=keyboard)
+    sent = send_telegram(text)
     _log_auto_checkin(goal, f"auto:{goal.get('checkin_cadence')} question sent")
     _log_goal_insight(
         goal,
@@ -308,7 +291,7 @@ def checkin_habit_goal(goal: dict):
     if sent:
         logger.info(f"Sent habit check-in for goal '{title}'")
     else:
-        logger.info(f"Logged habit check-in insight for goal '{title}' (Telegram not configured)")
+        logger.info(f"Logged habit check-in insight for goal '{title}' (notification not delivered)")
 
 
 def _log_goal_insight(goal: dict, insight_text: str, action_item: str | None = None, metadata: dict | None = None):

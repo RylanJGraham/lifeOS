@@ -58,6 +58,7 @@
         }
       ],
       "expo-font",
+      "expo-notifications",
       "expo-splash-screen",
       "expo-widgets"
     ]

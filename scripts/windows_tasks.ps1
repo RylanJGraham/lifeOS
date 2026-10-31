@@ -31,11 +31,11 @@ function Register-LifeOSTask {
 
 # Daily pipelines
 Register-LifeOSTask -Name "LifeOS-MorningBriefing" -PipelineId "morning-briefing" `
-    -Description "Generate and send the daily morning briefing to Telegram" `
+    -Description "Generate and send the daily morning briefing as a push notification" `
     -Trigger (New-ScheduledTaskTrigger -Daily -At 7:00AM)
 
 Register-LifeOSTask -Name "LifeOS-InvestmentNotifier" -PipelineId "investment-notifier" `
-    -Description "Scan transactions for new investments and send a Telegram alert" `
+    -Description "Scan transactions for new investments and send a push alert" `
     -Trigger (New-ScheduledTaskTrigger -Daily -At 9:00AM)
 
 Register-LifeOSTask -Name "LifeOS-HealthSync" -PipelineId "health-sync" `
@@ -43,7 +43,7 @@ Register-LifeOSTask -Name "LifeOS-HealthSync" -PipelineId "health-sync" `
     -Trigger (New-ScheduledTaskTrigger -Daily -At 11:30PM)
 
 Register-LifeOSTask -Name "LifeOS-GoalCheckinDaily" -PipelineId "goal-checkin-daily" `
-    -Description "Send daily habit goal check-in questions via Telegram" `
+    -Description "Send daily habit goal check-in questions as a push notification" `
     -Trigger (New-ScheduledTaskTrigger -Daily -At 8:00PM)
 
 Register-LifeOSTask -Name "LifeOS-PersonaInsightsDaily" -PipelineId "persona-insights" `
@@ -82,7 +82,7 @@ Register-LifeOSTask -Name "LifeOS-MarketAdvisor" -PipelineId "market-advisor" `
 
 # Sunday pipelines
 Register-LifeOSTask -Name "LifeOS-GoalCheckinWeekly" -PipelineId "goal-checkin-weekly" `
-    -Description "Send weekly financial goal progress / green-light updates via Telegram" `
+    -Description "Send weekly financial goal progress / green-light updates as a push notification" `
     -Trigger (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 10:00AM)
 
 Register-LifeOSTask -Name "LifeOS-WeeklyReview" -PipelineId "weekly-review" `
@@ -103,3 +103,13 @@ Register-LifeOSTask -Name "LifeOS-SymptomAnalysis" -PipelineId "symptom-analysis
     -Trigger (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 6:00AM)
 
 Write-Host "Scheduled tasks created successfully." -ForegroundColor Green
+
+# Calendar reminders — every 5 minutes. Runs the worker directly (not through
+# pipeline_service) so it doesn't write 288 pipeline_runs rows per day.
+$reminderAction = New-ScheduledTaskAction `
+    -Execute "powershell.exe" `
+    -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"cd $PWD\src; ..\venv\Scripts\Activate.ps1; python workers/calendar_reminders.py`""
+$reminderTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
+Register-ScheduledTask -Action $reminderAction -Trigger $reminderTrigger `
+    -Settings (New-ScheduledTaskSettingsSet -WakeToRun) -TaskName "LifeOS-CalendarReminders" `
+    -Description "Send push reminders for upcoming calendar events" -User "SYSTEM" -Force

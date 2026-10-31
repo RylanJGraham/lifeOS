@@ -8,14 +8,15 @@ LifeOS is a personal operating system that aggregates health, finance, and goal 
 - **Finance OS**: transactions, spending analysis, cashflow, net worth, budget envelopes, transaction anomaly detection.
 - **Investments**: portfolio tracking, advisor signals, watchlist, orders, risk guardrails, P&L, IBKR sync, price-freshness badges, Finnhub fallback.
 - **Goals**: habit tracking, check-ins, streaks, milestones, weekly targets, rest days.
-- **Chat**: Telegram bot and web chat that route messages through a LangGraph agent with persistent thread memory.
+- **Chat**: mobile app and web chat that route messages through a LangGraph agent with persistent thread memory.
+- **Notifications & calendar**: push (Expo) + in-app Inbox for every worker alert, and a calendar with reminders (user events, goal deadlines, RSU vests).
 - **AI**: OpenRouter cloud models for insights, classification, and recommendations (optional local Ollama fallback for general chat in dev).
 - **Observability**: pipeline run history, worker heartbeats, system logs, and one-click pipeline controls.
 
 ## High-level architecture
 
 ```
-User (Telegram / Web)
+User (Mobile / Web)
          │
          ▼
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
@@ -34,7 +35,7 @@ User (Telegram / Web)
 External systems:
 
 - **Supabase**: database, auth, storage, realtime.
-- **Telegram**: chat input/output.
+- **Expo push**: notifications (Telegram is retired).
 - **OpenRouter**: cloud LLM for routing, extraction, and reasoning (used for everything in production).
 - **Ollama**: optional local LLM; only `general` chat tries it, with OpenRouter fallback.
 - **IBKR**: broker read-only Flex Query sync for positions, trades, options, and dividends.
@@ -82,7 +83,6 @@ External systems:
 - npm or pnpm
 - Git
 - Supabase project
-- Telegram bot token (from BotFather)
 - OpenRouter API key
 - (Optional) IBKR account + Flex Query token
 - (Optional) Ollama for local models
@@ -122,8 +122,6 @@ SUPABASE_SERVICE_KEY=your_service_key
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
 OPENROUTER_API_KEY=sk-or-v1-...
-TELEGRAM_BOT_TOKEN=123456:ABC-DEF
-TELEGRAM_CHAT_ID=your_chat_id
 OLLAMA_HOST=http://localhost:11434
 API_SECRET=change-me
 IBKR_FLEX_TOKEN=your_flex_token
@@ -163,7 +161,8 @@ This creates tasks for:
 | Task | Schedule | Purpose |
 |---|---|---|
 | `LifeOS-IBKRFlexSync` | Mon–Fri 15:00 CET | Pulls IBKR positions/trades into Supabase |
-| `LifeOS-MorningBriefing` | Daily 07:00 | Sends morning Telegram briefing |
+| `LifeOS-MorningBriefing` | Daily 07:00 | Sends the morning briefing as a push notification |
+| `LifeOS-CalendarReminders` | Every 5 min | Pushes reminders for upcoming calendar events |
 | `LifeOS-HealthSync` | Daily 23:30 | Runs nightly health aggregate and writes summary to `ai_insights` |
 | `LifeOS-GoalCheckinDaily` | Daily 20:00 | Sends habit check-in questions |
 | `LifeOS-GoalCheckinWeekly` | Sunday 10:00 | Weekly goal review |
@@ -278,7 +277,8 @@ You can also trigger a pipeline from the `/system` page in the dashboard.
 1. If you touch the database, add a numbered migration in `docs/supabase-migrations/`.
 2. If you add a new worker, register it in `src/pipeline_service.py` and add its schedule to both `scripts/windows_tasks.ps1` (local dev) and `deploy/lifeos.cron` (production).
 3. If you add new frontend pages/components, run `npm run build` in `frontend/` before committing.
-4. If you change the Telegram/web chat behavior, test `src/graph.py` with `python -m py_compile src/graph.py`.
+4. If you change chat behavior, run `python -m pytest` (the dry-run and intent flows are covered) and `python -m py_compile src/graph.py`.
+5. Apply database changes with `python scripts/migrate.py` (see `docs/architecture.md` §2); CI runs the same checks on every push.
 
 ## Testing
 

@@ -3,25 +3,20 @@ import re
 import time
 import sys
 import logging
-import requests
 from supabase import create_client
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from utils.retry import with_retry
+from utils.notify import send_message
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("investment_notifier")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # required
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     logger.error("Supabase credentials not configured. Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env")
 
-if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-    logger.warning("Telegram not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable notifications.")
 
 sb = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
@@ -60,25 +55,10 @@ def infer_ticker(tx: dict) -> str | None:
     return None
 
 
-@with_retry(max_retries=2, base_delay=2.0, exceptions=(Exception,))
-def _send_telegram_once(text: str) -> requests.Response:
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-    r = requests.post(url, json=payload, timeout=8.0)
-    r.raise_for_status()
-    return r
-
-
-def send_telegram(text: str) -> bool:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram not configured; skipping send")
-        return False
-    try:
-        _send_telegram_once(text)
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send Telegram message: {e}")
-        return False
+def send_telegram(text: str, tx_id=None) -> bool:
+    """Notify via push + Inbox (name kept for existing call sites)."""
+    return send_message("investments", text, deep_link="/capital",
+                        dedupe_key=f"invest:{tx_id}" if tx_id else None)
 
 
 def _fetch_candidates():
@@ -106,9 +86,9 @@ def _process_tx(tx: dict) -> bool:
     )
     if tkr:
         txt += f"Ticker: {tkr}\n"
-    txt += "\nActions: Reply in Telegram to confirm or review in the dashboard."
+    txt += "\nReview it in the app."
 
-    sent = send_telegram(txt)
+    sent = send_telegram(txt, tx.get("id"))
     if sent:
         try:
             sb.table("transactions").update({"notified": True}).eq("id", tx.get("id")).execute()

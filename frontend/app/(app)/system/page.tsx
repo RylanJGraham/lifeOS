@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import Link from "next/link";
 import { Server, MessageSquare, ExternalLink, Play, Loader2, AlertCircle, CheckCircle2, Bot, Upload, FileText } from "lucide-react";
 import { supabase } from "../../../utils/supabaseClient";
-import { getBackendStatus, BackendStatus, getPipelines, runPipeline, Pipeline, getTelegramWebhookInfo, TelegramWebhookInfo, API_URL, API_TOKEN } from "../../../utils/api";
+import { getBackendStatus, BackendStatus, getPipelines, runPipeline, Pipeline, getTelegramWebhookInfo, TelegramWebhookInfo, API_URL, authHeaders } from "../../../utils/api";
 import { THEME } from "../../../utils/theme";
 
 // ─── Status Badge ────────────────────────────────────────────────
@@ -117,7 +117,7 @@ function StatementUploadCard() {
       const res = await fetch(`${API_URL}/statements/upload`, {
         method: "POST",
         body: formData,
-        headers: API_TOKEN ? { "X-API-Key": API_TOKEN } : {},
+        headers: await authHeaders(),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
