@@ -43,3 +43,6 @@ RUN="cd $LIFEOS/src && set -a && . $LIFEOS/.env && set +a && $PY pipeline_servic
 # Calendar reminders — every 5 minutes. Calls the worker directly (not via
 # pipeline_service) so it doesn't write 288 pipeline_runs rows per day.
 */5 * * * * cd $LIFEOS/src && set -a && . $LIFEOS/.env && set +a && $PY workers/calendar_reminders.py >> $LOG 2>&1
+
+# Imported calendars (Outlook/Google/Apple) — every 30 minutes.
+*/30 * * * * cd $LIFEOS/src && set -a && . $LIFEOS/.env && set +a && $PY workers/calendar_sync.py >> $LOG 2>&1

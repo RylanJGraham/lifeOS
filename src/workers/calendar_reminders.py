@@ -65,7 +65,7 @@ def run(now: datetime | None = None) -> int:
             tz = cal.local_tz()
             occs = [
                 o for o in cal.list_events(user_id, now - LOOKBACK, now + HORIZON)
-                if o["origin"] == "user"
+                if o["origin"] in ("user", "import")
             ]
             for occ, offset in due_reminders(occs, now):
                 start = datetime.fromisoformat(occ["starts_at"]).astimezone(tz)

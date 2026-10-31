@@ -186,12 +186,23 @@ def _run_goal_metric_sync():
     run_sync()
 
 
+def _run_calendar_sync():
+    from workers.calendar_sync import run as run_calendar_sync
+    run_calendar_sync()
+
+
 def _run_calendar_reminders():
     from workers.calendar_reminders import run as run_calendar_reminders
     run_calendar_reminders()
 
 
 PIPELINES = {
+    "calendar-sync": {
+        "name": "Calendar Sync",
+        "description": "Refresh imported calendars (Outlook/Google/Apple published links); cron runs this every 30 minutes.",
+        "schedule": "Every 30 minutes",
+        "runner": _run_calendar_sync,
+    },
     "calendar-reminders": {
         "name": "Calendar Reminders",
         "description": "Send push reminders for upcoming calendar events (cron runs this every 5 minutes).",

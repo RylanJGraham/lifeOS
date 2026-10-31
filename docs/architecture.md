@@ -79,6 +79,7 @@ The source of truth for the schema is `docs/supabase-schema.sql`, which is regen
 | `notifications` | Inbox history of every notification sent (one row per `notify()` call) | `user_id`, `kind`, `title`, `body`, `deep_link`, `dedupe_key`, `push_status`, `read_at` |
 | `notification_prefs` | Per-user push settings | `user_id`, `push_enabled`, `kinds` (jsonb), `quiet_start`, `quiet_end`, `timezone` |
 | `calendar_events` | User-created calendar events (derived events are computed, not stored) | `user_id`, `title`, `starts_at`, `ends_at`, `all_day`, `kind`, `recurrence`, `recurrence_until`, `reminder_offsets` (int[] minutes) |
+| `calendar_subscriptions` | Linked external calendars (published ICS links; RLS on, no policies — URLs are secrets) | `user_id`, `name`, `url`, `last_synced_at`, `last_error`, `event_count` |
 | `calendar_feed_tokens` | Secret token per user for the iCal subscription URL (RLS on, no policies: backend only) | `user_id`, `token` |
 | `schema_migrations` | Which numbered migrations have been applied (`scripts/migrate.py`) | `version`, `applied_at` |
 
@@ -117,6 +118,7 @@ Migrations live in `docs/supabase-migrations/`. They are applied manually in the
 - `027-worker-heartbeats-and-views.sql` — adds `worker_heartbeats.created_at` and sets advisor views to `SECURITY INVOKER` to address Supabase security warnings.
 - `029-notifications.sql` — `notifications`, `notification_prefs`, `device_push_tokens.invalid_at` (own-row RLS).
 - `030-calendar-events.sql` — `calendar_events` (own-row RLS).
+- `033-calendar-subscriptions.sql` — `calendar_subscriptions` + `calendar_events.subscription_id/external_uid`.
 - `032-calendar-feed-tokens.sql` — `calendar_feed_tokens`.
 - `031-schema-migrations.sql` — `schema_migrations`. Apply pending migrations with `python scripts/migrate.py` (`--status` to preview, `--baseline 28` once on an existing database to record 001–028 as applied). Needs `DATABASE_URL`.
 
@@ -373,6 +375,8 @@ npx expo run:ios --device "<name or UDID>"   # builds + installs to a physical i
 **Calendar:** `src/calendar_service.py` holds recurrence expansion (`none|daily|weekly|monthly|yearly`, month-end clamping, `recurrence_until`), derived events (goal deadlines, RSU vests), CRUD scoped by `user_id`, and the chat parser. `src/workers/calendar_reminders.py` runs every 5 minutes (cron/Task Scheduler call it directly, not via `pipeline_service`, to avoid 288 `pipeline_runs` rows a day; it is also registered as the `calendar-reminders` pipeline for manual runs). A reminder fires when `start − offset` falls in the last 10 minutes; `dedupe_key = cal:<occurrence_id>:<offset>` makes retries safe. UI: mobile `calendar.tsx` (month agenda + add sheet; "Upcoming" card on Cockpit) and web `/calendar`.
 
 **Calendar extras:** events are editable (mobile tap-to-edit, web pencil icon); derived events also include estimated **subscription renewals** and **dividend dates** (`calendar_service.predicted_events`/`project_dates` — need ≥2 regular past occurrences, so they appear as history accumulates); `GET /calendar/feed/<token>.ics` is a subscribable iCal feed; the morning briefing appends today's agenda verbatim (`calendar_service.todays_agenda`, not LLM-written). There is no source for *planned workouts* yet, so they are not shown.
+
+**Linked calendars (Outlook → LifeOS):** `src/calendar_import.py` fetches a published ICS link (SSRF-guarded: https only, public IPs only, redirects re-validated, 5 MB cap), parses VEVENTs (Windows time-zone names, RRULE via dateutil, EXDATE, RECURRENCE-ID overrides, cancelled instances), expands them into a rolling window and reconciles them into `calendar_events` with `source='import'`. `workers/calendar_sync.py` runs every 30 min (cron/Task Scheduler; also the `calendar-sync` pipeline). Imported events are read-only, get a 15-minute reminder (timed events only), and are excluded from LifeOS's own iCal feed so the two directions never loop. Not built: two-way sync / Microsoft Graph OAuth.
 
 **Timezone:** calendar phrases are interpreted in `LIFEOS_TIMEZONE`; quiet hours use `notification_prefs.timezone`. Set both.
 

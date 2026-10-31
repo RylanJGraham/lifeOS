@@ -113,3 +113,12 @@ $reminderTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInte
 Register-ScheduledTask -Action $reminderAction -Trigger $reminderTrigger `
     -Settings (New-ScheduledTaskSettingsSet -WakeToRun) -TaskName "LifeOS-CalendarReminders" `
     -Description "Send push reminders for upcoming calendar events" -User "SYSTEM" -Force
+
+# Imported calendars (Outlook/Google/Apple) — every 30 minutes.
+$syncAction = New-ScheduledTaskAction `
+    -Execute "powershell.exe" `
+    -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"cd $PWD\src; ..\venv\Scripts\Activate.ps1; python workers/calendar_sync.py`""
+$syncTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30)
+Register-ScheduledTask -Action $syncAction -Trigger $syncTrigger `
+    -Settings (New-ScheduledTaskSettingsSet -WakeToRun) -TaskName "LifeOS-CalendarSync" `
+    -Description "Refresh imported Outlook/Google/Apple calendars" -User "SYSTEM" -Force

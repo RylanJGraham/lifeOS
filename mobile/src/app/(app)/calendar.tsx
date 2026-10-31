@@ -25,6 +25,11 @@ import {
   createCalendarEvent,
   updateCalendarEvent,
   fetchCalendarFeedUrl,
+  fetchCalendarSubscriptions,
+  addCalendarSubscription,
+  syncCalendarSubscription,
+  deleteCalendarSubscription,
+  type CalendarSubscription,
   rotateCalendarFeedUrl,
   deleteCalendarEvent,
   type CalendarEventInput,
@@ -32,7 +37,7 @@ import {
   type CalendarOccurrence,
   type Recurrence,
 } from "@/lib/api";
-import { ScreenHeader, Surface, ErrorBanner, LoadingState, SegmentedControl, PrimaryButton } from "@/components/ui";
+import { HEADER_BAR_HEIGHT, ScreenHeader, Surface, ErrorBanner, LoadingState, SegmentedControl, PrimaryButton } from "@/components/ui";
 
 const KINDS: { key: CalendarKind; label: string }[] = [
   { key: "event", label: "Event" },
@@ -78,6 +83,7 @@ export default function CalendarScreen() {
   const rangeEnd = useMemo(() => new Date(month.getFullYear(), month.getMonth() + 1, 1), [month]);
   const events = useCalendarEvents(month, rangeEnd);
   const [editing, setEditing] = useState<CalendarOccurrence | 'new' | null>(null);
+  const [syncOpen, setSyncOpen] = useState(false);
 
   const byDay = useMemo(() => {
     const map = new Map<string, CalendarOccurrence[]>();
@@ -129,36 +135,29 @@ export default function CalendarScreen() {
     }
   }, []);
 
-  const feedMenu = useCallback(() => {
-    Alert.alert(
-      "Subscribe in Apple / Google Calendar",
-      "Share the link, then add it as a subscription calendar. Anyone with the link can see your events — reset it to revoke access.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Share link", onPress: () => shareFeed(false) },
-        { text: "Reset link", style: "destructive", onPress: () => shareFeed(true) },
-      ],
-    );
-  }, [shareFeed]);
-
   const todayKey = dayKey(new Date());
   const monthLabel = month.toLocaleDateString(undefined, { month: "long", year: "numeric" });
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top, backgroundColor: colors.bg }]}>
+    <View style={[styles.container, { paddingTop: insets.top + HEADER_BAR_HEIGHT, backgroundColor: colors.bg }]}>
       <ScreenHeader title="Calendar" subtitle={monthLabel} onBack={() => router.back()} />
       <View style={styles.monthBar}>
         <Pressable onPress={() => shiftMonth(-1)} hitSlop={12} accessibilityLabel="Previous month">
           <ChevronLeft size={22} color={colors.textPrimary} />
-        </Pressable>
-        <Pressable onPress={feedMenu} hitSlop={12} accessibilityLabel="Subscribe in another calendar app">
-          <Link2 size={20} color={colors.focus} />
         </Pressable>
         <Text style={[styles.monthLabel, { color: colors.textPrimary }]}>{monthLabel}</Text>
         <Pressable onPress={() => shiftMonth(1)} hitSlop={12} accessibilityLabel="Next month">
           <ChevronRight size={22} color={colors.textPrimary} />
         </Pressable>
       </View>
+      <Pressable
+        onPress={() => setSyncOpen(true)}
+        accessibilityLabel="Sync calendars with Outlook, Google or Apple"
+        style={[styles.syncChip, { backgroundColor: colors.surface1, borderColor: colors.hairline }]}
+      >
+        <Link2 size={14} color={colors.focus} />
+        <Text style={[styles.syncChipText, { color: colors.focus }]}>Sync Outlook / Google / Apple</Text>
+      </Pressable>
 
       {events.loading ? (
         <LoadingState label="Loading calendar…" />
@@ -193,6 +192,7 @@ export default function CalendarScreen() {
                         <View style={styles.cardRow}>
                           <View style={{ flex: 1 }}>
                             <View style={styles.titleRow}>
+                              {ev.origin === "import" ? <Link2 size={13} color={colors.trends} /> : null}
                               {ev.origin === "goal" ? <Flag size={13} color={colors.focus} /> : null}
                               {ev.origin === "rsu" ? <Coins size={13} color={colors.wealth} /> : null}
                               {ev.origin === "subscription" ? <CreditCard size={13} color={colors.kinematic} /> : null}
@@ -243,6 +243,13 @@ export default function CalendarScreen() {
         <Plus size={26} color={colors.textInverse} />
       </Pressable>
 
+      <SyncModal
+        visible={syncOpen}
+        onClose={() => setSyncOpen(false)}
+        onChanged={events.refetch}
+        onShareFeed={shareFeed}
+      />
+
       <EventModal
         event={editing === "new" ? null : editing}
         visible={editing !== null}
@@ -261,6 +268,146 @@ function roundedNextHour(): Date {
   d.setMinutes(0, 0, 0);
   d.setHours(d.getHours() + 1);
   return d;
+}
+
+function ago(iso: string | null): string {
+  if (!iso) return "never";
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const h = Math.round(mins / 60);
+  return h < 24 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
+}
+
+// Link external calendars INTO LifeOS (Outlook "publish" link) and share
+// LifeOS OUT to other apps.
+function SyncModal({
+  visible,
+  onClose,
+  onChanged,
+  onShareFeed,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onChanged: () => void;
+  onShareFeed: (rotate: boolean) => void;
+}) {
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const [subs, setSubs] = useState<CalendarSubscription[]>([]);
+  const [url, setUrl] = useState("");
+  const [name, setName] = useState("Outlook");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setSubs((await fetchCalendarSubscriptions()).data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (visible) {
+      setError(null);
+      load();
+    }
+  }, [visible, load]);
+
+  const run = async (key: string, fn: () => Promise<unknown>) => {
+    setBusy(key);
+    setError(null);
+    try {
+      await fn();
+      await load();
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const add = () =>
+    run("add", async () => {
+      if (!url.trim()) throw new Error("Paste your calendar link first.");
+      await addCalendarSubscription(name.trim() || "Outlook", url.trim());
+      setUrl("");
+    });
+
+  const remove = (s: CalendarSubscription) =>
+    Alert.alert("Remove calendar?", `${s.name}'s events will disappear from LifeOS (your Outlook calendar is untouched).`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: () => run(`rm-${s.id}`, () => deleteCalendarSubscription(s.id)) },
+    ]);
+
+  const box = [styles.input, { color: colors.textPrimary, backgroundColor: colors.surface1, borderColor: colors.hairline }];
+
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: colors.bg }}>
+        <ScrollView contentContainerStyle={[styles.modalBody, { paddingBottom: insets.bottom + spacing.xl }]} keyboardShouldPersistTaps="handled">
+          <View style={styles.modalHeader}>
+            <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Sync calendars</Text>
+            <Pressable onPress={onClose} hitSlop={10}>
+              <Text style={{ color: colors.focus, fontFamily: fonts.geistMedium, fontSize: 15 }}>Done</Text>
+            </Pressable>
+          </View>
+
+          <Text style={[styles.syncHeading, { color: colors.textPrimary }]}>Bring Outlook into LifeOS</Text>
+          <Text style={[styles.syncHelp, { color: colors.textSecondary }]}>
+            In Outlook on the web: Settings (gear) → Calendar → Shared calendars → Publish a calendar → pick the calendar, choose
+            "Can view all details" → Publish → copy the ICS link and paste it below. Events appear here read-only and refresh
+            every 30 minutes.
+          </Text>
+          <TextInput value={name} onChangeText={setName} placeholder="Name (e.g. Work)" placeholderTextColor={colors.textTertiary} style={box} />
+          <TextInput
+            value={url}
+            onChangeText={setUrl}
+            placeholder="https://outlook.office365.com/…/calendar.ics"
+            placeholderTextColor={colors.textTertiary}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            style={box}
+          />
+          <PrimaryButton label="Link calendar" onPress={add} loading={busy === "add"} />
+          {error ? <ErrorBanner message={error} /> : null}
+
+          {subs.length > 0 ? <Text style={[styles.syncHeading, { color: colors.textPrimary, marginTop: spacing.lg }]}>Linked calendars</Text> : null}
+          {subs.map((s) => (
+            <Surface key={s.id} style={styles.card}>
+              <Text style={[styles.title, { color: colors.textPrimary }]}>{s.name}</Text>
+              <Text style={[styles.meta, { color: s.last_error ? colors.bad : colors.textSecondary }]}>
+                {s.last_error ? s.last_error : `${s.event_count} events · synced ${ago(s.last_synced_at)}`}
+              </Text>
+              <Text style={[styles.meta, { color: colors.textTertiary }]}>{s.host}</Text>
+              <View style={{ flexDirection: "row", gap: spacing.lg, marginTop: spacing.sm }}>
+                <Pressable onPress={() => run(`sync-${s.id}`, () => syncCalendarSubscription(s.id))} disabled={busy !== null}>
+                  <Text style={{ color: colors.focus, fontFamily: fonts.geistMedium }}>{busy === `sync-${s.id}` ? "Syncing…" : "Sync now"}</Text>
+                </Pressable>
+                <Pressable onPress={() => remove(s)} disabled={busy !== null}>
+                  <Text style={{ color: colors.bad, fontFamily: fonts.geistMedium }}>Remove</Text>
+                </Pressable>
+              </View>
+            </Surface>
+          ))}
+
+          <Text style={[styles.syncHeading, { color: colors.textPrimary, marginTop: spacing.lg }]}>Send LifeOS to other calendars</Text>
+          <Text style={[styles.syncHelp, { color: colors.textSecondary }]}>
+            Share a link that Outlook, Google or Apple Calendar can subscribe to (one-way: LifeOS → them). Your Outlook events
+            are not included, so nothing loops back.
+          </Text>
+          <View style={{ flexDirection: "row", gap: spacing.lg }}>
+            <Pressable onPress={() => onShareFeed(false)}><Text style={{ color: colors.focus, fontFamily: fonts.geistMedium }}>Share link</Text></Pressable>
+            <Pressable onPress={() => onShareFeed(true)}><Text style={{ color: colors.bad, fontFamily: fonts.geistMedium }}>Reset link</Text></Pressable>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
 }
 
 function reminderKey(offsets: number[]): string {
@@ -433,6 +580,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
   },
+  syncChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: spacing.sm,
+    marginLeft: spacing.lg,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  syncHeading: { fontFamily: fonts.spaceGroteskSemiBold, fontSize: 16, marginTop: spacing.sm },
+  syncHelp: { fontFamily: fonts.geistRegular, fontSize: 13, lineHeight: 19 },
+  syncChipText: { fontFamily: fonts.geistMedium, fontSize: 13 },
   monthLabel: { fontFamily: fonts.spaceGroteskSemiBold, fontSize: 18 },
   scroll: { padding: spacing.md, paddingBottom: 120 },
   dayGroup: { marginBottom: spacing.lg },

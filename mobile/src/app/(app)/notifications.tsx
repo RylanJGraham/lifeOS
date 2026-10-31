@@ -15,7 +15,7 @@ import {
   type AppNotification,
   type NotificationPrefs,
 } from "@/lib/api";
-import { ScreenHeader, Surface, ErrorBanner, LoadingState, PrimaryButton } from "@/components/ui";
+import { HEADER_BAR_HEIGHT, ScreenHeader, Surface, ErrorBanner, LoadingState, PrimaryButton } from "@/components/ui";
 
 const KIND_LABELS: Record<string, string> = {
   calendar: "Calendar reminders",
@@ -114,7 +114,7 @@ export default function NotificationsScreen() {
   const items = feed.data?.items ?? [];
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top, backgroundColor: colors.bg }]}>
+    <View style={[styles.container, { paddingTop: insets.top + HEADER_BAR_HEIGHT, backgroundColor: colors.bg }]}>
       <ScreenHeader title="Notifications" subtitle={`${unread} unread`} onBack={() => router.back()} />
       <ScrollView
         contentContainerStyle={styles.scroll}

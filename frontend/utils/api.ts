@@ -178,7 +178,7 @@ export interface CalendarOccurrence {
   kind: string;
   recurrence: string;
   reminder_offsets: number[];
-  origin: "user" | "goal" | "rsu" | "subscription" | "dividend"; // everything but "user" is derived and read-only
+  origin: "user" | "import" | "goal" | "rsu" | "subscription" | "dividend"; // everything but "user" is read-only
 }
 
 export async function getCalendarEvents(startIso: string, endIso: string): Promise<CalendarOccurrence[]> {
@@ -232,4 +232,33 @@ export async function getCalendarFeedUrl(rotate = false): Promise<string> {
   });
   if (!res.ok) throw await parseError(res, "Could not get the calendar link");
   return (await res.json()).url;
+}
+
+export interface CalendarSubscription {
+  id: string;
+  name: string;
+  host: string | null;
+  last_synced_at: string | null;
+  last_error: string | null;
+  event_count: number;
+}
+
+export async function getCalendarSubscriptions(): Promise<CalendarSubscription[]> {
+  const res = await fetch(`${API_URL}/api/calendar/subscriptions`, { headers: await authHeaders() });
+  if (!res.ok) throw await parseError(res, "Could not load linked calendars");
+  return (await res.json()).data;
+}
+
+export async function addCalendarSubscription(name: string, url: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/calendar/subscriptions`, {
+    method: "POST",
+    headers: await authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ name, url }),
+  });
+  if (!res.ok) throw await parseError(res, "Could not link that calendar");
+}
+
+export async function deleteCalendarSubscription(id: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/calendar/subscriptions/${id}`, { method: "DELETE", headers: await authHeaders() });
+  if (!res.ok) throw await parseError(res, "Could not remove that calendar");
 }

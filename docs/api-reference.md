@@ -283,7 +283,10 @@ Returns `{ "url": "https://<PUBLIC_DOMAIN>/calendar/feed/<token>.ics" }` — the
 ### `GET /calendar/feed/{token}.ics` (public)
 iCalendar feed of the last 30 days to next 365 days (events, alarms for reminder offsets, derived events). **Authenticated by the unguessable token in the URL only** — calendar apps cannot send headers. `404` for an unknown token; responses are `Cache-Control: no-store`.
 
-`origin` values: `user` (editable) and the read-only derived `goal`, `rsu`, `subscription` (estimated renewals: ≥2 monthly charges of near-equal amount from `transactions`) and `dividend` (estimated from `advisor_dividends` history).
+### `GET/POST /api/calendar/subscriptions` · `POST …/{id}/sync` · `DELETE …/{id}`
+Link an external calendar's **published ICS link** (Outlook, Google, Apple) so its events appear in LifeOS (`origin: "import"`, read-only; `PATCH`/`DELETE` on them return `403`). `POST` body `{name, url}`; the link must be `https://` or `webcal://` and resolve to a public address (private/loopback hosts and redirects to them are refused); it is fetched and parsed first, and a bad link returns `400` with a reason and saves nothing. Listing never returns the URL (it is a secret). Imported events refresh every 30 minutes (`calendar-sync` worker), recurring events are expanded for 30 days back to 180 days ahead, and a failing refresh keeps the previously imported events and records `last_error`. Imported events are **not** included in LifeOS's own iCal feed (no echo loop).
+
+`origin` values: `user` (editable), `import` (linked calendar, read-only) and the read-only derived `goal`, `rsu`, `subscription` (estimated renewals: ≥2 monthly charges of near-equal amount from `transactions`) and `dividend` (estimated from `advisor_dividends` history).
 
 ### Chat
 "dentist thursday 3pm" in chat is routed to the `calendar` intent (`src/nodes/calendar.py`). The LLM only extracts a day phrase and a time; Python resolves the date (in `LIFEOS_TIMEZONE`). `dry_run=true` returns a preview card without saving.

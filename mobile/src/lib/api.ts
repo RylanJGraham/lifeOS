@@ -378,7 +378,7 @@ export interface CalendarOccurrence {
   kind: CalendarKind;
   recurrence: Recurrence;
   reminder_offsets: number[];
-  origin: "user" | "goal" | "rsu" | "subscription" | "dividend"; // everything but "user" is derived and read-only
+  origin: "user" | "import" | "goal" | "rsu" | "subscription" | "dividend"; // everything but "user" is read-only (import = synced from Outlook/Google/Apple)
 }
 
 export interface CalendarEventInput {
@@ -414,3 +414,28 @@ export const fetchCalendarFeedUrl = () =>
 
 export const rotateCalendarFeedUrl = () =>
   apiJson<{ url: string }>("/api/calendar/feed/rotate", { method: "POST" }, "Could not reset the calendar link");
+
+export interface CalendarSubscription {
+  id: string;
+  name: string;
+  host: string | null;
+  last_synced_at: string | null;
+  last_error: string | null;
+  event_count: number;
+}
+
+export const fetchCalendarSubscriptions = () =>
+  apiJson<{ data: CalendarSubscription[] }>("/api/calendar/subscriptions", {}, "Could not load linked calendars");
+
+export const addCalendarSubscription = (name: string, url: string) =>
+  apiJson<{ data: { id: string; name: string; ok: boolean; count?: number; error?: string } }>(
+    "/api/calendar/subscriptions",
+    { method: "POST", body: JSON.stringify({ name, url }) },
+    "Could not link that calendar",
+  );
+
+export const syncCalendarSubscription = (id: string) =>
+  apiJson(`/api/calendar/subscriptions/${id}/sync`, { method: "POST" }, "Sync failed");
+
+export const deleteCalendarSubscription = (id: string) =>
+  apiJson(`/api/calendar/subscriptions/${id}`, { method: "DELETE" }, "Could not remove that calendar");

@@ -742,3 +742,16 @@ CREATE TABLE IF NOT EXISTS calendar_feed_tokens (
     token TEXT NOT NULL,
     user_id UUID NOT NULL
 );
+
+-- Table: calendar_subscriptions (migration 033)
+CREATE TABLE IF NOT EXISTS calendar_subscriptions (
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    event_count INTEGER NOT NULL,
+    id UUID NOT NULL,
+    last_error TEXT,
+    last_synced_at TIMESTAMP WITH TIME ZONE,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    user_id UUID NOT NULL
+);
+-- calendar_events also gained: subscription_id UUID, external_uid TEXT (migration 033)

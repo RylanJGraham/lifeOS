@@ -9,6 +9,10 @@ import {
   getCalendarEvents,
   getCalendarFeedUrl,
   updateCalendarEvent,
+  CalendarSubscription,
+  getCalendarSubscriptions,
+  addCalendarSubscription,
+  deleteCalendarSubscription,
 } from "../../../utils/api";
 
 const REPEATS = ["none", "daily", "weekly", "monthly", "yearly"];
@@ -49,6 +53,10 @@ export default function CalendarPage() {
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState<CalendarOccurrence | null>(null);
   const [feedUrl, setFeedUrl] = useState<string | null>(null);
+  const [subs, setSubs] = useState<CalendarSubscription[]>([]);
+  const [subUrl, setSubUrl] = useState("");
+  const [subName, setSubName] = useState("Outlook");
+  const [subBusy, setSubBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -66,6 +74,43 @@ export default function CalendarPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const loadSubs = useCallback(async () => {
+    try {
+      setSubs(await getCalendarSubscriptions());
+    } catch {
+      /* the list is optional; load() surfaces connectivity errors */
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSubs();
+  }, [loadSubs]);
+
+  const linkCalendar = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubBusy(true);
+    setError(null);
+    try {
+      await addCalendarSubscription(subName.trim() || "Outlook", subUrl.trim());
+      setSubUrl("");
+      await Promise.all([loadSubs(), load()]);
+    } catch (err: any) {
+      setError(err?.message || "Could not link that calendar");
+    } finally {
+      setSubBusy(false);
+    }
+  };
+
+  const unlinkCalendar = async (s: CalendarSubscription) => {
+    if (!window.confirm(`Remove "${s.name}"? Its events disappear from LifeOS (the original calendar is untouched).`)) return;
+    try {
+      await deleteCalendarSubscription(s.id);
+      await Promise.all([loadSubs(), load()]);
+    } catch (err: any) {
+      setError(err?.message || "Could not remove that calendar");
+    }
+  };
 
   const byDay = useMemo(() => {
     const map = new Map<string, CalendarOccurrence[]>();
@@ -183,6 +228,33 @@ export default function CalendarPage() {
         </div>
       )}
 
+      <form onSubmit={linkCalendar} className="card-surface" style={{ borderRadius: "var(--radius-xl)", padding: 16, display: "grid", gap: 10 }}>
+        <strong style={{ fontSize: 14 }}>Bring Outlook into LifeOS</strong>
+        <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+          Outlook on the web → Settings → Calendar → Shared calendars → Publish a calendar → "Can view all details" → Publish → copy the
+          ICS link. Events appear here read-only and refresh every 30 minutes.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 3fr auto", gap: 10 }}>
+          <input value={subName} onChange={(e) => setSubName(e.target.value)} aria-label="Calendar name"
+            style={{ padding: 10, borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface-secondary)", color: "inherit" }} />
+          <input value={subUrl} onChange={(e) => setSubUrl(e.target.value)} placeholder="https://outlook.office365.com/…/calendar.ics" aria-label="Calendar link" required
+            style={{ padding: 10, borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface-secondary)", color: "inherit" }} />
+          <button type="submit" disabled={subBusy || !subUrl.trim()}
+            style={{ padding: "9px 16px", borderRadius: 8, background: "var(--accent-trends)", color: "#fff", border: 0, opacity: subBusy ? 0.6 : 1, cursor: "pointer" }}>
+            {subBusy ? "Linking…" : "Link"}
+          </button>
+        </div>
+        {subs.map((s) => (
+          <div key={s.id} style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13 }}>
+            <span style={{ fontWeight: 500 }}>{s.name}</span>
+            <span style={{ color: s.last_error ? "var(--status-critical, #dc2626)" : "var(--text-secondary)", flex: 1 }}>
+              {s.last_error ?? `${s.event_count} events${s.last_synced_at ? " · synced " + new Date(s.last_synced_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}`}
+            </span>
+            <button type="button" onClick={() => unlinkCalendar(s)} style={{ background: "none", border: 0, color: "var(--text-tertiary)", cursor: "pointer" }}>Remove</button>
+          </div>
+        ))}
+      </form>
+
       <form onSubmit={add} className="card-surface" style={{ borderRadius: "var(--radius-xl)", padding: 16, display: "grid", gap: 10 }}>
         <input
           value={title}
@@ -245,7 +317,7 @@ export default function CalendarPage() {
                     <div style={{ fontWeight: 500 }}>{ev.title}</div>
                     <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
                       {ev.all_day ? "All day" : new Date(ev.starts_at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
-                      {ev.origin !== "user" ? ` · ${({ goal: "goal deadline", rsu: "RSU vest", subscription: "subscription", dividend: "dividend" } as Record<string, string>)[ev.origin]}` : ""}
+                      {ev.origin !== "user" ? ` · ${({ goal: "goal deadline", rsu: "RSU vest", subscription: "subscription", dividend: "dividend", import: "linked calendar" } as Record<string, string>)[ev.origin]}` : ""}
                     </div>
                     {ev.location && <div style={{ fontSize: 12, color: "var(--text-tertiary)", display: "flex", gap: 4, alignItems: "center" }}><MapPin size={12} />{ev.location}</div>}
                     {ev.recurrence !== "none" && <div style={{ fontSize: 12, color: "var(--text-tertiary)", display: "flex", gap: 4, alignItems: "center" }}><Repeat size={12} />{ev.recurrence}</div>}

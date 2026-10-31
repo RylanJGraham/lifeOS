@@ -29,7 +29,7 @@ import { useTheme } from "@/theme/ThemeProvider";
 import { spacing, fonts, radius } from "@/theme";
 import { useInsights, resolveInsight, type Insight } from "@/lib/queries";
 import { goalCheckinAnswer } from "@/lib/api";
-import { ScreenHeader, Surface, ErrorBanner, LoadingState } from "@/components/ui";
+import { HEADER_BAR_HEIGHT, ScreenHeader, Surface, ErrorBanner, LoadingState } from "@/components/ui";
 
 const ALL_DOMAINS = [
   "doctor",
@@ -182,7 +182,7 @@ export default function InboxScreen() {
   if (insights.loading) return <LoadingState label="Loading inbox…" />;
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top, backgroundColor: colors.bg }]}>
+    <View style={[styles.container, { paddingTop: insets.top + HEADER_BAR_HEIGHT, backgroundColor: colors.bg }]}>
       <ScreenHeader title="Inbox" subtitle={`${unresolved.length} unresolved`} onBack={() => router.back()} />
       <ScrollView
         contentContainerStyle={styles.scroll}

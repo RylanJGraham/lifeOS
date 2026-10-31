@@ -86,6 +86,8 @@ def _parse_dt(value) -> datetime:
 
 
 def _occurrence(event: dict, start: datetime, origin: str = "user") -> dict:
+    if event.get("source") == "import":
+        origin = "import"  # synced from an external calendar: read-only
     end = None
     if event.get("ends_at"):
         end = start + (_parse_dt(event["ends_at"]) - _parse_dt(event["starts_at"]))
@@ -102,7 +104,7 @@ def _occurrence(event: dict, start: datetime, origin: str = "user") -> dict:
         "kind": event.get("kind") or "event",
         "recurrence": event.get("recurrence") or "none",
         "reminder_offsets": event.get("reminder_offsets") or [],
-        "origin": origin,  # "user" (editable) | "goal" | "rsu" | "subscription" | "dividend" (derived, read-only)
+        "origin": origin,  # "user" (editable) | "import" (external calendar, read-only) | "goal" | "rsu" | "subscription" | "dividend" (derived, read-only)
     }
 
 
@@ -223,7 +225,7 @@ def predicted_events(sb, user_id: str, window_start: datetime, window_end: datet
 # ─── Queries / mutations ─────────────────────────────────────────────────
 
 
-def list_events(user_id: str, start: datetime, end: datetime, tz_name: str | None = None) -> list[dict]:
+def list_events(user_id: str, start: datetime, end: datetime, tz_name: str | None = None, include_imported: bool = True) -> list[dict]:
     sb = get_supabase()
     if sb is None:
         raise RuntimeError("Supabase not configured")
@@ -236,7 +238,8 @@ def list_events(user_id: str, start: datetime, end: datetime, tz_name: str | Non
     )
     rows = [
         r for r in rows
-        if (r.get("recurrence") or "none") != "none" or _parse_dt(r["starts_at"]) >= start
+        if ((r.get("recurrence") or "none") != "none" or _parse_dt(r["starts_at"]) >= start)
+        and (include_imported or r.get("source") != "import")
     ]
     items = expand_events(rows, start, end) + derived_events(sb, user_id, start, end, tz) + predicted_events(sb, user_id, start, end, tz)
     items.sort(key=lambda e: e["starts_at"])
@@ -279,6 +282,12 @@ def _clean_payload(data: dict, partial: bool = False) -> dict:
     return out
 
 
+def _refuse_imported(sb, user_id: str, event_id: str) -> None:
+    cur = sb.table("calendar_events").select("source").eq("id", event_id).eq("user_id", user_id).limit(1).execute().data
+    if cur and cur[0].get("source") == "import":
+        raise PermissionError("Events synced from another calendar are read-only — change them there.")
+
+
 def create_event(user_id: str, data: dict, source: str = "manual") -> dict:
     sb = get_supabase()
     if sb is None:
@@ -292,6 +301,7 @@ def update_event(user_id: str, event_id: str, data: dict) -> dict | None:
     if sb is None:
         raise RuntimeError("Supabase not configured")
     row = {**_clean_payload(data, partial=True), "updated_at": datetime.now(timezone.utc).isoformat()}
+    _refuse_imported(sb, user_id, event_id)
     if "starts_at" in row and "ends_at" not in row:
         # Moving the start must not leave ends_at before it: keep the duration.
         cur = sb.table("calendar_events").select("starts_at,ends_at").eq("id", event_id).eq("user_id", user_id).limit(1).execute().data
@@ -306,6 +316,7 @@ def delete_event(user_id: str, event_id: str) -> bool:
     sb = get_supabase()
     if sb is None:
         raise RuntimeError("Supabase not configured")
+    _refuse_imported(sb, user_id, event_id)
     res = sb.table("calendar_events").delete().eq("id", event_id).eq("user_id", user_id).execute()
     return bool(res.data)
 
@@ -490,4 +501,4 @@ def user_for_feed_token(token: str) -> str | None:
 
 def feed_ics(user_id: str, now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
-    return to_ics(list_events(user_id, now - timedelta(days=30), now + timedelta(days=365)), local_tz(), now)
+    return to_ics(list_events(user_id, now - timedelta(days=30), now + timedelta(days=365), include_imported=False), local_tz(), now)

@@ -995,6 +995,8 @@ async def calendar_update(event_id: str, req: CalendarEventRequest, auth: AuthCo
         row = await run_in_threadpool(cal.update_event, auth.user_id, event_id, req.model_dump(exclude_unset=True))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     if row is None:
         raise HTTPException(status_code=404, detail="Event not found.")
     return {"status": "success", "data": row}
@@ -1004,7 +1006,11 @@ async def calendar_update(event_id: str, req: CalendarEventRequest, auth: AuthCo
 async def calendar_delete(event_id: str, auth: AuthContext = Depends(require_auth)):
     import calendar_service as cal
     from fastapi.concurrency import run_in_threadpool
-    if not await run_in_threadpool(cal.delete_event, auth.user_id, event_id):
+    try:
+        deleted = await run_in_threadpool(cal.delete_event, auth.user_id, event_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if not deleted:
         raise HTTPException(status_code=404, detail="Event not found.")
     return {"status": "success"}
 
@@ -1044,3 +1050,53 @@ async def calendar_feed(token: str):
         raise HTTPException(status_code=404, detail="Not found.")
     body = await run_in_threadpool(cal.feed_ics, user_id)
     return Response(content=body, media_type="text/calendar; charset=utf-8", headers={"Cache-Control": "no-store"})
+
+
+# ─── Calendar imports (Outlook / Google / Apple published links → LifeOS) ─
+class CalendarSubscriptionRequest(BaseModel):
+    name: str = ""
+    url: str
+
+
+@app.get("/api/calendar/subscriptions")
+async def calendar_subscriptions(auth: AuthContext = Depends(require_auth)):
+    import calendar_import
+    from fastapi.concurrency import run_in_threadpool
+    return {"status": "success", "data": await run_in_threadpool(calendar_import.list_subscriptions, auth.user_id)}
+
+
+@app.post("/api/calendar/subscriptions")
+async def calendar_subscription_add(req: CalendarSubscriptionRequest, auth: AuthContext = Depends(require_auth)):
+    """Subscribe to a published .ics link. The link is fetched and validated
+    first; a bad link returns 400 with a reason and nothing is saved."""
+    import calendar_import
+    from fastapi.concurrency import run_in_threadpool
+    try:
+        result = await run_in_threadpool(calendar_import.add_subscription, auth.user_id, req.name, req.url)
+    except calendar_import.CalendarLinkError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "success", "data": result}
+
+
+@app.post("/api/calendar/subscriptions/{sub_id}/sync")
+async def calendar_subscription_sync(sub_id: str, auth: AuthContext = Depends(require_auth)):
+    import calendar_import
+    from fastapi.concurrency import run_in_threadpool
+    from utils.supabase_client import get_supabase
+    rows = get_supabase().table("calendar_subscriptions").select("*").eq("id", sub_id).eq("user_id", auth.user_id).limit(1).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Calendar not found.")
+    result = await run_in_threadpool(calendar_import.sync_subscription, rows[0])
+    if not result["ok"]:
+        raise HTTPException(status_code=502, detail=result["error"])
+    return {"status": "success", "data": result}
+
+
+@app.delete("/api/calendar/subscriptions/{sub_id}")
+async def calendar_subscription_delete(sub_id: str, auth: AuthContext = Depends(require_auth)):
+    """Unsubscribe and remove all events imported from that calendar."""
+    import calendar_import
+    from fastapi.concurrency import run_in_threadpool
+    if not await run_in_threadpool(calendar_import.delete_subscription, auth.user_id, sub_id):
+        raise HTTPException(status_code=404, detail="Calendar not found.")
+    return {"status": "success"}
