@@ -13,6 +13,26 @@ from nodes.shared import (
 
 
 def health_image_node(state: GraphState) -> GraphState:
+    """Process each screenshot on its own (own date, own record). Several screenshots for the
+    same day merge into that day's row in the writer below."""
+    images = state.get("images") or ([state["content"]] if state.get("content") else [])
+    if len(images) <= 1:
+        return _health_image_single(state)
+    lines: list[str] = []
+    for i, img in enumerate(images, 1):
+        sub: GraphState = {**state, "images": [img], "content": img}  # type: ignore[typeddict-item]
+        try:
+            _health_image_single(sub)
+            reply = sub.get("response") or "no result"
+        except Exception as e:  # one bad screenshot must not lose the others
+            logger.error(f"Health screenshot {i} failed: {e}")
+            reply = "failed to process this screenshot"
+        lines.append(f"{i}. {reply.removeprefix('Processed health screenshot. ')}")
+    state["response"] = f"Processed {len(images)} health screenshots:\n" + "\n".join(lines)
+    return state
+
+
+def _health_image_single(state: GraphState) -> GraphState:
     logger.info("Executing Health Image Node")
     images = state.get("images") or []
     if not images:

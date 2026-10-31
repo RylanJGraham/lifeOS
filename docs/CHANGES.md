@@ -4,7 +4,17 @@
 
 ---
 
-## Latest change: Stale sleep data fix, move/delete events
+## Latest change: Ingest image routing fix
+
+What's New:
+- **Multi-image uploads were always sent to the food parser.** `image_dispatcher_node` skipped classification when more than one image was attached ("most common multi-image use case is a meal"), so three sleep screenshots or five heart screenshots answered "Could not parse nutrition data". Now **every image is classified individually** (food vs health/fitness screenshot, concurrently); all-health → health node, all-food → nutrition node (unchanged), mixed → `mixed_image_node` runs each node on its own images and combines the replies.
+- **Several health screenshots are processed one by one.** The health node used to send all images in one prompt and expect ONE record, so screenshots of different days could not each be saved. Each screenshot now gets its own parse/date/record (screenshots for the same day still merge into that day's row), and one failing screenshot no longer loses the others.
+- Server logs now show the routing decisions (`Image dispatch: N image(s)`, `Image classification: [...]`, `Health image parsed: type=…, fields found=[…]` — never the health values). `api.py` configures INFO logging for the app's own loggers.
+- 9 new tests (`tests/test_image_routing.py`), 185 backend tests total.
+
+---
+
+## Previous: Stale sleep data fix, move/delete events
 
 What's New:
 - **Stale health data is no longer shown as today's.** The Bio hero rings, recovery score and recommendations, the Cockpit readiness score and "Low sleep last night" alert, and the **morning briefing** all used the newest health row regardless of age (a 3-day-old night showed as today's). They now use a record only if it is dated today; otherwise Bio says "No sleep logged today · last data 28 Oct (3d ago)" and the briefing says sleep hasn't been logged for N days instead of judging it (`mobile/src/lib/pacing.ts: isCurrentDay/daysOld`, `workers/morning_briefing.py: sleep_facts`, 5 new tests).
