@@ -61,3 +61,25 @@ def test_valid_jwt_accepted_and_scoped_to_user(client, monkeypatch, fake_sb):
 
 def test_cors_is_not_wildcard():
     assert auth.allowed_origins() != ["*"]
+
+
+def test_owner_login_maps_to_legacy_profile_id_but_other_logins_do_not(client, monkeypatch, fake_sb, owner_id):
+    """The owner's data lives under the user_profiles id, not their login id."""
+    fake_sb.tables["notifications"] = [
+        {"id": "mine", "user_id": owner_id, "title": "owner data", "read_at": None, "created_at": "2026-01-01"},
+    ]
+    monkeypatch.setenv("OWNER_AUTH_USER_ID", "Login-AAA")
+    monkeypatch.setattr(auth, "_verify_jwt", lambda t: {"owner": "login-aaa", "stranger": "login-bbb"}.get(t))
+    owner = client.get("/api/notifications", headers={"Authorization": "Bearer owner"})
+    stranger = client.get("/api/notifications", headers={"Authorization": "Bearer stranger"})
+    assert [n["id"] for n in owner.json()["data"]] == ["mine"]
+    assert stranger.json()["data"] == []
+
+
+def test_without_owner_mapping_login_id_is_used_as_is(client, monkeypatch, fake_sb, owner_id):
+    monkeypatch.delenv("OWNER_AUTH_USER_ID", raising=False)
+    fake_sb.tables["notifications"] = [
+        {"id": "mine", "user_id": owner_id, "title": "x", "read_at": None, "created_at": "2026-01-01"},
+    ]
+    monkeypatch.setattr(auth, "_verify_jwt", lambda t: "some-login")
+    assert client.get("/api/notifications", headers={"Authorization": "Bearer t"}).json()["data"] == []

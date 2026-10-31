@@ -378,7 +378,7 @@ npx expo run:ios --device "<name or UDID>"   # builds + installs to a physical i
 
 ### 3.9 Auth & tests
 
-`src/auth.py` — `require_auth` dependency (Supabase JWT or `X-API-Key`, fail-closed; see `docs/api-reference.md`). `src/utils/supabase_client.py` — the one shared service-role client (`get_supabase()`); new code should not call `create_client` directly. `tests/` (pytest, run `python -m pytest`) covers auth, position math, date resolution, the dry-run chat flow, calendar and notifications with an in-memory fake Supabase (`tests/conftest.py`). CI (`.github/workflows/ci.yml`) runs `py_compile`, pytest, the frontend build and the mobile `tsc`.
+`src/auth.py` — `require_auth` dependency (Supabase JWT or `X-API-Key`, fail-closed; see `docs/api-reference.md`). **Identity mapping:** this deployment's data is stored under the `user_profiles` row's id (the zero UUID), not the Supabase login id, so `OWNER_AUTH_USER_ID` names the one login that maps onto that data; any other login gets its own empty id. Unset it only after migrating the data to the login id. `src/utils/supabase_client.py` — the one shared service-role client (`get_supabase()`); new code should not call `create_client` directly. `tests/` (pytest, run `python -m pytest`) covers auth, position math, date resolution, the dry-run chat flow, calendar and notifications with an in-memory fake Supabase (`tests/conftest.py`). CI (`.github/workflows/ci.yml`) runs `py_compile`, pytest, the frontend build and the mobile `tsc`.
 
 ---
 

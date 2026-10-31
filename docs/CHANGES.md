@@ -11,6 +11,8 @@ What's New:
 - **Calendar**: edit events (mobile + web; editing a repeating event moves the whole series, duration preserved); subscribable iCal feed (`/calendar/feed/<token>.ics`, migration 032); estimated subscription-renewal and dividend events; today's agenda appended to the morning briefing.
 - Tests: 113 total (new `tests/test_calendar_followups.py`).
 
+Also: `OWNER_AUTH_USER_ID` (see `docs/architecture.md` §3.9) maps the owner's login onto the legacy data owner id; found because all existing rows belong to the zero UUID while the login id differs.
+
 Breaking changes / manual setup: apply migration 032 (`python scripts/migrate.py`); set `TELEGRAM_CHAT_ID` on the droplet. Planned workouts are not on the calendar (no data source exists).
 
 ---

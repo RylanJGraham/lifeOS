@@ -62,6 +62,21 @@ def _owner_user_id() -> str:
     return resolve_user_id("api_key", "owner")
 
 
+def _data_user_id(auth_user_id: str) -> str:
+    """The id this login's data is stored under.
+
+    This deployment predates real auth ids: the owner's rows are stored under
+    the user_profiles row's id (the zero UUID), not the Supabase login id.
+    OWNER_AUTH_USER_ID names the one login that owns that legacy data; it is
+    mapped to the profile id. Any other login gets its own (empty) id and
+    cannot see the owner's data.
+    """
+    owner_login = os.getenv("OWNER_AUTH_USER_ID", "").strip().lower()
+    if owner_login and auth_user_id.lower() == owner_login:
+        return _owner_user_id()
+    return auth_user_id
+
+
 def _api_key_ok(provided: str | None) -> bool:
     secret = os.getenv("API_SECRET")
     if not secret or not provided:
@@ -76,7 +91,7 @@ async def require_auth(
     if authorization and authorization.lower().startswith("bearer "):
         user_id = _verify_jwt(authorization[7:].strip())
         if user_id:
-            return AuthContext(user_id=user_id, method="jwt")
+            return AuthContext(user_id=_data_user_id(user_id), method="jwt")
     if _api_key_ok(x_api_key):
         return AuthContext(user_id=_owner_user_id(), method="api_key")
     raise HTTPException(status_code=401, detail="Invalid or missing credentials.")

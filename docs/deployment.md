@@ -68,6 +68,7 @@ Make sure the droplet's `.env` contains:
 - `PUBLIC_DOMAIN=lifeos-you.duckdns.org`
 - `API_SECRET=<new long random string>` — **rotate it**: the previous value was shipped inside client bundles. Only the iOS Shortcut uses it now.
 - `CORS_ORIGINS=https://<your-dashboard>.vercel.app` (comma separated; native mobile needs no CORS)
+- `OWNER_AUTH_USER_ID=<your Supabase login id>` — maps your login onto data stored under the legacy profile id (without it, chat would log under a different user than the workers read).
 - `LIFEOS_TIMEZONE=<your IANA timezone>` — used for calendar phrases and cron-adjacent reminders.
 
 Telegram is retired: the webhook is **not** registered unless you set `TELEGRAM_ENABLED=true`.
