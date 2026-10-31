@@ -183,7 +183,7 @@ export default function InboxScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top, backgroundColor: colors.bg }]}>
-      <ScreenHeader title="Inbox" subtitle={`${unresolved.length} unresolved`} />
+      <ScreenHeader title="Inbox" subtitle={`${unresolved.length} unresolved`} onBack={() => router.back()} />
       <ScrollView
         contentContainerStyle={styles.scroll}
         refreshControl={

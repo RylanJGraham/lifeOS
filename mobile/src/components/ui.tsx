@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { View, Text, TextInput, StyleSheet, ActivityIndicator, Pressable, type StyleProp, type ViewStyle, type TextStyle, type KeyboardTypeOptions } from "react-native";
-import { ChevronRight } from "lucide-react-native";
+import { ChevronRight, Calendar as CalendarIcon, Inbox as InboxIcon } from "lucide-react-native";
+import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import Svg, { Circle, Polyline } from "react-native-svg";
 import { BlurView } from "expo-blur";
@@ -40,6 +41,7 @@ export function ScreenHeader({
   statusLabel = "NOMINAL",
   statusColor = colors.good,
   onBack,
+  inboxBadge,
 }: {
   title: string;
   subtitle?: string;
@@ -49,9 +51,19 @@ export function ScreenHeader({
   // tap back to) — e.g. Goals/Specialist/System, which live outside the
   // (tabs) group. Omit for the 5 real tab screens.
   onBack?: () => void;
+  // Unread count shown on the Inbox icon (the Calendar/Inbox shortcuts appear
+  // top-right on every main screen; pushed screens with a back button omit them).
+  inboxBadge?: number;
 }) {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { colors, isDark } = useTheme();
+  const actions = onBack
+    ? []
+    : [
+        { key: "calendar", label: "Calendar", icon: <CalendarIcon size={16} color={colors.textPrimary} />, onPress: () => router.push("/calendar" as never), badge: 0 },
+        { key: "inbox", label: "Inbox", icon: <InboxIcon size={16} color={colors.textPrimary} />, onPress: () => router.push("/inbox" as never), badge: inboxBadge ?? 0 },
+      ];
   return (
     <View style={[styles.headerBar, { paddingTop: insets.top, borderBottomColor: colors.hairline }]}>
       <BlurView intensity={80} tint={isDark ? "dark" : "light"} style={StyleSheet.absoluteFill} />
@@ -70,9 +82,30 @@ export function ScreenHeader({
             <Text style={styles.headerScreenLabel} numberOfLines={1}>{title}</Text>
           </View>
         </View>
-        <View style={[styles.statusPill, { backgroundColor: withAlpha(statusColor, 0.1), borderColor: withAlpha(statusColor, 0.3) }]}>
-          <Dot color={statusColor} size={6} />
-          <Text style={[styles.statusPillText, { color: statusColor }]}>{statusLabel}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
+          {actions.map((a) => (
+            <Pressable
+              key={a.key}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                a.onPress();
+              }}
+              hitSlop={8}
+              accessibilityLabel={a.label}
+              style={[styles.headerAction, { backgroundColor: withAlpha(colors.textPrimary, 0.06) }]}
+            >
+              {a.icon}
+              {a.badge ? (
+                <View style={[styles.headerBadge, { backgroundColor: colors.cardio }]}>
+                  <Text style={styles.headerBadgeText}>{a.badge > 9 ? "9+" : a.badge}</Text>
+                </View>
+              ) : null}
+            </Pressable>
+          ))}
+          <View style={[styles.statusPill, { backgroundColor: withAlpha(statusColor, 0.1), borderColor: withAlpha(statusColor, 0.3) }]}>
+            <Dot color={statusColor} size={6} />
+            <Text style={[styles.statusPillText, { color: statusColor }]}>{statusLabel}</Text>
+          </View>
         </View>
       </View>
       <Text style={styles.headerSubtitle} numberOfLines={1}>
@@ -844,6 +877,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
   },
+  headerAction: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center" },
+  headerBadge: { position: "absolute", top: -2, right: -2, minWidth: 16, height: 16, borderRadius: 8, paddingHorizontal: 3, alignItems: "center", justifyContent: "center" },
+  headerBadgeText: { color: "#FFFFFF", fontSize: 10, fontFamily: fonts.monoSemiBold },
   headerBrandRow: { flexDirection: "row", alignItems: "center", gap: 5 },
   headerBackButton: { width: 28, height: 28, borderRadius: radius.sm, backgroundColor: colors.surface2, alignItems: "center", justifyContent: "center" },
   brand: { fontFamily: fonts.spaceGroteskSemiBold, fontSize: 13, color: colors.textPrimary, letterSpacing: -0.1 },

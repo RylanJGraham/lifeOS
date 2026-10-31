@@ -27,6 +27,8 @@ import {
   type Signal,
 } from "@/lib/queries";
 import { spendStatus } from "@/lib/pacing";
+import { DateRangePicker } from "@/components/DateRangePicker";
+import { addDays, formatRange, inclusiveDays, localDay, startOfDay } from "@/lib/dateRange";
 import { colors, colors as lightColors, radius, spacing, fonts, withAlpha } from "@/theme";
 import { useTheme } from "@/theme/ThemeProvider";
 import {
@@ -91,9 +93,14 @@ export default function CapitalScreen() {
   const { colors } = useTheme();
   const styles = createStyles(colors);
   const [view, setView] = useState<"ledger" | "portfolio" | "intel">("ledger");
+  // Cash tab period: the current month (default, with budget pacing) or any
+  // specific days the user picks.
+  const [period, setPeriod] = useState<"month" | "custom">("month");
+  const [pFrom, setPFrom] = useState(() => addDays(startOfDay(new Date()), -6));
+  const [pTo, setPTo] = useState(() => startOfDay(new Date()));
 
   const profile = useProfile();
-  const transactions = useTransactions(500);
+  const transactions = useTransactions(3000);
   const positions = usePositions();
   const snapshots = usePortfolioSnapshots(90);
   const latestSnapshot = useLatestSnapshot();
@@ -195,11 +202,19 @@ export default function CapitalScreen() {
   if (loading) return <LoadingState label="Loading Capital…" />;
 
   const balance = profile.data ? liveBankBalance(profile.data.bank_balance, profile.data.bank_balance_updated_at, txs) : null;
-  const { income, expenses } = monthSpend(txs);
+  const customActive = period === "custom";
+  const pFromStr = localDay(pFrom);
+  const pToStr = localDay(pTo);
+  const periodTx = customActive
+    ? txs.filter((t) => t.transaction_date && t.transaction_date.slice(0, 10) >= pFromStr && t.transaction_date.slice(0, 10) <= pToStr)
+    : monthSpend(txs).monthTx;
+  const income = periodTx.reduce((a, t) => a + (typeof t.amount === "number" ? Math.max(t.amount, 0) : 0), 0);
+  const expenses = periodTx.reduce((a, t) => a + (typeof t.amount === "number" ? Math.min(t.amount, 0) : 0), 0);
   const net = income + expenses;
+  const periodLabel = customActive ? formatRange(pFrom, pTo) : now.toLocaleDateString(undefined, { month: "long", year: "numeric" });
   const pace = spendStatus(expenses, profile.data ?? undefined);
 
-  const categoryTotals = monthSpend(txs).monthTx.reduce<Record<string, number>>((acc, t) => {
+  const categoryTotals = periodTx.reduce<Record<string, number>>((acc, t) => {
     if (typeof t.amount !== "number" || t.amount >= 0) return acc;
     const cat = t.category ?? "Uncategorized";
     acc[cat] = (acc[cat] ?? 0) + Math.abs(t.amount);
@@ -210,15 +225,16 @@ export default function CapitalScreen() {
   void topCategories; void maxCatSpend; // retained for future use
 
   const dailySpendMap = new Map<string, number>();
-  const since14 = new Date(nowMs - 14 * 86400000).toISOString().slice(0, 10);
   for (const t of txs) {
-    if (!t.transaction_date || t.transaction_date < since14) continue;
-    if (typeof t.amount !== "number" || t.amount >= 0) continue;
+    if (!t.transaction_date || typeof t.amount !== "number" || t.amount >= 0) continue;
     const day = t.transaction_date.slice(0, 10);
     dailySpendMap.set(day, (dailySpendMap.get(day) ?? 0) + Math.abs(t.amount));
   }
-  const dailySpendData = Array.from({ length: 14 }, (_, i) => {
-    const d = new Date(nowMs - (13 - i) * 86400000).toISOString().slice(0, 10);
+  // Last 14 days by default; the picked range (last 31 days of it) when custom.
+  const spendDays = customActive ? Math.min(31, inclusiveDays(pFrom, pTo)) : 14;
+  const spendEnd = customActive ? pTo : startOfDay(new Date(nowMs));
+  const dailySpendData = Array.from({ length: spendDays }, (_, i) => {
+    const d = localDay(addDays(spendEnd, -(spendDays - 1 - i)));
     return { value: Number((dailySpendMap.get(d) ?? 0).toFixed(2)) };
   });
   const hasSpendData = dailySpendData.some((d) => d.value > 0);
@@ -364,11 +380,30 @@ export default function CapitalScreen() {
 
       {view === "ledger" ? (
         <>
+          <SegmentedControl
+            options={[
+              { key: "month", label: "This month" },
+              { key: "custom", label: "Pick days" },
+            ]}
+            value={period}
+            onChange={setPeriod}
+          />
+          {customActive ? (
+            <DateRangePicker
+              from={pFrom}
+              to={pTo}
+              onChange={(f, t) => {
+                setPFrom(f);
+                setPTo(t);
+              }}
+            />
+          ) : null}
+
           {/* ─── Monthly summary card ─── */}
           <View style={styles.summaryCard}>
             <View style={styles.summaryHeader}>
-              <Text style={styles.summaryLabel}>MONTHLY FLOW</Text>
-              <Text style={styles.summaryMonth}>{now.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</Text>
+              <Text style={styles.summaryLabel}>{customActive ? "FLOW" : "MONTHLY FLOW"}</Text>
+              <Text style={styles.summaryMonth}>{periodLabel}</Text>
             </View>
             <View style={styles.summaryGrid}>
               <View style={styles.summaryItem}>
@@ -400,7 +435,7 @@ export default function CapitalScreen() {
           </View>
 
           {/* ─── Budget pacing ─── */}
-          {spentPct != null ? (
+          {!customActive && spentPct != null ? (
             <AccentCard
               tier={burnSeverity === "bad" ? "critical" : "standard"}
               color={burnColor}
@@ -436,10 +471,10 @@ export default function CapitalScreen() {
           {/* ─── Daily spend chart ─── */}
           {hasSpendData ? (
             <>
-              <SectionLabel title="Daily spend (14d)" />
+              <SectionLabel title={customActive ? "Daily spend" : "Daily spend (14d)"} />
               <Surface style={styles.chartCard}>
                 <View style={styles.chartHeader}>
-                  <Text style={styles.chartTitle}>Last 14 days</Text>
+                  <Text style={styles.chartTitle}>{customActive ? periodLabel : "Last 14 days"}</Text>
                   <Text style={styles.chartRange}>{fmtMoney(dailySpendData.reduce((a, d) => a + d.value, 0))} total</Text>
                 </View>
                 <BarChart
@@ -517,8 +552,27 @@ export default function CapitalScreen() {
           ) : null}
 
           {/* ─── Budget vs. actual by category ─── */}
-          <SectionLabel title="Budget vs. actual" subtitle={`${now.toLocaleDateString(undefined, { month: "short" })} · Day ${now.getDate()}/${daysInMonth}`} />
-          {budgetCategories.length === 0 ? (
+          {customActive ? (
+            <>
+              <SectionLabel title="Spending by category" subtitle={periodLabel} />
+              <Surface style={{ paddingVertical: 0 }}>
+                {Object.entries(categoryTotals).length === 0 ? (
+                  <Text style={styles.emptyBody}>No spending in these days.</Text>
+                ) : (
+                  Object.entries(categoryTotals)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([cat, amt], i, arr) => (
+                      <View key={cat}>
+                        <ListRow title={cat} trailing={fmtMoney(-amt)} />
+                        {i < arr.length - 1 ? <View style={styles.rowDivider} /> : null}
+                      </View>
+                    ))
+                )}
+              </Surface>
+            </>
+          ) : null}
+          {!customActive ? <SectionLabel title="Budget vs. actual" subtitle={`${now.toLocaleDateString(undefined, { month: "short" })} · Day ${now.getDate()}/${daysInMonth}`} /> : null}
+          {customActive ? null : budgetCategories.length === 0 ? (
             <Surface style={styles.emptyCard}>
               <Wallet size={28} color={colors.textTertiary} />
               <Text style={styles.emptyTitle}>No spending logged this month</Text>
@@ -583,9 +637,10 @@ export default function CapitalScreen() {
           )}
 
           {/* ─── Ledger stream ─── */}
-          <SectionLabel title="Ledger stream" subtitle="Latest 15" />
+          <SectionLabel title="Ledger stream" subtitle={customActive ? `${periodTx.length} in ${periodLabel}` : "Latest 15"} />
           <Surface style={{ paddingVertical: 0 }}>
-            {txs.slice(0, 15).map((t, i) => (
+            {customActive && periodTx.length === 0 ? <Text style={styles.emptyBody}>No transactions on these days.</Text> : null}
+            {(customActive ? periodTx.slice(0, 200) : txs.slice(0, 15)).map((t, i) => (
               <View key={i}>
                 <ListRow
                   title={t.merchant_name ?? t.category ?? "Transaction"}
@@ -593,7 +648,7 @@ export default function CapitalScreen() {
                   trailing={fmtMoney(typeof t.amount === "number" ? t.amount : 0)}
                   trailingColor={(t.amount as number) >= 0 ? colors.good : colors.textPrimary}
                 />
-                {i < Math.min(txs.length, 15) - 1 ? <View style={styles.rowDivider} /> : null}
+                {i < Math.min(customActive ? periodTx.length : txs.length, customActive ? 200 : 15) - 1 ? <View style={styles.rowDivider} /> : null}
               </View>
             ))}
           </Surface>

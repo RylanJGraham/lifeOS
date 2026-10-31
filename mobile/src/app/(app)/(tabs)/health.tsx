@@ -28,15 +28,18 @@ import {
   PrimaryButton,
   HEADER_BAR_HEIGHT,
 } from "@/components/ui";
+import { DateRangePicker } from "@/components/DateRangePicker";
+import { addDays, filterByRange, formatRange, inclusiveDays, localDay, startOfDay } from "@/lib/dateRange";
 import { lookupSupplement, listSupplements, addSupplement, removeSupplement, type SupplementItem } from "@/lib/api";
 
 const CHART_WIDTH = Dimensions.get("window").width - spacing.lg * 2 - 32; // account for card padding
-type RangeKey = "today" | "7" | "month" | "ytd";
+type RangeKey = "today" | "7" | "month" | "ytd" | "custom";
 const RANGE_OPTIONS: { key: RangeKey; label: string }[] = [
   { key: "today", label: "Today" },
   { key: "7", label: "7D" },
   { key: "month", label: "Month" },
   { key: "ytd", label: "YTD" },
+  { key: "custom", label: "Pick" },
 ];
 
 // Full list of vitamins and minerals for the supplement preview.
@@ -71,28 +74,18 @@ function computeSuppTotals(item: SupplementItem, servings: number) {
   };
 }
 
-function rangeDaysForKey(key: RangeKey): number {
-  if (key === "today") return 1;
-  if (key === "7") return 7;
-  if (key === "month") return 30;
-  // ytd
-  const now = new Date();
-  const jan1 = new Date(now.getFullYear(), 0, 1);
-  return Math.ceil((now.getTime() - jan1.getTime()) / 86400000) + 1;
-}
+// Fetch window for the screen (covers "pick a specific day" back ~13 months).
+// Presets and custom ranges are all filtered client-side from this one fetch.
+const FETCH_DAYS = 400;
 
-const YTD_DAYS = rangeDaysForKey("ytd");
-
-function filterByDays<T>(items: T[] | undefined, days: number, dateKey: keyof T): T[] {
-  if (!items) return [];
-  if (days >= YTD_DAYS) return items;
-  const cutoff = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
-  return items.filter((it) => {
-    const raw = it[dateKey];
-    if (typeof raw !== "string") return false;
-    const day = raw.slice(0, 10);
-    return day >= cutoff;
-  });
+/** The [from, to] local days a range key selects. Custom comes from the pickers. */
+function resolveRange(key: RangeKey, customFrom: Date, customTo: Date): { from: Date; to: Date } {
+  const today = startOfDay(new Date());
+  if (key === "today") return { from: today, to: today };
+  if (key === "7") return { from: addDays(today, -6), to: today };
+  if (key === "month") return { from: addDays(today, -29), to: today };
+  if (key === "ytd") return { from: new Date(today.getFullYear(), 0, 1), to: today };
+  return { from: startOfDay(customFrom), to: startOfDay(customTo) };
 }
 
 function fmtDate(iso: string) {
@@ -146,20 +139,35 @@ export default function HealthScreen() {
   const { colors } = useTheme();
   const styles = createStyles(colors);
   const [range, setRange] = useState<RangeKey>("7");
-  const rangeDays = rangeDaysForKey(range);
+  const [customFrom, setCustomFrom] = useState(() => addDays(startOfDay(new Date()), -6));
+  const [customTo, setCustomTo] = useState(() => startOfDay(new Date()));
+  const { from: rangeFrom, to: rangeTo } = useMemo(
+    () => resolveRange(range, customFrom, customTo),
+    [range, customFrom, customTo],
+  );
+  const fromStr = localDay(rangeFrom);
+  const toStr = localDay(rangeTo);
+  const rangeDays = inclusiveDays(rangeFrom, rangeTo);
   const isToday = range === "today";
+  // Labels shared by the section headers below.
+  const rangeShort =
+    range === "today" ? "1d" : range === "7" ? "7d" : range === "month" ? "30d" : range === "ytd" ? "YTD" : formatRange(rangeFrom, rangeTo);
+  const rangeLong =
+    range === "7" ? "7 days" : range === "month" ? "30 days" : range === "ytd" ? "year to date" : `${rangeDays} day${rangeDays > 1 ? "s" : ""}`;
+  const rangeHyphen =
+    range === "7" ? "7-day" : range === "month" ? "30-day" : range === "ytd" ? "YTD" : `${rangeDays}-day`;
 
-  // Fetch the full YTD dataset once; filter client-side by selected range.
+  // Fetch ~13 months once; filter client-side by selected range.
   // This makes range switches instant — no new network request, no spinner flash.
-  const metrics = useHealthMetrics(YTD_DAYS);
-  const workouts = useWorkouts(YTD_DAYS);
-  const meals = useMeals(YTD_DAYS, 2000);
+  const metrics = useHealthMetrics(FETCH_DAYS);
+  const workouts = useWorkouts(FETCH_DAYS);
+  const meals = useMeals(FETCH_DAYS, 5000);
   const profile = useProfile();
   const exerciseMuscles = useExerciseMuscles();
 
-  const filteredMetrics = useMemo(() => filterByDays(metrics.data, rangeDays, "recorded_at"), [metrics.data, rangeDays]);
-  const filteredWorkouts = useMemo(() => filterByDays(workouts.data, rangeDays, "workout_date"), [workouts.data, rangeDays]);
-  const filteredMeals = useMemo(() => filterByDays(meals.data, rangeDays, "meal_time"), [meals.data, rangeDays]);
+  const filteredMetrics = useMemo(() => filterByRange(metrics.data, fromStr, toStr, "recorded_at"), [metrics.data, fromStr, toStr]);
+  const filteredWorkouts = useMemo(() => filterByRange(workouts.data, fromStr, toStr, "workout_date"), [workouts.data, fromStr, toStr]);
+  const filteredMeals = useMemo(() => filterByRange(meals.data, fromStr, toStr, "meal_time"), [meals.data, fromStr, toStr]);
 
   // Raw full-YTD datasets (used only where the UI should ignore the range filter)
   const allMetrics = metrics.data;
@@ -235,10 +243,10 @@ export default function HealthScreen() {
     }
     const days = Math.min(rangeDays, 14);
     return Array.from({ length: days }, (_, i) => {
-      const d = new Date(now.getTime() - (days - 1 - i) * 86400000).toISOString().slice(0, 10);
+      const d = localDay(addDays(rangeTo, -(days - 1 - i)));
       return { value: map.get(d) ?? 0, label: new Date(d).toLocaleDateString(undefined, days <= 7 ? { weekday: "narrow" } : { day: "numeric" }) };
     });
-  }, [filteredWorkouts, rangeDays]);
+  }, [filteredWorkouts, rangeDays, rangeTo]);
 
   // Exercise frequency by type
   const exerciseFrequency = useMemo(() => {
@@ -323,7 +331,7 @@ export default function HealthScreen() {
     const now = new Date();
     const days = Math.min(rangeDays, 14); // cap bars at 14 for readability
     return Array.from({ length: days }, (_, i) => {
-      const d = new Date(now.getTime() - (days - 1 - i) * 86400000).toISOString().slice(0, 10);
+      const d = localDay(addDays(rangeTo, -(days - 1 - i)));
       const vals = map.get(d) ?? { calories: 0, protein: 0, carbs: 0, fat: 0 };
       return {
         label: new Date(d).toLocaleDateString(undefined, days <= 7 ? { weekday: "narrow" } : { day: "numeric" }),
@@ -333,7 +341,7 @@ export default function HealthScreen() {
         fat: Math.round(vals.fat),
       };
     });
-  }, [filteredMeals, rangeDays]);
+  }, [filteredMeals, rangeDays, rangeTo]);
 
   // Recovery score: composite of sleep + HRV + RHR (0-100)
   // (must be before the early return — hooks can't be conditional)
@@ -795,6 +803,16 @@ export default function HealthScreen() {
           ═══════════════════════════════════════════════════ */}
       <View style={styles.rangeRow}>
         <SegmentedControl options={RANGE_OPTIONS} value={range} onChange={setRange} />
+        {range === "custom" ? (
+          <DateRangePicker
+            from={customFrom}
+            to={customTo}
+            onChange={(f, t) => {
+              setCustomFrom(f);
+              setCustomTo(t);
+            }}
+          />
+        ) : null}
         {isUpdating ? (
           <View style={styles.updatingPill}>
             <ActivityIndicator size="small" color={colors.focus} />
@@ -817,7 +835,7 @@ export default function HealthScreen() {
                 </Text>
               </View>
             ) : null}
-            <Text style={styles.chartRange}>{range === "today" ? "1d" : range === "7" ? "7d" : range === "month" ? "30d" : "YTD"}</Text>
+            <Text style={styles.chartRange}>{rangeShort}</Text>
           </View>
           <LineChart
             data={sleepChartData}
@@ -857,7 +875,7 @@ export default function HealthScreen() {
                 </Text>
               </View>
             ) : null}
-            <Text style={styles.chartRange}>{range === "today" ? "1d" : range === "7" ? "7d" : range === "month" ? "30d" : "YTD"}</Text>
+            <Text style={styles.chartRange}>{rangeShort}</Text>
           </View>
           <LineChart
             data={hrChartData}
@@ -893,7 +911,7 @@ export default function HealthScreen() {
                 </Text>
               </View>
             ) : null}
-            <Text style={styles.chartRange}>{range === "today" ? "1d" : range === "7" ? "7d" : range === "month" ? "30d" : "YTD"}</Text>
+            <Text style={styles.chartRange}>{rangeShort}</Text>
           </View>
           <LineChart
             data={hrvChartData}
@@ -931,7 +949,7 @@ export default function HealthScreen() {
                 <Text style={styles.targetPillText}>{targetWeight}kg</Text>
               </View>
             ) : null}
-            <Text style={styles.chartRange}>{range === "today" ? "1d" : range === "7" ? "7d" : range === "month" ? "30d" : "YTD"}</Text>
+            <Text style={styles.chartRange}>{rangeShort}</Text>
           </View>
           <LineChart
             data={weightChartData}
@@ -964,7 +982,7 @@ export default function HealthScreen() {
       {/* ═══════════════════════════════════════════════════
           ║ FUEL PACING — Macros with rings + bars (range-aware)
           ═══════════════════════════════════════════════════ */}
-      <SectionLabel title="Fuel pacing" subtitle={hasTargets ? (isToday ? `${(dayFractionNow() * 100).toFixed(0)}% of day elapsed` : `Daily avg over ${range === "7" ? "7 days" : range === "month" ? "30 days" : "year to date"}`) : undefined} />
+      <SectionLabel title="Fuel pacing" subtitle={hasTargets ? (isToday ? `${(dayFractionNow() * 100).toFixed(0)}% of day elapsed` : `Daily avg over ${rangeLong}`) : undefined} />
       {!hasTargets ? (
         <Surface style={styles.emptyCard}>
           <Flame size={24} color={colors.textTertiary} />
@@ -1110,7 +1128,7 @@ export default function HealthScreen() {
           ═══════════════════════════════════════════════════ */}
       {nutritionHistory.some((d) => d.calories > 0 || d.protein > 0) ? (
         <>
-          <SectionLabel title="Nutrition history" subtitle={`Daily breakdown (${range === "today" ? "1d" : range === "7" ? "7d" : range === "month" ? "30d" : "YTD"})`} />
+          <SectionLabel title="Nutrition history" subtitle={`Daily breakdown (${rangeShort})`} />
           <Surface style={styles.chartCard}>
             <View style={styles.chartHeader}>
               <Flame size={14} color={colors.kinematic} />
@@ -1164,7 +1182,7 @@ export default function HealthScreen() {
             <View style={styles.chartHeader}>
               <Activity size={14} color={colors.nutrition} />
               <Text style={styles.chartTitle}>Macro breakdown (g)</Text>
-              <Text style={styles.chartRange}>{range === "today" ? "1d" : range === "7" ? "7d" : range === "month" ? "30d" : "YTD"}</Text>
+              <Text style={styles.chartRange}>{rangeShort}</Text>
             </View>
             <BarChart
               data={nutritionHistory.map((d) => ({
@@ -1211,7 +1229,7 @@ export default function HealthScreen() {
           ═══════════════════════════════════════════════════ */}
       {microCoverage.length > 0 ? (
         <>
-          <SectionLabel title="Micronutrient coverage" subtitle={isToday ? "Today, priority nutrients" : `${range === "7" ? "7-day" : range === "month" ? "30-day" : "YTD"} avg, priority nutrients`} />
+          <SectionLabel title="Micronutrient coverage" subtitle={isToday ? "Today, priority nutrients" : `${rangeHyphen} avg, priority nutrients`} />
           <Surface style={styles.microCard}>
             {microCoverage.map((m) => (
               <View key={m.label} style={styles.microRow}>
@@ -1253,7 +1271,7 @@ export default function HealthScreen() {
       {/* Exercise max weights */}
       {exerciseMaxWeights.length > 0 ? (
         <>
-          <SectionLabel title="Lift ledger" subtitle={`Max weight per exercise (${range === "today" ? "1d" : range === "7" ? "7d" : range === "month" ? "30d" : "YTD"})`} />
+          <SectionLabel title="Lift ledger" subtitle={`Max weight per exercise (${rangeShort})`} />
           <Surface style={{ paddingVertical: 0 }}>
             {exerciseMaxWeights.map(([name, info], i) => (
               <View key={name}>
@@ -1303,7 +1321,7 @@ export default function HealthScreen() {
       {/* Workout frequency bar chart */}
       {workoutVolumeByDay.some((d) => d.value > 0) ? (
         <>
-          <SectionLabel title="Training frequency" subtitle={`Sessions per day (${range === "today" ? "1d" : range === "7" ? "7d" : range === "month" ? "30d" : "YTD"})`} />
+          <SectionLabel title="Training frequency" subtitle={`Sessions per day (${rangeShort})`} />
           <Surface style={styles.chartCard}>
             <View style={styles.chartHeader}>
               <Calendar size={14} color={colors.nutrition} />
@@ -1330,7 +1348,7 @@ export default function HealthScreen() {
       {/* Exercise type breakdown */}
       {exerciseFrequency.length > 0 ? (
         <>
-          <SectionLabel title="Exercise breakdown" subtitle={`By activity type (${range === "today" ? "1d" : range === "7" ? "7d" : range === "month" ? "30d" : "YTD"})`} />
+          <SectionLabel title="Exercise breakdown" subtitle={`By activity type (${rangeShort})`} />
           <Surface style={{ paddingVertical: 0 }}>
             {exerciseFrequency.map(([type, count], i) => {
               const pct = totalWorkouts > 0 ? (count / totalWorkouts) * 100 : 0;
@@ -1354,7 +1372,7 @@ export default function HealthScreen() {
       {/* ═══════════════════════════════════════════════════
           ║ WORKOUTS LOG
           ═══════════════════════════════════════════════════ */}
-      <SectionLabel title={`Workouts (${range === "today" ? "1d" : range === "7" ? "7d" : range === "month" ? "30d" : "YTD"})`} subtitle={`${totalWorkouts} logged`} />
+      <SectionLabel title={`Workouts (${rangeShort})`} subtitle={`${totalWorkouts} logged`} />
       {totalWorkouts === 0 ? (
         <Surface style={styles.emptyCard}>
           <Dumbbell size={24} color={colors.textTertiary} />
@@ -1742,7 +1760,7 @@ export default function HealthScreen() {
       {/* ═══════════════════════════════════════════════════
           ║ DATA COMPLETENESS
           ═══════════════════════════════════════════════════ */}
-      <SectionLabel title="Data completeness" subtitle={range === "today" ? "1d window" : range === "7" ? "7d window" : range === "month" ? "30d window" : "YTD window"} />
+      <SectionLabel title="Data completeness" subtitle={`${rangeShort} window`} />
       <Surface style={styles.completenessCard}>
         <View style={styles.completenessRow}>
           <View style={styles.completenessItem}>

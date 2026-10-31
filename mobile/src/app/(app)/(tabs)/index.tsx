@@ -515,7 +515,7 @@ export default function CockpitScreen() {
         ) : null}
 
         {/* ─── Upcoming calendar ─── */}
-        {(upcoming.data ?? []).length > 0 ? (
+        {true ? (
           <>
             <SectionLabel
               title="Upcoming"
@@ -523,6 +523,11 @@ export default function CockpitScreen() {
               action={{ label: "Calendar", onPress: () => router.push("/calendar") }}
             />
             <Surface style={styles.allClearCard}>
+              {(upcoming.data ?? []).length === 0 ? (
+                <Pressable onPress={() => router.push("/calendar")} style={{ flex: 1 }}>
+                  <Text style={styles.allClearText}>Nothing scheduled this week — tap to open your calendar.</Text>
+                </Pressable>
+              ) : null}
               <View style={{ flex: 1, gap: 8 }}>
                 {(upcoming.data ?? []).slice(0, 3).map((ev) => {
                   const d = new Date(ev.starts_at);
@@ -760,6 +765,7 @@ export default function CockpitScreen() {
         subtitle={dispatchLine}
         statusLabel={counts.bad > 0 ? "CRITICAL" : counts.warn > 0 ? "WATCH" : "NOMINAL"}
         statusColor={overallColor}
+        inboxBadge={attentionFeed.length}
       />
     </View>
   );
